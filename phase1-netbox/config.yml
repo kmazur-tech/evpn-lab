@@ -1,0 +1,327 @@
+# NetBox population config - EVPN-VXLAN DC Fabric Lab
+# This file contains all data for populate.py (Steps 1-13).
+# Environment-specific values (NetBox URL, token, mgmt IPs) come from
+# environment variables - see .env.example in repo root.
+
+# ---------------------------------------------------------------------------
+# Step 1 - Custom Fields
+# ---------------------------------------------------------------------------
+custom_fields:
+  - name: vni
+    content_types: ["ipam.vlan"]
+    type: integer
+    description: "VXLAN Network Identifier mapped to this VLAN"
+
+  - name: l3vni
+    content_types: ["ipam.vrf"]
+    type: integer
+    description: "L3 VNI for symmetric IRB routing"
+
+  - name: esi
+    content_types: ["dcim.interface"]
+    type: text
+    description: "Ethernet Segment Identifier (10-byte, colon-separated)"
+
+  - name: anycast_mac
+    content_types: ["ipam.vrf"]
+    type: text
+    description: "Shared anycast gateway MAC per VRF"
+
+# ---------------------------------------------------------------------------
+# Step 2 - Tags
+# ---------------------------------------------------------------------------
+tags:
+  - { name: Spine,      slug: spine,      color: "2196f3", description: "Spine-layer device" }
+  - { name: Leaf,       slug: leaf,       color: "4caf50", description: "Leaf-layer device" }
+  - { name: Underlay,   slug: underlay,   color: "00bcd4", description: "Underlay network (eBGP, P2P)" }
+  - { name: Overlay,    slug: overlay,    color: "9c27b0", description: "Overlay network (EVPN, VXLAN)" }
+  - { name: ESI-LAG,    slug: esi-lag,    color: "009688", description: "ESI-LAG multihomed interface" }
+  - { name: Anycast-GW, slug: anycast-gw, color: "ffeb3b", description: "Anycast gateway IRB" }
+  - { name: Management, slug: mgmt,       color: "9e9e9e", description: "Management network" }
+  - { name: P2P,        slug: p2p,        color: "00bcd4", description: "Point-to-point link" }
+  - { name: Loopback,   slug: loopback,   color: "3f51b5", description: "Loopback interface" }
+  - { name: DC1,        slug: dc1,        color: "1565c0", description: "Data Center 1 (Juniper)" }
+  - { name: DC2,        slug: dc2,        color: "2e7d32", description: "Data Center 2 (Arista, project Phase 10)" }
+
+# ---------------------------------------------------------------------------
+# Step 3 - Regions, Tenant Groups, Tenants
+# ---------------------------------------------------------------------------
+regions:
+  - name: Lab
+    children:
+      - name: DC1
+      - name: DC2
+
+tenant_groups:
+  - name: Lab
+
+tenants:
+  - name: Lab Operations
+    group: Lab
+    description: "Owner of all lab devices"
+
+# ---------------------------------------------------------------------------
+# Step 4 - Sites
+# ---------------------------------------------------------------------------
+sites:
+  - name: DC1
+    slug: dc1
+    region: DC1
+    status: active
+    tenant: Lab Operations
+    description: "Primary DC - Juniper fabric"
+
+# ---------------------------------------------------------------------------
+# Step 5 - Manufacturers, Platforms, Device Roles
+# ---------------------------------------------------------------------------
+manufacturers:
+  - { name: Juniper Networks, slug: juniper }
+  - { name: Arista Networks,  slug: arista }
+  - { name: Linux,            slug: linux }
+
+platforms:
+  - { name: Junos, slug: junos, manufacturer: Juniper Networks, napalm_driver: junos, description: "Juniper JunOS" }
+  - { name: EOS,   slug: eos,   manufacturer: Arista Networks,  napalm_driver: eos,   description: "Arista EOS (project Phase 10)" }
+  - { name: Linux, slug: linux, manufacturer: Linux,            description: "Linux container host" }
+
+device_roles:
+  - { name: Spine,  slug: spine,  color: "2196f3", description: "Spine / aggregation layer" }
+  - { name: Leaf,   slug: leaf,   color: "4caf50", description: "Leaf / access layer (ToR)" }
+  - { name: Server, slug: server, color: "009688", description: "Compute / test host" }
+
+# ---------------------------------------------------------------------------
+# Step 6 - Device Types
+# ---------------------------------------------------------------------------
+device_types:
+  - name: EX9214
+    slug: ex9214
+    manufacturer: Juniper Networks
+    u_height: 1  # Real: 16U, set to 1 for lab (fit in single 42U rack)
+    is_full_depth: true
+    description: "vjunos-switch emulates EX9214 (SMBIOS VM-VEX)"
+    interface_templates:
+      - { name: fxp0,      type: 1000base-t,   mgmt_only: true,  description: Management }
+      - { name: ge-0/0/0,  type: 10gbase-x-sfpp, mgmt_only: false }
+      - { name: ge-0/0/1,  type: 10gbase-x-sfpp, mgmt_only: false }
+      - { name: ge-0/0/2,  type: 10gbase-x-sfpp, mgmt_only: false }
+      - { name: ge-0/0/3,  type: 10gbase-x-sfpp, mgmt_only: false }
+      - { name: ge-0/0/4,  type: 10gbase-x-sfpp, mgmt_only: false }
+      - { name: ge-0/0/5,  type: 10gbase-x-sfpp, mgmt_only: false }
+      - { name: lo0,       type: virtual,        mgmt_only: false, description: Loopback }
+
+  - name: Container Host
+    slug: container-host
+    manufacturer: Linux
+    u_height: 0
+    is_full_depth: false
+    description: "Linux container test host"
+    interface_templates:
+      - { name: eth0,  type: 1000base-t, mgmt_only: false }
+      - { name: eth1,  type: 1000base-t, mgmt_only: false }
+      - { name: bond0, type: lag,        mgmt_only: false }
+
+# ---------------------------------------------------------------------------
+# Step 7 - RIR, ASN Ranges, ASNs
+# ---------------------------------------------------------------------------
+rirs:
+  - { name: Private, slug: private, is_private: true }
+
+asn_ranges:
+  - { name: Lab ASN Range, rir: Private, start: 64512, end: 65534 }
+
+asns:
+  - { asn: 65001, description: dc1-spine1 }
+  - { asn: 65002, description: dc1-spine2 }
+  - { asn: 65003, description: dc1-leaf1 }
+  - { asn: 65004, description: dc1-leaf2 }
+
+# ---------------------------------------------------------------------------
+# Step 8 - VRFs, Route Targets, Prefix/VLAN Roles
+# ---------------------------------------------------------------------------
+vrfs:
+  - name: TENANT-1
+    rd: auto
+    description: "Tenant VRF (symmetric IRB)"
+    custom_fields:
+      l3vni: 5000
+      anycast_mac: "00:00:5e:00:01:01"
+    import_targets: ["65000:5000"]
+    export_targets: ["65000:5000"]
+
+route_targets:
+  - { name: "65000:5000",  description: "TENANT-1 L3VNI import/export" }
+  - { name: "65000:10010", description: "VLAN 10 L2VNI" }
+  - { name: "65000:10020", description: "VLAN 20 L2VNI" }
+
+roles:
+  - { name: Loopback,       slug: loopback,   description: "Router-ID and VTEP loopbacks" }
+  - { name: P2P Link,       slug: p2p-link,   description: "Point-to-point inter-switch links" }
+  - { name: Management,     slug: management, description: "OOB management network" }
+  - { name: Server,         slug: server,     description: "Server/host/tenant subnets" }
+  - { name: VXLAN,          slug: vxlan,       description: "VXLAN-extended L2 segments" }
+
+# ---------------------------------------------------------------------------
+# Step 9 - Aggregates, Prefixes
+# ---------------------------------------------------------------------------
+aggregates:
+  - { prefix: "10.0.0.0/8",     rir: Private, description: "Lab address space" }
+  - { prefix: "172.16.0.0/12",  rir: Private, description: "Management address space (env-specific)" }
+
+prefixes:
+  # Management - prefix value comes from $MGMT_SUBNET env var
+  - prefix: "$MGMT_SUBNET"
+    role: Management
+    description: "Lab management network"
+
+  # Loopbacks
+  - prefix: "10.0.0.0/24"
+    role: Loopback
+    description: "Loopback addresses"
+
+  # DC1 P2P
+  - { prefix: "10.0.1.0/24",  site: DC1, role: P2P Link, description: "DC1 spine-leaf P2P links" }
+  - { prefix: "10.0.1.0/31",  site: DC1, role: P2P Link, description: "spine1 - leaf1" }
+  - { prefix: "10.0.1.2/31",  site: DC1, role: P2P Link, description: "spine1 - leaf2" }
+  - { prefix: "10.0.1.4/31",  site: DC1, role: P2P Link, description: "spine2 - leaf1" }
+  - { prefix: "10.0.1.6/31",  site: DC1, role: P2P Link, description: "spine2 - leaf2" }
+
+  # Tenant subnets
+  - { prefix: "10.10.10.0/24", vrf: TENANT-1, role: Server, description: "VLAN 10 - Server subnet 1" }
+  - { prefix: "10.10.20.0/24", vrf: TENANT-1, role: Server, description: "VLAN 20 - Server subnet 2" }
+
+# ---------------------------------------------------------------------------
+# Step 10 - VLAN Groups, VLANs
+# ---------------------------------------------------------------------------
+vlan_groups:
+  - name: DC1-VLANs
+    scope_type: dcim.site
+    scope: DC1
+    description: "DC1 VLAN namespace"
+
+vlans:
+  - { vid: 10, name: SERVER-10, group: DC1-VLANs, status: active, role: VXLAN, custom_fields: { vni: 10010 }, description: "Server subnet 1" }
+  - { vid: 20, name: SERVER-20, group: DC1-VLANs, status: active, role: VXLAN, custom_fields: { vni: 10020 }, description: "Server subnet 2" }
+
+# ---------------------------------------------------------------------------
+# Step 11 - Devices
+# ASNs assigned via native relationship, mgmt IPs from env vars.
+# ---------------------------------------------------------------------------
+devices:
+  - name: dc1-spine1
+    device_type: EX9214
+    role: Spine
+    site: DC1
+    platform: Junos
+    status: active
+    asn: 65001
+    mgmt_ip: "$MGMT_dc1_spine1"
+    tags: [spine, dc1]
+
+  - name: dc1-spine2
+    device_type: EX9214
+    role: Spine
+    site: DC1
+    platform: Junos
+    status: active
+    asn: 65002
+    mgmt_ip: "$MGMT_dc1_spine2"
+    tags: [spine, dc1]
+
+  - name: dc1-leaf1
+    device_type: EX9214
+    role: Leaf
+    site: DC1
+    platform: Junos
+    status: active
+    asn: 65003
+    mgmt_ip: "$MGMT_dc1_leaf1"
+    tags: [leaf, dc1]
+
+  - name: dc1-leaf2
+    device_type: EX9214
+    role: Leaf
+    site: DC1
+    platform: Junos
+    status: active
+    asn: 65004
+    mgmt_ip: "$MGMT_dc1_leaf2"
+    tags: [leaf, dc1]
+
+  - name: dc1-host1
+    device_type: Container Host
+    role: Server
+    site: DC1
+    platform: Linux
+    status: active
+    tags: [dc1]
+
+  - name: dc1-host2
+    device_type: Container Host
+    role: Server
+    site: DC1
+    platform: Linux
+    status: active
+    tags: [dc1]
+
+  - name: dc1-host3
+    device_type: Container Host
+    role: Server
+    site: DC1
+    platform: Linux
+    status: active
+    tags: [dc1]
+
+# ---------------------------------------------------------------------------
+# Step 12 - IP Addresses
+# Interfaces are auto-created from device type templates.
+# ---------------------------------------------------------------------------
+loopback_ips:
+  - { device: dc1-spine1, interface: lo0, ip: "10.0.0.1/32", description: Router-ID }
+  - { device: dc1-spine2, interface: lo0, ip: "10.0.0.2/32", description: Router-ID }
+  - { device: dc1-leaf1,  interface: lo0, ip: "10.0.0.3/32", description: "Router-ID / VTEP" }
+  - { device: dc1-leaf2,  interface: lo0, ip: "10.0.0.4/32", description: "Router-ID / VTEP" }
+
+p2p_links:
+  - a_device: dc1-spine1
+    a_interface: ge-0/0/0
+    a_ip: "10.0.1.0/31"
+    z_device: dc1-leaf1
+    z_interface: ge-0/0/0
+    z_ip: "10.0.1.1/31"
+
+  - a_device: dc1-spine1
+    a_interface: ge-0/0/1
+    a_ip: "10.0.1.2/31"
+    z_device: dc1-leaf2
+    z_interface: ge-0/0/0
+    z_ip: "10.0.1.3/31"
+
+  - a_device: dc1-spine2
+    a_interface: ge-0/0/0
+    a_ip: "10.0.1.4/31"
+    z_device: dc1-leaf1
+    z_interface: ge-0/0/1
+    z_ip: "10.0.1.5/31"
+
+  - a_device: dc1-spine2
+    a_interface: ge-0/0/1
+    a_ip: "10.0.1.6/31"
+    z_device: dc1-leaf2
+    z_interface: ge-0/0/1
+    z_ip: "10.0.1.7/31"
+
+# ---------------------------------------------------------------------------
+# Step 13 - Cables
+# ---------------------------------------------------------------------------
+cables:
+  # Spine-leaf fabric
+  - { a_device: dc1-spine1, a_interface: ge-0/0/0, z_device: dc1-leaf1, z_interface: ge-0/0/0, label: sp1-lf1 }
+  - { a_device: dc1-spine1, a_interface: ge-0/0/1, z_device: dc1-leaf2, z_interface: ge-0/0/0, label: sp1-lf2 }
+  - { a_device: dc1-spine2, a_interface: ge-0/0/0, z_device: dc1-leaf1, z_interface: ge-0/0/1, label: sp2-lf1 }
+  - { a_device: dc1-spine2, a_interface: ge-0/0/1, z_device: dc1-leaf2, z_interface: ge-0/0/1, label: sp2-lf2 }
+  # Leaf-host
+  - { a_device: dc1-leaf1, a_interface: ge-0/0/2, z_device: dc1-host1, z_interface: eth0, label: lf1-h1 }
+  - { a_device: dc1-leaf2, a_interface: ge-0/0/2, z_device: dc1-host1, z_interface: eth1, label: lf2-h1 }
+  - { a_device: dc1-leaf1, a_interface: ge-0/0/3, z_device: dc1-host2, z_interface: eth0, label: lf1-h2 }
+  - { a_device: dc1-leaf2, a_interface: ge-0/0/3, z_device: dc1-host2, z_interface: eth1, label: lf2-h2 }
+  - { a_device: dc1-leaf1, a_interface: ge-0/0/4, z_device: dc1-host3, z_interface: eth0, label: lf1-h3 }
