@@ -19,7 +19,8 @@ Scope:
   - Connections: cables/links between devices (1:1 mapping with containerlab topology)
   - IP Addressing: management, loopback, P2P spine–leaf, host subnets
   - VLANs + VLAN Groups per site
-  - Custom Fields: ASN per device, VNI per VLAN, ESI per LAG, anycast MAC (prepared)
+  - Custom Fields: VNI per VLAN, ESI per LAG, anycast MAC (prepared)
+  - ASN modeled via native NetBox ASN objects (no custom field)
 - NetBox population:
   - Python script (pynetbox) loading the initial state - no manual GUI clicking
   - Script is part of the repo, repeatable (idempotent)
@@ -35,8 +36,8 @@ Topology: 2× spine, 2× leaf on vJunos-switch in containerlab.
 
 Scope:
 - Containerlab topology file (`.clab.yml`) with device and link definitions - mapped to NetBox
-- eBGP underlay (spine–leaf, unique ASN per leaf, shared ASN on spines or vice versa)
-- EVPN overlay with iBGP between leaves (route reflector on spines) or eBGP overlay
+- eBGP underlay with unique ASN per device (spine and leaf)
+- EVPN overlay with iBGP between leaves (route reflector on spines)
 - VXLAN with VNI → VLAN mapping
 - ESI-LAG (EVPN multihoming) between both leaves and a test host (Linux container)
 - Manual baseline verification: `show bgp summary`, `show evpn instance`, `show ethernet-switching table`
@@ -213,7 +214,7 @@ Result: multi-vendor, multi-DC EVPN-VXLAN with NetBox as single source of truth,
 ├── netbox/
 │   ├── docker-compose.yml
 │   ├── populate.py              # Idempotent NetBox population script
-│   └── custom_fields.yml        # Custom field definitions (ASN, VNI, ESI, anycast MAC)
+│   └── custom_fields.yml        # Custom field definitions (VNI, ESI, anycast MAC)
 ├── templates/
 │   ├── junos/
 │   └── eos/

@@ -1,8 +1,15 @@
 # NetBox Data Model - EVPN-VXLAN DC Fabric Lab
 
-This document defines every object that must be populated in NetBox to serve as Source of Truth for the EVPN-VXLAN lab. Objects are listed in dependency order - each section can only be created after all previous sections exist.
+This document defines every object that must be populated in NetBox to serve as Source of Truth for the EVPN-VXLAN lab. Objects are listed in dependency order (steps) - each step can only be created after all previous steps.
 
 Environment-specific values (NetBox URL, token, management IPs) are defined in `env.yml` outside this repo. See `.env.example` in the repo root.
+
+## Scope
+
+Objects are split into two groups:
+
+- **Phase 1 scope** (Steps 1-13) - core infrastructure model: custom fields, tags, regions, sites, device types, devices, interfaces, IPs, cables. Populated now.
+- **Pre-staged for later phases** (Steps 14-17) - overlay, L2VPN, IRB, config contexts. Defined here for completeness but populated when the corresponding project phase begins.
 
 ## Lab Topology
 
@@ -31,31 +38,34 @@ Environment-specific values (NetBox URL, token, management IPs) are defined in `
                         dual-homed to
                         both leaves)
 
-                DC2 (Arista cEOS - Phase 10)
+                DC2 (Arista cEOS - project Phase 10)
 ```
 
 - 2x spine (vJunos-switch, EX9214 model)
 - 2x leaf (vJunos-switch, EX9214 model)
 - 2-3x Linux containers as test hosts
-- eBGP underlay, EVPN overlay, VXLAN, ESI-LAG between leaves
+- eBGP underlay (unique ASN per device), EVPN overlay, VXLAN, ESI-LAG between leaves
 
 ---
 
-## Phase 1 - Custom Fields
+# Phase 1 Scope
+
+## Step 1 - Custom Fields
 
 | Name | Content Type | Type | Required | Description |
 |------|-------------|------|----------|-------------|
-| `bgp_asn` | dcim.device | Integer | No | BGP Autonomous System Number |
 | `vni` | ipam.vlan | Integer | No | VXLAN Network Identifier mapped to this VLAN |
 | `l3vni` | ipam.vrf | Integer | No | L3 VNI for symmetric IRB routing |
 | `esi` | dcim.interface | Text | No | Ethernet Segment Identifier (10-byte, colon-separated) |
-| `vtep_source` | dcim.device | Text | No | VTEP source interface (e.g. lo0.0) |
-| `route_distinguisher` | dcim.device | Text | No | BGP route distinguisher |
 | `anycast_mac` | ipam.vrf | Text | No | Shared anycast gateway MAC per VRF |
+
+> ASN is modeled using native NetBox ASN objects (Step 7), not a custom field - single source of truth.
+> VTEP source interface is a convention (lo0.0 on all leaves) defined in config context, not a per-device field.
+> Route distinguisher is derived from loopback IP at config render time, not stored.
 
 ---
 
-## Phase 2 - Tags
+## Step 2 - Tags
 
 | Name | Slug | Color | Description |
 |------|------|-------|-------------|
@@ -69,18 +79,18 @@ Environment-specific values (NetBox URL, token, management IPs) are defined in `
 | P2P | `p2p` | Cyan | Point-to-point link |
 | Loopback | `loopback` | Indigo | Loopback interface |
 | DC1 | `dc1` | Dark Blue | Data Center 1 (Juniper) |
-| DC2 | `dc2` | Dark Green | Data Center 2 (Arista, Phase 10) |
+| DC2 | `dc2` | Dark Green | Data Center 2 (Arista, project Phase 10) |
 
 ---
 
-## Phase 3 - Regions, Tenant Groups, Tenants
+## Step 3 - Regions, Tenant Groups, Tenants
 
 ### Regions
 
 ```
 Lab
- └── DC1
- └── DC2 (Phase 10)
+ +-- DC1
+ +-- DC2 (project Phase 10)
 ```
 
 ### Tenant
@@ -91,17 +101,17 @@ Lab
 
 ---
 
-## Phase 4 - Sites
+## Step 4 - Sites
 
 | Name | Slug | Region | Status | Tenant | Description |
 |------|------|--------|--------|--------|-------------|
 | DC1 | `dc1` | DC1 | Active | Lab Operations | Primary DC - Juniper fabric |
 
-> DC2 (Arista) added in Phase 10.
+> DC2 (Arista) added in project Phase 10.
 
 ---
 
-## Phase 5 - Manufacturers, Platforms, Device Roles
+## Step 5 - Manufacturers, Platforms, Device Roles
 
 ### Manufacturers
 
@@ -116,7 +126,7 @@ Lab
 | Name | Slug | Manufacturer | NAPALM Driver | Description |
 |------|------|-------------|---------------|-------------|
 | Junos | `junos` | Juniper | junos | Juniper JunOS |
-| EOS | `eos` | Arista | eos | Arista EOS (Phase 10) |
+| EOS | `eos` | Arista | eos | Arista EOS (project Phase 10) |
 | Linux | `linux` | Linux | - | Linux container host |
 
 ### Device Roles
@@ -129,7 +139,7 @@ Lab
 
 ---
 
-## Phase 6 - Device Types (with Interface Templates)
+## Step 6 - Device Types (with Interface Templates)
 
 ### Juniper EX9214 (Spines & Leaves)
 
@@ -177,7 +187,7 @@ vjunos-switch emulates an EX9214 chassis (SMBIOS product=VM-VEX). U height set t
 
 ---
 
-## Phase 7 - RIR, ASN Ranges, ASNs
+## Step 7 - RIR, ASN Ranges, ASNs
 
 ### RIR
 
@@ -193,18 +203,20 @@ vjunos-switch emulates an EX9214 chassis (SMBIOS product=VM-VEX). U height set t
 
 ### ASN Objects
 
-| ASN | Description |
-|-----|-------------|
-| 65001 | dc1-spine1 |
-| 65002 | dc1-spine2 |
-| 65003 | dc1-leaf1 |
-| 65004 | dc1-leaf2 |
+Assigned to devices via NetBox native ASN-to-device relationship (not a custom field).
 
-> eBGP underlay: unique ASN per device.
+| ASN | Description | Assigned to |
+|-----|-------------|-------------|
+| 65001 | dc1-spine1 | dc1-spine1 |
+| 65002 | dc1-spine2 | dc1-spine2 |
+| 65003 | dc1-leaf1 | dc1-leaf1 |
+| 65004 | dc1-leaf2 | dc1-leaf2 |
+
+> eBGP underlay: unique ASN per device. This is the single source of truth for ASN - no custom field duplication.
 
 ---
 
-## Phase 8 - VRFs, Route Targets, Prefix/VLAN Roles
+## Step 8 - VRFs, Route Targets, Prefix/VLAN Roles
 
 ### VRFs
 
@@ -227,13 +239,14 @@ vjunos-switch emulates an EX9214 chassis (SMBIOS product=VM-VEX). U height set t
 | Loopback | `loopback` | Router-ID and VTEP loopbacks |
 | P2P Link | `p2p-link` | Point-to-point inter-switch links |
 | Management | `management` | OOB management network |
-| Server | `server` | Server/host subnets |
+| Server | `server` | Server/host/tenant subnets |
 | VXLAN | `vxlan` | VXLAN-extended L2 segments |
-| Anycast Gateway | `anycast-gw` | IRB gateway subnets |
+
+> Removed "Anycast Gateway" as a prefix/VLAN role. Tenant subnets use the "Server" role. The anycast nature is expressed by the IP address role=`anycast` on the IRB interface, not by the prefix role.
 
 ---
 
-## Phase 9 - Aggregates, Prefixes
+## Step 9 - Aggregates, Prefixes
 
 ### Aggregates
 
@@ -252,17 +265,17 @@ vjunos-switch emulates an EX9214 chassis (SMBIOS product=VM-VEX). U height set t
 | 10.0.0.0/24 | - | - | Loopback | Loopback addresses |
 | **DC1 P2P** | | | | |
 | 10.0.1.0/24 | DC1 | - | P2P Link | DC1 spine-leaf P2P links |
-| 10.0.1.0/31 | DC1 | - | P2P Link | spine1 ↔ leaf1 |
-| 10.0.1.2/31 | DC1 | - | P2P Link | spine1 ↔ leaf2 |
-| 10.0.1.4/31 | DC1 | - | P2P Link | spine2 ↔ leaf1 |
-| 10.0.1.6/31 | DC1 | - | P2P Link | spine2 ↔ leaf2 |
+| 10.0.1.0/31 | DC1 | - | P2P Link | spine1 - leaf1 |
+| 10.0.1.2/31 | DC1 | - | P2P Link | spine1 - leaf2 |
+| 10.0.1.4/31 | DC1 | - | P2P Link | spine2 - leaf1 |
+| 10.0.1.6/31 | DC1 | - | P2P Link | spine2 - leaf2 |
 | **Tenant subnets** | | | | |
-| 10.10.10.0/24 | - | TENANT-1 | Anycast GW | VLAN 10 - Server subnet 1 |
-| 10.10.20.0/24 | - | TENANT-1 | Anycast GW | VLAN 20 - Server subnet 2 |
+| 10.10.10.0/24 | - | TENANT-1 | Server | VLAN 10 - Server subnet 1 |
+| 10.10.20.0/24 | - | TENANT-1 | Server | VLAN 20 - Server subnet 2 |
 
 ---
 
-## Phase 10 - VLAN Groups, VLANs
+## Step 10 - VLAN Groups, VLANs
 
 ### VLAN Groups
 
@@ -279,24 +292,25 @@ vjunos-switch emulates an EX9214 chassis (SMBIOS product=VM-VEX). U height set t
 
 ---
 
-## Phase 11 - Devices
+## Step 11 - Devices
 
-| Name | Device Type | Role | Site | Platform | Status | bgp_asn | vtep_source | mgmt IP | Tags |
-|------|------------|------|------|----------|--------|---------|-------------|---------|------|
-| dc1-spine1 | EX9214 | Spine | DC1 | Junos | Active | 65001 | - | `$MGMT_dc1_spine1` | spine, dc1 |
-| dc1-spine2 | EX9214 | Spine | DC1 | Junos | Active | 65002 | - | `$MGMT_dc1_spine2` | spine, dc1 |
-| dc1-leaf1 | EX9214 | Leaf | DC1 | Junos | Active | 65003 | lo0.0 | `$MGMT_dc1_leaf1` | leaf, dc1 |
-| dc1-leaf2 | EX9214 | Leaf | DC1 | Junos | Active | 65004 | lo0.0 | `$MGMT_dc1_leaf2` | leaf, dc1 |
-| dc1-host1 | Container Host | Server | DC1 | Linux | Active | - | - | - | dc1 |
-| dc1-host2 | Container Host | Server | DC1 | Linux | Active | - | - | - | dc1 |
-| dc1-host3 | Container Host | Server | DC1 | Linux | Active | - | - | - | dc1 |
+| Name | Device Type | Role | Site | Platform | Status | mgmt IP | Tags |
+|------|------------|------|------|----------|--------|---------|------|
+| dc1-spine1 | EX9214 | Spine | DC1 | Junos | Active | `$MGMT_dc1_spine1` | spine, dc1 |
+| dc1-spine2 | EX9214 | Spine | DC1 | Junos | Active | `$MGMT_dc1_spine2` | spine, dc1 |
+| dc1-leaf1 | EX9214 | Leaf | DC1 | Junos | Active | `$MGMT_dc1_leaf1` | leaf, dc1 |
+| dc1-leaf2 | EX9214 | Leaf | DC1 | Junos | Active | `$MGMT_dc1_leaf2` | leaf, dc1 |
+| dc1-host1 | Container Host | Server | DC1 | Linux | Active | - | dc1 |
+| dc1-host2 | Container Host | Server | DC1 | Linux | Active | - | dc1 |
+| dc1-host3 | Container Host | Server | DC1 | Linux | Active | - | dc1 |
 
 > Management IPs are environment-specific (defined in `env.yml`), assigned to `fxp0`, set as device `primary_ip4`.
+> ASNs assigned via native NetBox ASN-to-device relationship (see Step 7).
 > Hosts connect to leaves for traffic testing. No mgmt IP (accessed via containerlab).
 
 ---
 
-## Phase 12 - Interfaces & IP Addresses
+## Step 12 - Interfaces & IP Addresses
 
 ### Loopback IPs (assigned to lo0)
 
@@ -318,9 +332,33 @@ Full mesh: each spine connects to each leaf.
 | dc1-spine2 | ge-0/0/0 | 10.0.1.4/31 | dc1-leaf1 | ge-0/0/1 | 10.0.1.5/31 |
 | dc1-spine2 | ge-0/0/1 | 10.0.1.6/31 | dc1-leaf2 | ge-0/0/1 | 10.0.1.7/31 |
 
-### Host Interfaces
+---
 
-ESI-LAG: each host dual-homed to both leaves via bond0.
+## Step 13 - Cables
+
+| A-Device | A-Interface | Z-Device | Z-Interface | Label |
+|----------|-------------|----------|-------------|-------|
+| dc1-spine1 | ge-0/0/0 | dc1-leaf1 | ge-0/0/0 | sp1-lf1 |
+| dc1-spine1 | ge-0/0/1 | dc1-leaf2 | ge-0/0/0 | sp1-lf2 |
+| dc1-spine2 | ge-0/0/0 | dc1-leaf1 | ge-0/0/1 | sp2-lf1 |
+| dc1-spine2 | ge-0/0/1 | dc1-leaf2 | ge-0/0/1 | sp2-lf2 |
+| dc1-leaf1 | ge-0/0/2 | dc1-host1 | eth0 | lf1-h1 |
+| dc1-leaf2 | ge-0/0/2 | dc1-host1 | eth1 | lf2-h1 |
+| dc1-leaf1 | ge-0/0/3 | dc1-host2 | eth0 | lf1-h2 |
+| dc1-leaf2 | ge-0/0/3 | dc1-host2 | eth1 | lf2-h2 |
+| dc1-leaf1 | ge-0/0/4 | dc1-host3 | eth0 | lf1-h3 |
+
+**Total: 9 cables**
+
+---
+
+# Pre-staged for Later Phases
+
+The following objects are defined here for design completeness. They will be populated when the corresponding project phase begins.
+
+## Step 14 - Host & Leaf LAG Interfaces (project Phase 2)
+
+### Host Interfaces
 
 | Device | Interface | Type | Parent LAG | Connected to |
 |--------|-----------|------|------------|-------------|
@@ -343,7 +381,9 @@ ESI-LAG: each host dual-homed to both leaves via bond0.
 
 > Same ESI on both leaves = EVPN multihoming active-active.
 
-### IRB Interfaces (on leaves, for anycast gateway)
+---
+
+## Step 15 - IRB Interfaces (project Phase 7)
 
 | Device | Interface | Type | VRF | IP | Description |
 |--------|-----------|------|-----|-----|-------------|
@@ -356,25 +396,7 @@ ESI-LAG: each host dual-homed to both leaves via bond0.
 
 ---
 
-## Phase 13 - Cables
-
-| A-Device | A-Interface | Z-Device | Z-Interface | Label |
-|----------|-------------|----------|-------------|-------|
-| dc1-spine1 | ge-0/0/0 | dc1-leaf1 | ge-0/0/0 | sp1-lf1 |
-| dc1-spine1 | ge-0/0/1 | dc1-leaf2 | ge-0/0/0 | sp1-lf2 |
-| dc1-spine2 | ge-0/0/0 | dc1-leaf1 | ge-0/0/1 | sp2-lf1 |
-| dc1-spine2 | ge-0/0/1 | dc1-leaf2 | ge-0/0/1 | sp2-lf2 |
-| dc1-leaf1 | ge-0/0/2 | dc1-host1 | eth0 | lf1-h1 |
-| dc1-leaf2 | ge-0/0/2 | dc1-host1 | eth1 | lf2-h1 |
-| dc1-leaf1 | ge-0/0/3 | dc1-host2 | eth0 | lf1-h2 |
-| dc1-leaf2 | ge-0/0/3 | dc1-host2 | eth1 | lf2-h2 |
-| dc1-leaf1 | ge-0/0/4 | dc1-host3 | eth0 | lf1-h3 |
-
-**Total: 9 cables**
-
----
-
-## Phase 14 - L2VPN (VXLAN-EVPN instances)
+## Step 16 - L2VPN (project Phase 2)
 
 | Name | Slug | Type | Identifier (VNI) | Import Targets | Export Targets |
 |------|------|------|-------------------|---------------|----------------|
@@ -385,9 +407,9 @@ ESI-LAG: each host dual-homed to both leaves via bond0.
 
 ---
 
-## Phase 15 - Config Contexts
+## Step 17 - Config Contexts (project Phases 2, 8)
 
-### 1. Underlay BGP (assigned to roles: Spine, Leaf)
+### 1. Underlay BGP (assigned to roles: Spine, Leaf) - project Phase 2
 
 ```json
 {
@@ -400,7 +422,7 @@ ESI-LAG: each host dual-homed to both leaves via bond0.
 }
 ```
 
-### 2. Overlay EVPN - Leaf (assigned to role: Leaf)
+### 2. Overlay EVPN - Leaf (assigned to role: Leaf) - project Phase 2
 
 ```json
 {
@@ -413,7 +435,7 @@ ESI-LAG: each host dual-homed to both leaves via bond0.
 }
 ```
 
-### 3. Overlay EVPN - Spine / Route Reflector (assigned to role: Spine)
+### 3. Overlay EVPN - Spine / Route Reflector (assigned to role: Spine) - project Phase 2
 
 ```json
 {
@@ -425,7 +447,7 @@ ESI-LAG: each host dual-homed to both leaves via bond0.
 }
 ```
 
-### 4. Hardening (global - Phase 8 prep)
+### 4. Hardening (global) - project Phase 8
 
 ```json
 {
@@ -441,11 +463,13 @@ ESI-LAG: each host dual-homed to both leaves via bond0.
 
 ---
 
-## Summary
+# Summary
+
+### Phase 1 scope (Steps 1-13)
 
 | Object Type | Count |
 |-------------|-------|
-| Custom Fields | 7 |
+| Custom Fields | 4 |
 | Tags | 11 |
 | Regions | 2 |
 | Tenants | 1 |
@@ -461,18 +485,26 @@ ESI-LAG: each host dual-homed to both leaves via bond0.
 | VLANs | 2 |
 | Devices | 7 |
 | Prefixes | ~12 |
-| IP Addresses | ~20 |
+| IP Addresses | ~12 |
 | Cables | 9 |
-| L2VPN Instances | 2 |
-| Config Contexts | 4 |
-| **Total** | **~85 objects** |
+| **Phase 1 total** | **~80 objects** |
+
+### Pre-staged for later (Steps 14-17)
+
+| Object Type | Phase | Count |
+|-------------|-------|-------|
+| LAG Interfaces | 2 | ~10 |
+| IRB Interfaces + IPs | 7 | ~8 |
+| L2VPN Instances | 2 | 2 |
+| Config Contexts | 2, 8 | 4 |
 
 ---
 
 ## Notes
 
 - **Idempotency:** Population script must use `get_or_create` pattern.
-- **Ordering:** Create objects in phase order (dependencies).
-- **DC2 (Arista):** Added in Phase 10 - new site, cEOS device types, EOS platform, same IP/VLAN structure.
-- **Naming:** Generic `dc1-spine1` convention, no company-specific names.
-- **Overlaid.net learnings:** Minimal custom fields (scalars), config contexts for structured role-wide data.
+- **Step ordering:** Create objects in step order (dependencies).
+- **ASN modeling:** Native NetBox ASN objects only - no custom field. Query via API relationship.
+- **Derived values:** Route distinguisher derived from loopback IP at config render time. VTEP source is a role convention in config context (`lo0.0` for all leaves).
+- **Prefix roles:** Tenant subnets have role "Server". The anycast nature is on the IP address (role=`anycast`), not the prefix.
+- **DC2 (Arista):** Added in project Phase 10 - new site, cEOS device types, EOS platform.
