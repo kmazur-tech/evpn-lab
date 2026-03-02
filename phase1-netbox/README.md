@@ -12,15 +12,20 @@ NetBox serves as the single source of truth for the entire EVPN-VXLAN fabric. Ev
 
 ## Environment Setup
 
-Environment-specific values (IPs, tokens, credentials) live outside this repo.
+Environment-specific values (IPs, tokens, credentials) are passed as environment variables. They never appear in the repo.
 
-1. Copy `.env.example` from the repo root to your env location
+1. Copy `.env.example` from the repo root
 2. Fill in your NetBox URL, API token, and management IPs
-3. Export the variables or point `populate.py` at your env file
+3. Export the variables before running `populate.py`
 
 ```bash
 export NETBOX_URL=http://<your-netbox-host>:8000
 export NETBOX_TOKEN=<your-api-token>
+export MGMT_SUBNET=<your-mgmt-cidr>
+export MGMT_dc1_spine1=<ip/mask>
+export MGMT_dc1_spine2=<ip/mask>
+export MGMT_dc1_leaf1=<ip/mask>
+export MGMT_dc1_leaf2=<ip/mask>
 ```
 
 ## Design Decisions
@@ -83,6 +88,7 @@ The model separates:
 | File | Description |
 |------|-------------|
 | `NETBOX_DATA_MODEL.md` | Complete NetBox object inventory (dependency-ordered, 17 steps) |
+| `netbox-data.yml` | Structured YAML data consumed by `populate.py` (Steps 1-13) |
 | `populate.py` | Idempotent Python script to populate NetBox via pynetbox (TODO) |
 | `requirements.txt` | Python dependencies (TODO) |
 

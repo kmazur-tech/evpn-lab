@@ -1,7 +1,7 @@
-# NetBox population config - EVPN-VXLAN DC Fabric Lab
-# This file contains all data for populate.py (Steps 1-13).
-# Environment-specific values (NetBox URL, token, mgmt IPs) come from
-# environment variables - see .env.example in repo root.
+# NetBox population data - EVPN-VXLAN DC Fabric Lab
+# This file contains all Phase 1 objects for populate.py (Steps 1-13).
+# Environment-specific values use $VARIABLE placeholders, resolved from
+# environment variables at runtime. See .env.example in repo root.
 
 # ---------------------------------------------------------------------------
 # Step 1 - Custom Fields

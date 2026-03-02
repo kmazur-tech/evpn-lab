@@ -2,7 +2,7 @@
 
 This document defines every object that must be populated in NetBox to serve as Source of Truth for the EVPN-VXLAN lab. Objects are listed in dependency order (steps) - each step can only be created after all previous steps.
 
-Environment-specific values (NetBox URL, token, management IPs) are defined in `env.yml` outside this repo. See `.env.example` in the repo root.
+Environment-specific values (NetBox URL, token, management IPs) are passed as environment variables. See `.env.example` in the repo root for the required variables.
 
 ## Scope
 
