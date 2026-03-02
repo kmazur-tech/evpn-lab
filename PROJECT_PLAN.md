@@ -1,14 +1,14 @@
-# EVPN-VXLAN DC Fabric — NetDevOps Lab
+# EVPN-VXLAN DC Fabric - NetDevOps Lab
 
 Building an automated EVPN-VXLAN data center fabric using containerlab, with NetBox as Source of Truth, a full CI/CD pipeline, configuration validation, security hardening, and multi-vendor DCI extension.
 
-Goal: build a complete, repeatable workflow for managing DC network infrastructure using an Infrastructure as Code approach — from planning in NetBox to operational state validation.
+Goal: build a complete, repeatable workflow for managing DC network infrastructure using an Infrastructure as Code approach - from planning in NetBox to operational state validation.
 
 ---
 
-## Phase 1 — NetBox as Source of Truth
+## Phase 1 - NetBox as Source of Truth
 
-A central source of truth for the entire infrastructure. Every piece of network information lives in NetBox — not in YAML files, not in someone's head, not in spreadsheets.
+A central source of truth for the entire infrastructure. Every piece of network information lives in NetBox - not in YAML files, not in someone's head, not in spreadsheets.
 
 Scope:
 - NetBox container in docker-compose (NetBox + PostgreSQL + Redis)
@@ -21,7 +21,7 @@ Scope:
   - VLANs + VLAN Groups per site
   - Custom Fields: ASN per device, VNI per VLAN, ESI per LAG, anycast MAC (prepared)
 - NetBox population:
-  - Python script (pynetbox) loading the initial state — no manual GUI clicking
+  - Python script (pynetbox) loading the initial state - no manual GUI clicking
   - Script is part of the repo, repeatable (idempotent)
 - Documentation: design decisions (why this addressing scheme, why these ASNs, naming conventions)
 
@@ -29,12 +29,12 @@ Result: a complete network model in NetBox, ready for consumption by Nornir.
 
 ---
 
-## Phase 2 — EVPN+VXLAN+ESI-LAG Fabric
+## Phase 2 - EVPN+VXLAN+ESI-LAG Fabric
 
 Topology: 2× spine, 2× leaf on vJunos-switch in containerlab.
 
 Scope:
-- Containerlab topology file (`.clab.yml`) with device and link definitions — mapped to NetBox
+- Containerlab topology file (`.clab.yml`) with device and link definitions - mapped to NetBox
 - eBGP underlay (spine–leaf, unique ASN per leaf, shared ASN on spines or vice versa)
 - EVPN overlay with iBGP between leaves (route reflector on spines) or eBGP overlay
 - VXLAN with VNI → VLAN mapping
@@ -45,13 +45,13 @@ Result: a working fabric with L2/L3 traffic passing between hosts over VXLAN.
 
 ---
 
-## Phase 3 — Nornir IaC Framework
+## Phase 3 - Nornir IaC Framework
 
-Replacing manual device configuration with an Infrastructure as Code framework — Nornir pulls data from NetBox, renders configurations, and deploys them.
+Replacing manual device configuration with an Infrastructure as Code framework - Nornir pulls data from NetBox, renders configurations, and deploys them.
 
 Scope:
 - Nornir with `nornir-netbox` plugin as inventory (hosts, groups, per-device data from NetBox API)
-- Additional data from NetBox: VLANs, VNIs, ASNs, interfaces, addressing — fetched via pynetbox in tasks
+- Additional data from NetBox: VLANs, VNIs, ASNs, interfaces, addressing - fetched via pynetbox in tasks
 - Jinja2 templates generating Junos configuration from NetBox data
 - Nornir with NAPALM driver (junos) for configuration deployment
 - `deploy.py` script as entry point: fetch from NetBox → render → deploy → report
@@ -61,7 +61,7 @@ Result: `python deploy.py` builds the full fabric from zero to production. Chang
 
 ---
 
-## Phase 4 — Batfish Pre-Deployment Validation
+## Phase 4 - Batfish Pre-Deployment Validation
 
 Offline validation of generated configurations before deploying them to devices.
 
@@ -80,9 +80,9 @@ Result: configuration errors caught before touching any device.
 
 ---
 
-## Phase 5 — Suzieq Post-Deployment Validation
+## Phase 5 - Suzieq Post-Deployment Validation
 
-Operational state validation after deployment — does what's running match the intent in NetBox.
+Operational state validation after deployment - does what's running match the intent in NetBox.
 
 Scope:
 - Suzieq collecting data from devices (SSH/NETCONF) after deployment
@@ -99,20 +99,20 @@ Result: automated verification that the fabric operates according to intent.
 
 ---
 
-## Phase 6 — GitHub Actions CI/CD Pipeline
+## Phase 6 - GitHub Actions CI/CD Pipeline
 
 Connecting all components into an automated pipeline triggered on every PUSH/PR.
 
 Scope:
 - Workflow `.github/workflows/fabric-ci.yml`
 - Pipeline stages:
-  1. **Lint** — yamllint, flake8/ruff on Python, Jinja2 template validation
-  2. **Render** — Nornir fetches intent from NetBox → generates configurations
-  3. **Batfish Validate** — offline analysis of generated configs + differential analysis
-  4. **Batfish Results → PR Comment** — bot posts to PR what will change (new BGP sessions, modified ACLs, affected prefixes)
-  5. **Deploy** — containerlab up + Nornir deploy (optional, `workflow_dispatch` on self-hosted runner)
-  6. **Suzieq Assert** — operational state validation after deployment
-  7. **Teardown** — containerlab destroy
+  1. **Lint** - yamllint, flake8/ruff on Python, Jinja2 template validation
+  2. **Render** - Nornir fetches intent from NetBox → generates configurations
+  3. **Batfish Validate** - offline analysis of generated configs + differential analysis
+  4. **Batfish Results → PR Comment** - bot posts to PR what will change (new BGP sessions, modified ACLs, affected prefixes)
+  5. **Deploy** - containerlab up + Nornir deploy (optional, `workflow_dispatch` on self-hosted runner)
+  6. **Suzieq Assert** - operational state validation after deployment
+  7. **Teardown** - containerlab destroy
 - Stages 5–7 may live in a separate workflow (spinning up the lab in CI is resource-intensive)
 - Pipeline status badge in README
 
@@ -120,13 +120,13 @@ Result: every change to NetBox/templates is automatically validated. PRs include
 
 ---
 
-## Phase 7 — ECMP + Active-Active Anycast Gateway
+## Phase 7 - ECMP + Active-Active Anycast Gateway
 
 Extending the fabric with symmetric routing and a redundant default gateway.
 
 Scope:
 - ECMP in the underlay (multipath routing spine–leaf)
-- Anycast gateway on IRB — same IP and MAC on both leaves as the host gateway
+- Anycast gateway on IRB - same IP and MAC on both leaves as the host gateway
 - Type-5 routing (IP prefix routes) in EVPN for inter-VLAN traffic
 - NetBox update: IRB interfaces, anycast MAC in custom fields, L3 subnets
 - New Jinja2 templates for IRB and routing-instance configuration
@@ -137,7 +137,7 @@ Result: fabric with full L2/L3 routing, redundancy, and load balancing.
 
 ---
 
-## Phase 8 — CIS / PCI-DSS Hardening
+## Phase 8 - CIS / PCI-DSS Hardening
 
 Securing the fabric according to CIS Junos benchmarks and PCI-DSS v4.0 requirements.
 
@@ -158,14 +158,14 @@ Scope:
   - Login banner
   - Configuration change logging
 - Extended Batfish validation for hardening controls (management ACL, protocol filtering)
-- Helper container with NTP/syslog/RADIUS/TACACS+ — docker-compose, outside the main lab scope, deployed manually or via script
+- Helper container with NTP/syslog/RADIUS/TACACS+ - docker-compose, outside the main lab scope, deployed manually or via script
 - Documentation: mapping of CIS/PCI-DSS controls → Junos configuration → NetBox data
 
 Result: hardened fabric with documented security controls, hardening parameters managed from NetBox.
 
 ---
 
-## Phase 9 — gNMI Monitoring
+## Phase 9 - gNMI Monitoring
 
 Streaming telemetry from devices to a monitoring stack.
 
@@ -185,7 +185,7 @@ Result: devices streaming telemetry, ready for consumption by Prometheus/Grafana
 
 ---
 
-## Phase 10 — Second DC (Arista cEOS) + DCI
+## Phase 10 - Second DC (Arista cEOS) + DCI
 
 Extending with a second datacenter on a different vendor and inter-DC connectivity.
 
@@ -199,7 +199,7 @@ Scope:
 - Extended Batfish with EOS configurations (Batfish supports both NOSes natively)
 - Extended Suzieq with cross-DC assertions (EVPN routes from DC1 visible in DC2 and vice versa)
 - Tests: L2 stretched traffic between DCs, L3 inter-DC traffic, border leaf failover
-- DC2 hardening — same controls from Phase 8, different templates (EOS)
+- DC2 hardening - same controls from Phase 8, different templates (EOS)
 
 Result: multi-vendor, multi-DC EVPN-VXLAN with NetBox as single source of truth, full CI/CD pipeline, and end-to-end validation.
 
@@ -242,7 +242,7 @@ Result: multi-vendor, multi-DC EVPN-VXLAN with NetBox as single source of truth,
 
 ---
 
-## Pipeline — Full Workflow
+## Pipeline - Full Workflow
 
 ```
 NetBox (SoT)

@@ -1,6 +1,6 @@
-# Phase 1 — NetBox as Source of Truth
+# Phase 1 - NetBox as Source of Truth
 
-NetBox serves as the single source of truth for the entire EVPN-VXLAN fabric. Every piece of network data — devices, interfaces, IPs, VLANs, ASNs, cabling — lives here and is consumed by automation in later phases.
+NetBox serves as the single source of truth for the entire EVPN-VXLAN fabric. Every piece of network data - devices, interfaces, IPs, VLANs, ASNs, cabling - lives here and is consumed by automation in later phases.
 
 ## Design Decisions
 
@@ -18,10 +18,10 @@ NetBox serves as the single source of truth for the entire EVPN-VXLAN fabric. Ev
 | `$MGMT_SUBNET` | Management (OOB, containerlab mgmt bridge) |
 | 10.0.0.0/24 | Loopbacks (router-ID, VTEP source) |
 | 10.0.1.0/24 | DC1 point-to-point spine-leaf links (/31s) |
-| 10.10.10.0/24 | VLAN 10 — tenant server subnet |
-| 10.10.20.0/24 | VLAN 20 — tenant server subnet |
+| 10.10.10.0/24 | VLAN 10 - tenant server subnet |
+| 10.10.20.0/24 | VLAN 20 - tenant server subnet |
 
-Management addressing is environment-specific — see `.env.example` in the repo root.
+Management addressing is environment-specific - see `.env.example` in the repo root.
 
 ### BGP ASN Allocation
 
@@ -36,8 +36,8 @@ eBGP underlay with unique ASN per device:
 
 ### Custom Fields vs Config Contexts
 
-- **Custom fields** — scalar per-object values consumed directly in templates: `bgp_asn`, `vni`, `esi`, `vtep_source`, `route_distinguisher`, `l3vni`, `anycast_mac`
-- **Config contexts** — structured data assigned by role/site, merged at query time: underlay BGP settings, overlay EVPN settings, hardening parameters
+- **Custom fields** - scalar per-object values consumed directly in templates: `bgp_asn`, `vni`, `esi`, `vtep_source`, `route_distinguisher`, `l3vni`, `anycast_mac`
+- **Config contexts** - structured data assigned by role/site, merged at query time: underlay BGP settings, overlay EVPN settings, hardening parameters
 
 ### VXLAN / EVPN Modeling
 
@@ -68,6 +68,6 @@ export NETBOX_TOKEN=<your-api-token>
 # 2. Install dependencies
 pip install pynetbox
 
-# 3. Populate NetBox (idempotent — safe to re-run)
+# 3. Populate NetBox (idempotent - safe to re-run)
 python populate.py
 ```

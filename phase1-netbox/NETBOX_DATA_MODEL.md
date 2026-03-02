@@ -1,20 +1,37 @@
-# NetBox Data Model — EVPN-VXLAN DC Fabric Lab
+# NetBox Data Model - EVPN-VXLAN DC Fabric Lab
 
-This document defines every object that must be populated in NetBox to serve as Source of Truth for the EVPN-VXLAN lab. Objects are listed in dependency order — each section can only be created after all previous sections exist.
+This document defines every object that must be populated in NetBox to serve as Source of Truth for the EVPN-VXLAN lab. Objects are listed in dependency order - each section can only be created after all previous sections exist.
 
 Environment-specific values (NetBox URL, token, management IPs) are defined in `env.yml` outside this repo. See `.env.example` in the repo root.
 
 ## Lab Topology
 
 ```
-         DC1 (Juniper vJunos)              DC2 (Arista cEOS — Phase 10)
-    ┌─────────────────────────┐
-    │  dc1-spine1   dc1-spine2│
-    │     ╲  ╳  ╱     │
-    │  dc1-leaf1    dc1-leaf2 │
-    │     │    │      │    │  │
-    │  host1  host2  host3    │
-    └─────────────────────────┘
+                        DC1 (Juniper vJunos)
+
+                +--------------+  +--------------+
+                |  dc1-spine1  |  |  dc1-spine2  |
+                +------+---+--+  +--+---+-------+
+                       |   |        |   |
+                   +---+   +----+---+   +---+
+                   |            X           |
+                   +---+   +----+---+   +---+
+                       |   |        |   |
+                +------+---+--+  +--+---+-------+
+                |  dc1-leaf1  |  |  dc1-leaf2   |
+                +----+--+--+-+  +-+--+--+-------+
+                     |  |  |      |  |  |
+                     |  |  +--++--+  |  |
+                     |  +--+--||--+--+  |
+                     |     |  ||  |     |
+                  +--+-+ +-+--++--+-+ +-+--+
+                  |host1| |  host2  | |host3|
+                  +-----+ +--(ae0)-+ +-----+
+                           (ESI-LAG,
+                        dual-homed to
+                        both leaves)
+
+                DC2 (Arista cEOS - Phase 10)
 ```
 
 - 2x spine (vJunos-switch, EX9214 model)
@@ -24,7 +41,7 @@ Environment-specific values (NetBox URL, token, management IPs) are defined in `
 
 ---
 
-## Phase 1 — Custom Fields
+## Phase 1 - Custom Fields
 
 | Name | Content Type | Type | Required | Description |
 |------|-------------|------|----------|-------------|
@@ -38,7 +55,7 @@ Environment-specific values (NetBox URL, token, management IPs) are defined in `
 
 ---
 
-## Phase 2 — Tags
+## Phase 2 - Tags
 
 | Name | Slug | Color | Description |
 |------|------|-------|-------------|
@@ -56,7 +73,7 @@ Environment-specific values (NetBox URL, token, management IPs) are defined in `
 
 ---
 
-## Phase 3 — Regions, Tenant Groups, Tenants
+## Phase 3 - Regions, Tenant Groups, Tenants
 
 ### Regions
 
@@ -74,17 +91,17 @@ Lab
 
 ---
 
-## Phase 4 — Sites
+## Phase 4 - Sites
 
 | Name | Slug | Region | Status | Tenant | Description |
 |------|------|--------|--------|--------|-------------|
-| DC1 | `dc1` | DC1 | Active | Lab Operations | Primary DC — Juniper fabric |
+| DC1 | `dc1` | DC1 | Active | Lab Operations | Primary DC - Juniper fabric |
 
 > DC2 (Arista) added in Phase 10.
 
 ---
 
-## Phase 5 — Manufacturers, Platforms, Device Roles
+## Phase 5 - Manufacturers, Platforms, Device Roles
 
 ### Manufacturers
 
@@ -100,7 +117,7 @@ Lab
 |------|------|-------------|---------------|-------------|
 | Junos | `junos` | Juniper | junos | Juniper JunOS |
 | EOS | `eos` | Arista | eos | Arista EOS (Phase 10) |
-| Linux | `linux` | Linux | — | Linux container host |
+| Linux | `linux` | Linux | - | Linux container host |
 
 ### Device Roles
 
@@ -112,7 +129,7 @@ Lab
 
 ---
 
-## Phase 6 — Device Types (with Interface Templates)
+## Phase 6 - Device Types (with Interface Templates)
 
 ### Juniper EX9214 (Spines & Leaves)
 
@@ -160,7 +177,7 @@ vjunos-switch emulates an EX9214 chassis (SMBIOS product=VM-VEX). U height set t
 
 ---
 
-## Phase 7 — RIR, ASN Ranges, ASNs
+## Phase 7 - RIR, ASN Ranges, ASNs
 
 ### RIR
 
@@ -187,7 +204,7 @@ vjunos-switch emulates an EX9214 chassis (SMBIOS product=VM-VEX). U height set t
 
 ---
 
-## Phase 8 — VRFs, Route Targets, Prefix/VLAN Roles
+## Phase 8 - VRFs, Route Targets, Prefix/VLAN Roles
 
 ### VRFs
 
@@ -216,7 +233,7 @@ vjunos-switch emulates an EX9214 chassis (SMBIOS product=VM-VEX). U height set t
 
 ---
 
-## Phase 9 — Aggregates, Prefixes
+## Phase 9 - Aggregates, Prefixes
 
 ### Aggregates
 
@@ -230,22 +247,22 @@ vjunos-switch emulates an EX9214 chassis (SMBIOS product=VM-VEX). U height set t
 | Prefix | Site | VRF | Role | Description |
 |--------|------|-----|------|-------------|
 | **Management** | | | | |
-| `$MGMT_SUBNET` | — | — | Management | Lab management network |
+| `$MGMT_SUBNET` | - | - | Management | Lab management network |
 | **Loopbacks** | | | | |
-| 10.0.0.0/24 | — | — | Loopback | Loopback addresses |
+| 10.0.0.0/24 | - | - | Loopback | Loopback addresses |
 | **DC1 P2P** | | | | |
-| 10.0.1.0/24 | DC1 | — | P2P Link | DC1 spine-leaf P2P links |
-| 10.0.1.0/31 | DC1 | — | P2P Link | spine1 ↔ leaf1 |
-| 10.0.1.2/31 | DC1 | — | P2P Link | spine1 ↔ leaf2 |
-| 10.0.1.4/31 | DC1 | — | P2P Link | spine2 ↔ leaf1 |
-| 10.0.1.6/31 | DC1 | — | P2P Link | spine2 ↔ leaf2 |
+| 10.0.1.0/24 | DC1 | - | P2P Link | DC1 spine-leaf P2P links |
+| 10.0.1.0/31 | DC1 | - | P2P Link | spine1 ↔ leaf1 |
+| 10.0.1.2/31 | DC1 | - | P2P Link | spine1 ↔ leaf2 |
+| 10.0.1.4/31 | DC1 | - | P2P Link | spine2 ↔ leaf1 |
+| 10.0.1.6/31 | DC1 | - | P2P Link | spine2 ↔ leaf2 |
 | **Tenant subnets** | | | | |
-| 10.10.10.0/24 | — | TENANT-1 | Anycast GW | VLAN 10 — Server subnet 1 |
-| 10.10.20.0/24 | — | TENANT-1 | Anycast GW | VLAN 20 — Server subnet 2 |
+| 10.10.10.0/24 | - | TENANT-1 | Anycast GW | VLAN 10 - Server subnet 1 |
+| 10.10.20.0/24 | - | TENANT-1 | Anycast GW | VLAN 20 - Server subnet 2 |
 
 ---
 
-## Phase 10 — VLAN Groups, VLANs
+## Phase 10 - VLAN Groups, VLANs
 
 ### VLAN Groups
 
@@ -262,24 +279,24 @@ vjunos-switch emulates an EX9214 chassis (SMBIOS product=VM-VEX). U height set t
 
 ---
 
-## Phase 11 — Devices
+## Phase 11 - Devices
 
 | Name | Device Type | Role | Site | Platform | Status | bgp_asn | vtep_source | mgmt IP | Tags |
 |------|------------|------|------|----------|--------|---------|-------------|---------|------|
-| dc1-spine1 | EX9214 | Spine | DC1 | Junos | Active | 65001 | — | `$MGMT_dc1_spine1` | spine, dc1 |
-| dc1-spine2 | EX9214 | Spine | DC1 | Junos | Active | 65002 | — | `$MGMT_dc1_spine2` | spine, dc1 |
+| dc1-spine1 | EX9214 | Spine | DC1 | Junos | Active | 65001 | - | `$MGMT_dc1_spine1` | spine, dc1 |
+| dc1-spine2 | EX9214 | Spine | DC1 | Junos | Active | 65002 | - | `$MGMT_dc1_spine2` | spine, dc1 |
 | dc1-leaf1 | EX9214 | Leaf | DC1 | Junos | Active | 65003 | lo0.0 | `$MGMT_dc1_leaf1` | leaf, dc1 |
 | dc1-leaf2 | EX9214 | Leaf | DC1 | Junos | Active | 65004 | lo0.0 | `$MGMT_dc1_leaf2` | leaf, dc1 |
-| dc1-host1 | Container Host | Server | DC1 | Linux | Active | — | — | — | dc1 |
-| dc1-host2 | Container Host | Server | DC1 | Linux | Active | — | — | — | dc1 |
-| dc1-host3 | Container Host | Server | DC1 | Linux | Active | — | — | — | dc1 |
+| dc1-host1 | Container Host | Server | DC1 | Linux | Active | - | - | - | dc1 |
+| dc1-host2 | Container Host | Server | DC1 | Linux | Active | - | - | - | dc1 |
+| dc1-host3 | Container Host | Server | DC1 | Linux | Active | - | - | - | dc1 |
 
 > Management IPs are environment-specific (defined in `env.yml`), assigned to `fxp0`, set as device `primary_ip4`.
 > Hosts connect to leaves for traffic testing. No mgmt IP (accessed via containerlab).
 
 ---
 
-## Phase 12 — Interfaces & IP Addresses
+## Phase 12 - Interfaces & IP Addresses
 
 ### Loopback IPs (assigned to lo0)
 
@@ -309,11 +326,11 @@ ESI-LAG: each host dual-homed to both leaves via bond0.
 |--------|-----------|------|------------|-------------|
 | dc1-host1 | eth0 | 1000BASE-T | bond0 | dc1-leaf1 ge-0/0/2 |
 | dc1-host1 | eth1 | 1000BASE-T | bond0 | dc1-leaf2 ge-0/0/2 |
-| dc1-host1 | bond0 | LAG | — | — |
+| dc1-host1 | bond0 | LAG | - | - |
 | dc1-host2 | eth0 | 1000BASE-T | bond0 | dc1-leaf1 ge-0/0/3 |
 | dc1-host2 | eth1 | 1000BASE-T | bond0 | dc1-leaf2 ge-0/0/3 |
-| dc1-host2 | bond0 | LAG | — | — |
-| dc1-host3 | eth0 | 1000BASE-T | — | dc1-leaf1 ge-0/0/4 |
+| dc1-host2 | bond0 | LAG | - | - |
+| dc1-host3 | eth0 | 1000BASE-T | - | dc1-leaf1 ge-0/0/4 |
 
 ### Leaf ESI-LAG Interfaces
 
@@ -339,7 +356,7 @@ ESI-LAG: each host dual-homed to both leaves via bond0.
 
 ---
 
-## Phase 13 — Cables
+## Phase 13 - Cables
 
 | A-Device | A-Interface | Z-Device | Z-Interface | Label |
 |----------|-------------|----------|-------------|-------|
@@ -357,7 +374,7 @@ ESI-LAG: each host dual-homed to both leaves via bond0.
 
 ---
 
-## Phase 14 — L2VPN (VXLAN-EVPN instances)
+## Phase 14 - L2VPN (VXLAN-EVPN instances)
 
 | Name | Slug | Type | Identifier (VNI) | Import Targets | Export Targets |
 |------|------|------|-------------------|---------------|----------------|
@@ -368,7 +385,7 @@ ESI-LAG: each host dual-homed to both leaves via bond0.
 
 ---
 
-## Phase 15 — Config Contexts
+## Phase 15 - Config Contexts
 
 ### 1. Underlay BGP (assigned to roles: Spine, Leaf)
 
@@ -383,7 +400,7 @@ ESI-LAG: each host dual-homed to both leaves via bond0.
 }
 ```
 
-### 2. Overlay EVPN — Leaf (assigned to role: Leaf)
+### 2. Overlay EVPN - Leaf (assigned to role: Leaf)
 
 ```json
 {
@@ -396,7 +413,7 @@ ESI-LAG: each host dual-homed to both leaves via bond0.
 }
 ```
 
-### 3. Overlay EVPN — Spine / Route Reflector (assigned to role: Spine)
+### 3. Overlay EVPN - Spine / Route Reflector (assigned to role: Spine)
 
 ```json
 {
@@ -408,7 +425,7 @@ ESI-LAG: each host dual-homed to both leaves via bond0.
 }
 ```
 
-### 4. Hardening (global — Phase 8 prep)
+### 4. Hardening (global - Phase 8 prep)
 
 ```json
 {
@@ -456,6 +473,6 @@ ESI-LAG: each host dual-homed to both leaves via bond0.
 
 - **Idempotency:** Population script must use `get_or_create` pattern.
 - **Ordering:** Create objects in phase order (dependencies).
-- **DC2 (Arista):** Added in Phase 10 — new site, cEOS device types, EOS platform, same IP/VLAN structure.
+- **DC2 (Arista):** Added in Phase 10 - new site, cEOS device types, EOS platform, same IP/VLAN structure.
 - **Naming:** Generic `dc1-spine1` convention, no company-specific names.
 - **Overlaid.net learnings:** Minimal custom fields (scalars), config contexts for structured role-wide data.
