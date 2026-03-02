@@ -17,8 +17,8 @@ Environment-specific values (NetBox URL, token, management IPs) are defined in `
     └─────────────────────────┘
 ```
 
-- 2x spine (vJunos-switch, QFX5120-48Y model)
-- 2x leaf (vJunos-switch, QFX5120-48Y model)
+- 2x spine (vJunos-switch, EX9214 model)
+- 2x leaf (vJunos-switch, EX9214 model)
 - 2-3x Linux containers as test hosts
 - eBGP underlay, EVPN overlay, VXLAN, ESI-LAG between leaves
 
@@ -114,13 +114,15 @@ Lab
 
 ## Phase 6 — Device Types (with Interface Templates)
 
-### Juniper QFX5120-48Y (Spines & Leaves)
+### Juniper EX9214 (Spines & Leaves)
+
+vjunos-switch emulates an EX9214 chassis (SMBIOS product=VM-VEX). U height set to 1 instead of real 16U - this is a simulation lab and all devices need to fit in a single 42U rack in NetBox.
 
 | Field | Value |
 |-------|-------|
 | Manufacturer | Juniper Networks |
-| Model | QFX5120-48Y |
-| Slug | `qfx5120-48y` |
+| Model | EX9214 |
+| Slug | `ex9214` |
 | U Height | 1 |
 | Full Depth | Yes |
 
@@ -264,10 +266,10 @@ Lab
 
 | Name | Device Type | Role | Site | Platform | Status | bgp_asn | vtep_source | mgmt IP | Tags |
 |------|------------|------|------|----------|--------|---------|-------------|---------|------|
-| dc1-spine1 | QFX5120-48Y | Spine | DC1 | Junos | Active | 65001 | — | `$MGMT_dc1_spine1` | spine, dc1 |
-| dc1-spine2 | QFX5120-48Y | Spine | DC1 | Junos | Active | 65002 | — | `$MGMT_dc1_spine2` | spine, dc1 |
-| dc1-leaf1 | QFX5120-48Y | Leaf | DC1 | Junos | Active | 65003 | lo0.0 | `$MGMT_dc1_leaf1` | leaf, dc1 |
-| dc1-leaf2 | QFX5120-48Y | Leaf | DC1 | Junos | Active | 65004 | lo0.0 | `$MGMT_dc1_leaf2` | leaf, dc1 |
+| dc1-spine1 | EX9214 | Spine | DC1 | Junos | Active | 65001 | — | `$MGMT_dc1_spine1` | spine, dc1 |
+| dc1-spine2 | EX9214 | Spine | DC1 | Junos | Active | 65002 | — | `$MGMT_dc1_spine2` | spine, dc1 |
+| dc1-leaf1 | EX9214 | Leaf | DC1 | Junos | Active | 65003 | lo0.0 | `$MGMT_dc1_leaf1` | leaf, dc1 |
+| dc1-leaf2 | EX9214 | Leaf | DC1 | Junos | Active | 65004 | lo0.0 | `$MGMT_dc1_leaf2` | leaf, dc1 |
 | dc1-host1 | Container Host | Server | DC1 | Linux | Active | — | — | — | dc1 |
 | dc1-host2 | Container Host | Server | DC1 | Linux | Active | — | — | — | dc1 |
 | dc1-host3 | Container Host | Server | DC1 | Linux | Active | — | — | — | dc1 |
