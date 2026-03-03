@@ -26,24 +26,32 @@ Objects are split into two groups:
                        |   |        |   |
                 +------+---+--+  +--+---+-------+
                 |  dc1-leaf1  |  |  dc1-leaf2   |
-                +----+--+--+-+  +-+--+--+-------+
-                     |  |  |      |  |  |
-                     |  |  +--++--+  |  |
-                     |  +--+--||--+--+  |
-                     |     |  ||  |     |
-                  +--+-+ +-+--++--+-+ +-+--+
-                  |host1| |  host2  | |host3|
-                  +-----+ +--(ae0)-+ +-----+
-                           (ESI-LAG,
-                        dual-homed to
-                        both leaves)
+                +-+--+--+--+-+  +-+--+--+--+---+
+                  |  |  |  |      |  |  |  |
+                  |  |  |  +--++--+  |  |  |
+                  |  |  +--+--||--+--+  |  |
+                  |  |     |  ||  |     |  |
+               +--+-++ +--+--++--+--+ ++-+--+
+               |host1| |    host3   | |host2|
+               +-----+ +---(ae0)---+ +-----+
+              (leaf1    (ESI-LAG,      (leaf2
+              only)     dual-homed)    only)
+
+                       +------------+
+                       |   host4    |
+                       +---(ae0)----+
+                       (ESI-LAG,
+                       dual-homed)
 
                 DC2 (Arista cEOS - project Phase 10)
 ```
 
 - 2x spine (vJunos-switch, EX9214 model)
 - 2x leaf (vJunos-switch, EX9214 model)
-- 2-3x Linux containers as test hosts
+- 4x Linux containers as test hosts:
+  - host1: single-homed to leaf1
+  - host2: single-homed to leaf2
+  - host3, host4: dual-homed ESI-LAG to both leaves
 - eBGP underlay (unique ASN per device), EVPN overlay, VXLAN, ESI-LAG between leaves
 
 ---
@@ -296,17 +304,19 @@ Device `local_context_data` example: `{"bgp_asn": 65001}`
 
 ## Step 11 - Devices
 
-| Name | Device Type | Role | Site | Platform | Status | mgmt IP | Tags |
-|------|------------|------|------|----------|--------|---------|------|
-| dc1-spine1 | EX9214 | Spine | DC1 | Junos | Active | `$MGMT_dc1_spine1` | spine, dc1 |
-| dc1-spine2 | EX9214 | Spine | DC1 | Junos | Active | `$MGMT_dc1_spine2` | spine, dc1 |
-| dc1-leaf1 | EX9214 | Leaf | DC1 | Junos | Active | `$MGMT_dc1_leaf1` | leaf, dc1 |
-| dc1-leaf2 | EX9214 | Leaf | DC1 | Junos | Active | `$MGMT_dc1_leaf2` | leaf, dc1 |
-| dc1-host1 | Container Host | Server | DC1 | Linux | Active | - | dc1 |
-| dc1-host2 | Container Host | Server | DC1 | Linux | Active | - | dc1 |
-| dc1-host3 | Container Host | Server | DC1 | Linux | Active | - | dc1 |
+| Name | Device Type | Role | Site | Platform | Status | OOB IP (fxp0) | Tags | Homing |
+|------|------------|------|------|----------|--------|---------------|------|--------|
+| dc1-spine1 | EX9214 | Spine | DC1 | Junos | Active | `$MGMT_dc1_spine1` | spine, dc1 | - |
+| dc1-spine2 | EX9214 | Spine | DC1 | Junos | Active | `$MGMT_dc1_spine2` | spine, dc1 | - |
+| dc1-leaf1 | EX9214 | Leaf | DC1 | Junos | Active | `$MGMT_dc1_leaf1` | leaf, dc1 | - |
+| dc1-leaf2 | EX9214 | Leaf | DC1 | Junos | Active | `$MGMT_dc1_leaf2` | leaf, dc1 | - |
+| dc1-host1 | Container Host | Server | DC1 | Linux | Active | - | dc1 | Single-homed leaf1 |
+| dc1-host2 | Container Host | Server | DC1 | Linux | Active | - | dc1 | Single-homed leaf2 |
+| dc1-host3 | Container Host | Server | DC1 | Linux | Active | - | dc1 | Dual-homed ESI-LAG |
+| dc1-host4 | Container Host | Server | DC1 | Linux | Active | - | dc1 | Dual-homed ESI-LAG |
 
-> Management IPs are environment-specific, assigned to `fxp0`, set as device `primary_ip4`.
+> OOB IPs are environment-specific, assigned to `fxp0`, set as device `oob_ip`.
+> **Primary IP** (`primary_ip4`) is the loopback address on `lo0` (see Step 12).
 > ASN stored in `local_context_data` as `{"bgp_asn": <asn>}` (see Step 7).
 > Hosts connect to leaves for traffic testing. No mgmt IP (accessed via containerlab).
 
@@ -338,19 +348,20 @@ Full mesh: each spine connects to each leaf.
 
 ## Step 13 - Cables
 
-| A-Device | A-Interface | Z-Device | Z-Interface | Label |
-|----------|-------------|----------|-------------|-------|
-| dc1-spine1 | ge-0/0/0 | dc1-leaf1 | ge-0/0/0 | sp1-lf1 |
-| dc1-spine1 | ge-0/0/1 | dc1-leaf2 | ge-0/0/0 | sp1-lf2 |
-| dc1-spine2 | ge-0/0/0 | dc1-leaf1 | ge-0/0/1 | sp2-lf1 |
-| dc1-spine2 | ge-0/0/1 | dc1-leaf2 | ge-0/0/1 | sp2-lf2 |
-| dc1-leaf1 | ge-0/0/2 | dc1-host1 | eth0 | lf1-h1 |
-| dc1-leaf2 | ge-0/0/2 | dc1-host1 | eth1 | lf2-h1 |
-| dc1-leaf1 | ge-0/0/3 | dc1-host2 | eth0 | lf1-h2 |
-| dc1-leaf2 | ge-0/0/3 | dc1-host2 | eth1 | lf2-h2 |
-| dc1-leaf1 | ge-0/0/4 | dc1-host3 | eth0 | lf1-h3 |
+| A-Device | A-Interface | Z-Device | Z-Interface | Label | Type |
+|----------|-------------|----------|-------------|-------|------|
+| dc1-spine1 | ge-0/0/0 | dc1-leaf1 | ge-0/0/0 | sp1-lf1 | Fabric |
+| dc1-spine1 | ge-0/0/1 | dc1-leaf2 | ge-0/0/0 | sp1-lf2 | Fabric |
+| dc1-spine2 | ge-0/0/0 | dc1-leaf1 | ge-0/0/1 | sp2-lf1 | Fabric |
+| dc1-spine2 | ge-0/0/1 | dc1-leaf2 | ge-0/0/1 | sp2-lf2 | Fabric |
+| dc1-leaf1 | ge-0/0/2 | dc1-host1 | eth0 | lf1-h1 | Single-homed |
+| dc1-leaf2 | ge-0/0/2 | dc1-host2 | eth0 | lf2-h2 | Single-homed |
+| dc1-leaf1 | ge-0/0/3 | dc1-host3 | eth0 | lf1-h3 | ESI-LAG |
+| dc1-leaf2 | ge-0/0/3 | dc1-host3 | eth1 | lf2-h3 | ESI-LAG |
+| dc1-leaf1 | ge-0/0/4 | dc1-host4 | eth0 | lf1-h4 | ESI-LAG |
+| dc1-leaf2 | ge-0/0/4 | dc1-host4 | eth1 | lf2-h4 | ESI-LAG |
 
-**Total: 9 cables**
+**Total: 10 cables**
 
 ---
 
@@ -360,26 +371,27 @@ The following objects are defined here for design completeness. They will be pop
 
 ## Step 14 - Host & Leaf LAG Interfaces (project Phase 2)
 
-### Host Interfaces
+### Host Interfaces (dual-homed only - host3, host4)
 
 | Device | Interface | Type | Parent LAG | Connected to |
 |--------|-----------|------|------------|-------------|
-| dc1-host1 | eth0 | 1000BASE-T | bond0 | dc1-leaf1 ge-0/0/2 |
-| dc1-host1 | eth1 | 1000BASE-T | bond0 | dc1-leaf2 ge-0/0/2 |
-| dc1-host1 | bond0 | LAG | - | - |
-| dc1-host2 | eth0 | 1000BASE-T | bond0 | dc1-leaf1 ge-0/0/3 |
-| dc1-host2 | eth1 | 1000BASE-T | bond0 | dc1-leaf2 ge-0/0/3 |
-| dc1-host2 | bond0 | LAG | - | - |
-| dc1-host3 | eth0 | 1000BASE-T | - | dc1-leaf1 ge-0/0/4 |
+| dc1-host3 | eth0 | 1000BASE-T | bond0 | dc1-leaf1 ge-0/0/3 |
+| dc1-host3 | eth1 | 1000BASE-T | bond0 | dc1-leaf2 ge-0/0/3 |
+| dc1-host3 | bond0 | LAG | - | - |
+| dc1-host4 | eth0 | 1000BASE-T | bond0 | dc1-leaf1 ge-0/0/4 |
+| dc1-host4 | eth1 | 1000BASE-T | bond0 | dc1-leaf2 ge-0/0/4 |
+| dc1-host4 | bond0 | LAG | - | - |
+
+> host1 and host2 are single-homed (eth0 only, no LAG).
 
 ### Leaf ESI-LAG Interfaces
 
 | Device | Interface | Type | ESI | Members | Description |
 |--------|-----------|------|-----|---------|-------------|
-| dc1-leaf1 | ae0 | LAG | 00:11:11:11:11:11:11:11:11:01 | ge-0/0/2 | ESI-LAG to host1 |
-| dc1-leaf2 | ae0 | LAG | 00:11:11:11:11:11:11:11:11:01 | ge-0/0/2 | ESI-LAG to host1 |
-| dc1-leaf1 | ae1 | LAG | 00:11:11:11:11:11:11:11:11:02 | ge-0/0/3 | ESI-LAG to host2 |
-| dc1-leaf2 | ae1 | LAG | 00:11:11:11:11:11:11:11:11:02 | ge-0/0/3 | ESI-LAG to host2 |
+| dc1-leaf1 | ae0 | LAG | 00:11:11:11:11:11:11:11:11:01 | ge-0/0/3 | ESI-LAG to host3 |
+| dc1-leaf2 | ae0 | LAG | 00:11:11:11:11:11:11:11:11:01 | ge-0/0/3 | ESI-LAG to host3 |
+| dc1-leaf1 | ae1 | LAG | 00:11:11:11:11:11:11:11:11:02 | ge-0/0/4 | ESI-LAG to host4 |
+| dc1-leaf2 | ae1 | LAG | 00:11:11:11:11:11:11:11:11:02 | ge-0/0/4 | ESI-LAG to host4 |
 
 > Same ESI on both leaves = EVPN multihoming active-active.
 
@@ -485,10 +497,10 @@ The following objects are defined here for design completeness. They will be pop
 | Route Targets | 3 |
 | VLAN Groups | 1 |
 | VLANs | 2 |
-| Devices | 7 |
+| Devices | 8 |
 | Prefixes | ~12 |
 | IP Addresses | ~12 |
-| Cables | 9 |
+| Cables | 10 |
 | **Phase 1 total** | **~80 objects** |
 
 ### Pre-staged for later (Steps 14-17)

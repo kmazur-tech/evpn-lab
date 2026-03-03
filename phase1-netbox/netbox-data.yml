@@ -204,7 +204,8 @@ vlans:
 
 # ---------------------------------------------------------------------------
 # Step 11 - Devices
-# ASNs assigned via native relationship, mgmt IPs from env vars.
+# ASNs stored in local_context_data, mgmt (OOB) IPs from env vars.
+# primary_ip4 is set to loopback (lo0), not fxp0.
 # ---------------------------------------------------------------------------
 devices:
   - name: dc1-spine1
@@ -214,7 +215,7 @@ devices:
     platform: Junos
     status: active
     asn: 65001
-    mgmt_ip: "$MGMT_dc1_spine1"
+    oob_ip: "$MGMT_dc1_spine1"
     tags: [spine, dc1]
 
   - name: dc1-spine2
@@ -224,7 +225,7 @@ devices:
     platform: Junos
     status: active
     asn: 65002
-    mgmt_ip: "$MGMT_dc1_spine2"
+    oob_ip: "$MGMT_dc1_spine2"
     tags: [spine, dc1]
 
   - name: dc1-leaf1
@@ -234,7 +235,7 @@ devices:
     platform: Junos
     status: active
     asn: 65003
-    mgmt_ip: "$MGMT_dc1_leaf1"
+    oob_ip: "$MGMT_dc1_leaf1"
     tags: [leaf, dc1]
 
   - name: dc1-leaf2
@@ -244,7 +245,7 @@ devices:
     platform: Junos
     status: active
     asn: 65004
-    mgmt_ip: "$MGMT_dc1_leaf2"
+    oob_ip: "$MGMT_dc1_leaf2"
     tags: [leaf, dc1]
 
   - name: dc1-host1
@@ -253,6 +254,7 @@ devices:
     site: DC1
     platform: Linux
     status: active
+    description: "Single-homed to dc1-leaf1"
     tags: [dc1]
 
   - name: dc1-host2
@@ -261,6 +263,7 @@ devices:
     site: DC1
     platform: Linux
     status: active
+    description: "Single-homed to dc1-leaf2"
     tags: [dc1]
 
   - name: dc1-host3
@@ -269,17 +272,28 @@ devices:
     site: DC1
     platform: Linux
     status: active
+    description: "Dual-homed ESI-LAG to both leaves"
+    tags: [dc1]
+
+  - name: dc1-host4
+    device_type: Container Host
+    role: Server
+    site: DC1
+    platform: Linux
+    status: active
+    description: "Dual-homed ESI-LAG to both leaves"
     tags: [dc1]
 
 # ---------------------------------------------------------------------------
 # Step 12 - IP Addresses
 # Interfaces are auto-created from device type templates.
+# Loopback IPs are set as primary_ip4. OOB IPs on fxp0 are set as oob_ip.
 # ---------------------------------------------------------------------------
 loopback_ips:
-  - { device: dc1-spine1, interface: lo0, ip: "10.0.0.1/32", description: Router-ID }
-  - { device: dc1-spine2, interface: lo0, ip: "10.0.0.2/32", description: Router-ID }
-  - { device: dc1-leaf1,  interface: lo0, ip: "10.0.0.3/32", description: "Router-ID / VTEP" }
-  - { device: dc1-leaf2,  interface: lo0, ip: "10.0.0.4/32", description: "Router-ID / VTEP" }
+  - { device: dc1-spine1, interface: lo0, ip: "10.0.0.1/32", description: Router-ID, primary: true }
+  - { device: dc1-spine2, interface: lo0, ip: "10.0.0.2/32", description: Router-ID, primary: true }
+  - { device: dc1-leaf1,  interface: lo0, ip: "10.0.0.3/32", description: "Router-ID / VTEP", primary: true }
+  - { device: dc1-leaf2,  interface: lo0, ip: "10.0.0.4/32", description: "Router-ID / VTEP", primary: true }
 
 p2p_links:
   - a_device: dc1-spine1
@@ -319,9 +333,11 @@ cables:
   - { a_device: dc1-spine1, a_interface: ge-0/0/1, z_device: dc1-leaf2, z_interface: ge-0/0/0, label: sp1-lf2 }
   - { a_device: dc1-spine2, a_interface: ge-0/0/0, z_device: dc1-leaf1, z_interface: ge-0/0/1, label: sp2-lf1 }
   - { a_device: dc1-spine2, a_interface: ge-0/0/1, z_device: dc1-leaf2, z_interface: ge-0/0/1, label: sp2-lf2 }
-  # Leaf-host
+  # Leaf-host (single-homed)
   - { a_device: dc1-leaf1, a_interface: ge-0/0/2, z_device: dc1-host1, z_interface: eth0, label: lf1-h1 }
-  - { a_device: dc1-leaf2, a_interface: ge-0/0/2, z_device: dc1-host1, z_interface: eth1, label: lf2-h1 }
-  - { a_device: dc1-leaf1, a_interface: ge-0/0/3, z_device: dc1-host2, z_interface: eth0, label: lf1-h2 }
-  - { a_device: dc1-leaf2, a_interface: ge-0/0/3, z_device: dc1-host2, z_interface: eth1, label: lf2-h2 }
-  - { a_device: dc1-leaf1, a_interface: ge-0/0/4, z_device: dc1-host3, z_interface: eth0, label: lf1-h3 }
+  - { a_device: dc1-leaf2, a_interface: ge-0/0/2, z_device: dc1-host2, z_interface: eth0, label: lf2-h2 }
+  # Leaf-host (dual-homed ESI-LAG)
+  - { a_device: dc1-leaf1, a_interface: ge-0/0/3, z_device: dc1-host3, z_interface: eth0, label: lf1-h3 }
+  - { a_device: dc1-leaf2, a_interface: ge-0/0/3, z_device: dc1-host3, z_interface: eth1, label: lf2-h3 }
+  - { a_device: dc1-leaf1, a_interface: ge-0/0/4, z_device: dc1-host4, z_interface: eth0, label: lf1-h4 }
+  - { a_device: dc1-leaf2, a_interface: ge-0/0/4, z_device: dc1-host4, z_interface: eth1, label: lf2-h4 }
