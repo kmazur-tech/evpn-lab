@@ -36,10 +36,14 @@ Topology: 2× spine, 2× leaf on vJunos-switch in containerlab.
 
 Scope:
 - Containerlab topology file (`.clab.yml`) with device and link definitions - mapped to NetBox
-- eBGP underlay with unique ASN per device (spine and leaf)
-- iBGP EVPN overlay with spines acting as route reflectors for leaves
-- VXLAN with VNI → VLAN mapping
-- ESI-LAG (EVPN multihoming) between both leaves and a test host (Linux container)
+- Juniper ERB (Edge-Routed Bridging) architecture:
+  - Underlay eBGP in default routing instance (unique ASN per device)
+  - Overlay eBGP with `family evpn signaling` in default instance (spines as route reflectors)
+  - L2 overlay in `virtual-switch` routing instance (bridge domains, VNI-to-VLAN)
+  - L3 tenant routing in `vrf` instance (IRB, L3VNI, Type-5 routes)
+  - OOB management in `mgmt_junos` instance (fxp0)
+- VXLAN with VNI-to-VLAN mapping
+- ESI-LAG (EVPN multihoming) between both leaves and test hosts (Linux containers)
 - Manual baseline verification: `show bgp summary`, `show evpn instance`, `show ethernet-switching table`
 
 Result: a working fabric with L2/L3 traffic passing between hosts over VXLAN.

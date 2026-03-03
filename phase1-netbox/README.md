@@ -60,11 +60,22 @@ eBGP underlay with unique ASN per device:
 
 ASN objects are created as the authoritative registry. Per-device ASN is stored in `local_context_data` (`{"bgp_asn": 65001}`) because NetBox ASN objects can only be assigned to sites, not individual devices. This keeps the ASN accessible in templates via `device.local_context_data.bgp_asn`.
 
+### Juniper Routing Instance Model (ERB)
+
+Follows Juniper's Edge-Routed Bridging architecture:
+
+| Instance | Type | Scope | Purpose |
+|----------|------|-------|---------|
+| default (master) | - | All devices | Underlay eBGP + overlay eBGP (`family evpn signaling`) |
+| EVPN-VXLAN | `virtual-switch` | Leaves only | L2 bridge domains, VLANs, VNIs, VXLAN encap |
+| TENANT-1 | `vrf` | Leaves only | L3 inter-VLAN routing via IRB, L3VNI, Type-5 routes |
+| mgmt_junos | built-in | All devices | OOB management (fxp0, mgmt default route) |
+
 ### Custom Fields vs Config Contexts vs Derived Values
 
 - **Custom fields** - scalar per-object values for EVPN/VXLAN: `vni` (on VLANs), `l3vni` and `anycast_mac` (on VRFs), `esi` (on interfaces)
-- **Config contexts** - structured data assigned by role/site, merged at query time: underlay BGP settings, overlay EVPN settings, hardening parameters
-- **Derived at render time** - route distinguisher (from loopback IP), VTEP source (convention: lo0.0 on all leaves)
+- **Config contexts** - structured data assigned by role: routing instance definitions, underlay/overlay BGP settings, hardening parameters
+- **Derived at render time** - route distinguisher (from loopback IP)
 
 ### VXLAN / EVPN Modeling
 

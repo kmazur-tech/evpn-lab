@@ -423,45 +423,74 @@ The following objects are defined here for design completeness. They will be pop
 
 ## Step 17 - Config Contexts (project Phases 2, 8)
 
-### 1. Underlay BGP (assigned to roles: Spine, Leaf) - project Phase 2
+Config contexts encode the Juniper ERB (Edge-Routed Bridging) routing instance model:
+
+```
+Leaf routing instances:
+  default (master)    - underlay eBGP + overlay eBGP (family evpn signaling)
+  EVPN-VXLAN          - virtual-switch: bridge domains, VLANs, VNIs
+  TENANT-1            - vrf: IRB interfaces, L3 inter-VLAN routing, L3VNI
+  mgmt_junos          - OOB management (fxp0, mgmt default route)
+
+Spine routing instances:
+  default (master)    - underlay eBGP + overlay eBGP (route reflector)
+  mgmt_junos          - OOB management
+```
+
+### 1. Routing instances - Leaf (assigned to role: Leaf) - project Phase 2
 
 ```json
 {
+  "routing_instances": {
+    "evpn_vxlan": {
+      "instance_type": "virtual-switch",
+      "vtep_source": "lo0.0",
+      "encapsulation": "vxlan"
+    },
+    "mgmt_junos": {
+      "description": "OOB management"
+    }
+  },
   "underlay": {
     "bgp_type": "ebgp",
     "multipath": true,
     "bfd": true,
     "timers": {"hold": 90, "keepalive": 30}
+  },
+  "overlay": {
+    "bgp_type": "ebgp",
+    "family": "evpn signaling",
+    "multihop": true,
+    "local_address": "lo0.0"
   }
 }
 ```
 
-### 2. Overlay EVPN - Leaf (assigned to role: Leaf) - project Phase 2
+### 2. Routing instances - Spine / Route Reflector (assigned to role: Spine) - project Phase 2
 
 ```json
 {
+  "routing_instances": {
+    "mgmt_junos": {
+      "description": "OOB management"
+    }
+  },
+  "underlay": {
+    "bgp_type": "ebgp",
+    "multipath": true,
+    "bfd": true,
+    "timers": {"hold": 90, "keepalive": 30}
+  },
   "overlay": {
-    "evpn_type": "ibgp",
-    "route_reflector_client": true,
-    "encapsulation": "vxlan",
-    "vtep_source": "lo0.0"
-  }
-}
-```
-
-### 3. Overlay EVPN - Spine / Route Reflector (assigned to role: Spine) - project Phase 2
-
-```json
-{
-  "overlay": {
-    "evpn_type": "ibgp",
+    "bgp_type": "ebgp",
+    "family": "evpn signaling",
     "route_reflector": true,
     "cluster_id_from": "loopback"
   }
 }
 ```
 
-### 4. Hardening (global) - project Phase 8
+### 3. Hardening (global) - project Phase 8
 
 ```json
 {
@@ -510,7 +539,7 @@ The following objects are defined here for design completeness. They will be pop
 | LAG Interfaces | 2 | ~10 |
 | IRB Interfaces + IPs | 7 | ~8 |
 | L2VPN Instances | 2 | 2 |
-| Config Contexts | 2, 8 | 4 |
+| Config Contexts | 2, 8 | 3 |
 
 ---
 
@@ -519,6 +548,7 @@ The following objects are defined here for design completeness. They will be pop
 - **Idempotency:** Population script must use `get_or_create` pattern.
 - **Step ordering:** Create objects in step order (dependencies).
 - **ASN modeling:** Native ASN objects as registry + `local_context_data.bgp_asn` on each device for template access. NetBox ASN objects are site-level only (no device relationship), so local context bridges the gap.
-- **Derived values:** Route distinguisher derived from loopback IP at config render time. VTEP source is a role convention in config context (`lo0.0` for all leaves).
+- **Routing instances:** Follows Juniper ERB model. Underlay + overlay BGP in default instance. L2 overlay in `virtual-switch` instance. L3 tenant routing in `vrf` instance. OOB management in `mgmt_junos`.
+- **Derived values:** Route distinguisher derived from loopback IP at config render time. VTEP source is `lo0.0` on all leaves (in config context).
 - **Prefix roles:** Tenant subnets have role "Server". The anycast nature is on the IP address (role=`anycast`), not the prefix.
 - **DC2 (Arista):** Added in project Phase 10 - new site, cEOS device types, EOS platform.
