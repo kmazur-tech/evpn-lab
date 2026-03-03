@@ -2,7 +2,7 @@
 
 NetBox serves as the single source of truth for the entire EVPN-VXLAN fabric. Every piece of network data - devices, interfaces, IPs, VLANs, ASNs, cabling - lives here and is consumed by automation in later phases.
 
-**Status:** Data model designed. Population script not yet implemented.
+**Status:** Implemented. Population script tested and idempotent.
 
 ## Prerequisites
 
@@ -58,7 +58,7 @@ eBGP underlay with unique ASN per device:
 | 65003 | dc1-leaf1 |
 | 65004 | dc1-leaf2 |
 
-ASNs are stored as native NetBox ASN objects and assigned to devices via the built-in relationship - no custom field duplication.
+ASN objects are created as the authoritative registry. Per-device ASN is stored in `local_context_data` (`{"bgp_asn": 65001}`) because NetBox ASN objects can only be assigned to sites, not individual devices. This keeps the ASN accessible in templates via `device.local_context_data.bgp_asn`.
 
 ### Custom Fields vs Config Contexts vs Derived Values
 
@@ -89,8 +89,8 @@ The model separates:
 |------|-------------|
 | `NETBOX_DATA_MODEL.md` | Complete NetBox object inventory (dependency-ordered, 17 steps) |
 | `netbox-data.yml` | Structured YAML data consumed by `populate.py` (Steps 1-13) |
-| `populate.py` | Idempotent Python script to populate NetBox via pynetbox (TODO) |
-| `requirements.txt` | Python dependencies (TODO) |
+| `populate.py` | Idempotent Python script to populate NetBox via pynetbox |
+| `requirements.txt` | Python dependencies |
 
 ## Usage
 
@@ -113,6 +113,6 @@ Phase 1 is complete when:
 - [ ] All Step 1-13 objects exist in NetBox
 - [ ] `populate.py` runs idempotently (second run creates no new objects)
 - [ ] Every device has correct interfaces, IPs, and cables
-- [ ] ASNs are assigned to devices via native relationship
+- [ ] ASN objects exist and per-device ASN is in `local_context_data`
 - [ ] Management IPs are set as `primary_ip4` on network devices
 - [ ] NetBox topology view shows correct spine-leaf connectivity

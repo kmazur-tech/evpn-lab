@@ -203,16 +203,18 @@ vjunos-switch emulates an EX9214 chassis (SMBIOS product=VM-VEX). U height set t
 
 ### ASN Objects
 
-Assigned to devices via NetBox native ASN-to-device relationship (not a custom field).
+ASN objects serve as the authoritative registry. Per-device ASN is stored in `local_context_data` on each device because NetBox native ASN objects can only be assigned to sites, not individual devices.
 
-| ASN | Description | Assigned to |
-|-----|-------------|-------------|
-| 65001 | dc1-spine1 | dc1-spine1 |
-| 65002 | dc1-spine2 | dc1-spine2 |
-| 65003 | dc1-leaf1 | dc1-leaf1 |
-| 65004 | dc1-leaf2 | dc1-leaf2 |
+| ASN | Description |
+|-----|-------------|
+| 65001 | dc1-spine1 |
+| 65002 | dc1-spine2 |
+| 65003 | dc1-leaf1 |
+| 65004 | dc1-leaf2 |
 
-> eBGP underlay: unique ASN per device. This is the single source of truth for ASN - no custom field duplication.
+Device `local_context_data` example: `{"bgp_asn": 65001}`
+
+> eBGP underlay: unique ASN per device. ASN registry is in IPAM ASN objects. Per-device value is in local context for direct template access.
 
 ---
 
@@ -304,8 +306,8 @@ Assigned to devices via NetBox native ASN-to-device relationship (not a custom f
 | dc1-host2 | Container Host | Server | DC1 | Linux | Active | - | dc1 |
 | dc1-host3 | Container Host | Server | DC1 | Linux | Active | - | dc1 |
 
-> Management IPs are environment-specific (defined in `env.yml`), assigned to `fxp0`, set as device `primary_ip4`.
-> ASNs assigned via native NetBox ASN-to-device relationship (see Step 7).
+> Management IPs are environment-specific, assigned to `fxp0`, set as device `primary_ip4`.
+> ASN stored in `local_context_data` as `{"bgp_asn": <asn>}` (see Step 7).
 > Hosts connect to leaves for traffic testing. No mgmt IP (accessed via containerlab).
 
 ---
@@ -504,7 +506,7 @@ The following objects are defined here for design completeness. They will be pop
 
 - **Idempotency:** Population script must use `get_or_create` pattern.
 - **Step ordering:** Create objects in step order (dependencies).
-- **ASN modeling:** Native NetBox ASN objects only - no custom field. Query via API relationship.
+- **ASN modeling:** Native ASN objects as registry + `local_context_data.bgp_asn` on each device for template access. NetBox ASN objects are site-level only (no device relationship), so local context bridges the gap.
 - **Derived values:** Route distinguisher derived from loopback IP at config render time. VTEP source is a role convention in config context (`lo0.0` for all leaves).
 - **Prefix roles:** Tenant subnets have role "Server". The anycast nature is on the IP address (role=`anycast`), not the prefix.
 - **DC2 (Arista):** Added in project Phase 10 - new site, cEOS device types, EOS platform.
