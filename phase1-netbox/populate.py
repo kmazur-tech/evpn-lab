@@ -351,29 +351,26 @@ def main():
         }
         device, created = get_or_create(nb.dcim.devices, ["name"], data, dev["name"])
 
-        # Assign management IP
-        if dev.get("mgmt_ip") and dev["mgmt_ip"] != "-":
-            mgmt_ip = dev["mgmt_ip"]
-            # Find fxp0 interface
+        # Assign OOB management IP to fxp0 (NOT primary_ip4 - that's loopback)
+        if dev.get("oob_ip") and dev["oob_ip"] != "-":
+            oob_ip = dev["oob_ip"]
             fxp0 = nb.dcim.interfaces.get(device_id=device.id, name="fxp0")
             if fxp0:
-                # Create IP and assign to interface
-                existing_ip = nb.ipam.ip_addresses.filter(address=mgmt_ip)
-                ip_list = list(existing_ip)
-                if not ip_list:
+                existing_ip = list(nb.ipam.ip_addresses.filter(address=oob_ip))
+                if not existing_ip:
                     ip_obj = nb.ipam.ip_addresses.create({
-                        "address": mgmt_ip,
+                        "address": oob_ip,
                         "assigned_object_type": "dcim.interface",
                         "assigned_object_id": fxp0.id,
-                        "description": f"{dev['name']} management",
+                        "description": f"{dev['name']} OOB management",
                     })
-                    print(f"    MGMT IP: {mgmt_ip} -> fxp0")
+                    print(f"    OOB IP: {oob_ip} -> fxp0")
                 else:
-                    ip_obj = ip_list[0]
-                    print(f"    MGMT IP EXISTS: {mgmt_ip}")
+                    ip_obj = existing_ip[0]
+                    print(f"    OOB IP EXISTS: {oob_ip}")
 
-                # Set as primary IP
-                device.primary_ip4 = ip_obj.id
+                # Set as OOB IP, not primary
+                device.oob_ip = ip_obj.id
                 device.save()
 
     # Step 12 - Loopback and P2P IPs
@@ -388,7 +385,7 @@ def main():
 
         existing = list(nb.ipam.ip_addresses.filter(address=lo["ip"]))
         if not existing:
-            nb.ipam.ip_addresses.create({
+            ip_obj = nb.ipam.ip_addresses.create({
                 "address": lo["ip"],
                 "assigned_object_type": "dcim.interface",
                 "assigned_object_id": iface.id,
@@ -396,7 +393,14 @@ def main():
             })
             print(f"  CREATED: {lo['ip']} -> {lo['device']}:{lo['interface']}")
         else:
+            ip_obj = existing[0]
             print(f"  EXISTS: {lo['ip']}")
+
+        # Set loopback as primary_ip4 if flagged
+        if lo.get("primary"):
+            device.primary_ip4 = ip_obj.id
+            device.save()
+            print(f"    PRIMARY IP: {lo['ip']}")
 
     for link in config["p2p_links"]:
         for side in ("a", "z"):

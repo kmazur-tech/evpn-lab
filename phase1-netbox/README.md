@@ -125,5 +125,6 @@ Phase 1 is complete when:
 - [ ] `populate.py` runs idempotently (second run creates no new objects)
 - [ ] Every device has correct interfaces, IPs, and cables
 - [ ] ASN objects exist and per-device ASN is in `local_context_data`
-- [ ] Management IPs are set as `primary_ip4` on network devices
+- [ ] Loopback IPs (lo0) are set as `primary_ip4` on network devices
+- [ ] OOB IPs (fxp0) are set as `oob_ip` on network devices
 - [ ] NetBox topology view shows correct spine-leaf connectivity

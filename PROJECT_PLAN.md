@@ -15,9 +15,9 @@ Scope:
 - Infrastructure modeling:
   - Sites: DC1 (DC2 added later in Phase 10)
   - Devices: 2× spine, 2× leaf (vJunos-switch), test hosts
-  - Interfaces: physical spine–leaf links, loopbacks, IRB (prepared for future phases)
+  - Interfaces: physical spine-leaf links, loopbacks, IRB (prepared for future phases)
   - Connections: cables/links between devices (1:1 mapping with containerlab topology)
-  - IP Addressing: management, loopback, P2P spine–leaf, host subnets
+  - IP Addressing: management, loopback, P2P spine-leaf, host subnets
   - VLANs + VLAN Groups per site
   - Custom Fields: VNI per VLAN, L3VNI per VRF, ESI per LAG, anycast MAC per VRF
   - ASN modeled via native NetBox ASN objects (no custom field)
@@ -118,7 +118,7 @@ Scope:
   5. **Deploy** - containerlab up + Nornir deploy (optional, `workflow_dispatch` on self-hosted runner)
   6. **Suzieq Assert** - operational state validation after deployment
   7. **Teardown** - containerlab destroy
-- Stages 5–7 may live in a separate workflow (spinning up the lab in CI is resource-intensive)
+- Stages 5-7 may live in a separate workflow (spinning up the lab in CI is resource-intensive)
 - Pipeline status badge in README
 
 Result: every change to NetBox/templates is automatically validated. PRs include an impact analysis report.
@@ -130,7 +130,7 @@ Result: every change to NetBox/templates is automatically validated. PRs include
 Extending the fabric with symmetric routing and a redundant default gateway.
 
 Scope:
-- ECMP in the underlay (multipath routing spine–leaf)
+- ECMP in the underlay (multipath routing spine-leaf)
 - Anycast gateway on IRB - same IP and MAC on both leaves as the host gateway
 - Type-5 routing (IP prefix routes) in EVPN for inter-VLAN traffic
 - NetBox update: IRB interfaces, anycast MAC in custom fields, L3 subnets
