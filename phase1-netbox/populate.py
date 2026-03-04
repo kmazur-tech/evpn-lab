@@ -380,8 +380,17 @@ def main():
         device = nb.dcim.devices.get(name=lo["device"])
         iface = nb.dcim.interfaces.get(device_id=device.id, name=lo["interface"])
         if not iface:
-            print(f"  ERROR: Interface {lo['interface']} not found on {lo['device']}")
-            continue
+            if lo.get("create_interface"):
+                iface = nb.dcim.interfaces.create({
+                    "device": device.id,
+                    "name": lo["interface"],
+                    "type": "virtual",
+                    "description": lo.get("description", ""),
+                })
+                print(f"  CREATED INTERFACE: {lo['device']}:{lo['interface']}")
+            else:
+                print(f"  ERROR: Interface {lo['interface']} not found on {lo['device']}")
+                continue
 
         existing = list(nb.ipam.ip_addresses.filter(address=lo["ip"]))
         if not existing:

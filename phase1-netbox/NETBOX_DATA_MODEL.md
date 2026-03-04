@@ -324,14 +324,20 @@ Device `local_context_data` example: `{"bgp_asn": 65001}`
 
 ## Step 12 - Interfaces & IP Addresses
 
-### Loopback IPs (assigned to lo0)
+### Loopback IPs
 
-| Device | Interface | IP | Description |
-|--------|-----------|-----|-------------|
-| dc1-spine1 | lo0 | 10.0.0.1/32 | Router-ID |
-| dc1-spine2 | lo0 | 10.0.0.2/32 | Router-ID |
-| dc1-leaf1 | lo0 | 10.0.0.3/32 | Router-ID / VTEP |
-| dc1-leaf2 | lo0 | 10.0.0.4/32 | Router-ID / VTEP |
+Spines use `lo0` only (default instance). Leaves use two loopback units:
+- `lo0` (unit 0) - default instance: router-ID, VTEP source, underlay/overlay BGP
+- `lo0.1` (unit 1) - VRF TENANT-1: needed for EVPN Type-5 IP prefix route advertisement
+
+| Device | Interface | IP | Description | Primary |
+|--------|-----------|-----|-------------|---------|
+| dc1-spine1 | lo0 | 10.0.0.1/32 | Router-ID | Yes |
+| dc1-spine2 | lo0 | 10.0.0.2/32 | Router-ID | Yes |
+| dc1-leaf1 | lo0 | 10.0.0.3/32 | Router-ID / VTEP | Yes |
+| dc1-leaf2 | lo0 | 10.0.0.4/32 | Router-ID / VTEP | Yes |
+| dc1-leaf1 | lo0.1 | 10.0.0.103/32 | VRF TENANT-1 loopback | No |
+| dc1-leaf2 | lo0.1 | 10.0.0.104/32 | VRF TENANT-1 loopback | No |
 
 ### P2P Link IPs (assigned to ge-0/0/x)
 
@@ -397,16 +403,21 @@ The following objects are defined here for design completeness. They will be pop
 
 ---
 
-## Step 15 - IRB Interfaces (project Phase 7)
+## Step 15 - IRB Interfaces and VRF Loopback (project Phase 7)
+
+The VRF TENANT-1 routing instance contains IRB interfaces and `lo0.1`:
 
 | Device | Interface | Type | VRF | IP | Description |
 |--------|-----------|------|-----|-----|-------------|
+| dc1-leaf1 | lo0.1 | Virtual | TENANT-1 | 10.0.0.103/32 | VRF loopback (Type-5) |
+| dc1-leaf2 | lo0.1 | Virtual | TENANT-1 | 10.0.0.104/32 | VRF loopback (Type-5) |
 | dc1-leaf1 | irb.10 | Virtual | TENANT-1 | 10.10.10.1/24 (anycast) | VLAN 10 GW |
 | dc1-leaf1 | irb.20 | Virtual | TENANT-1 | 10.10.20.1/24 (anycast) | VLAN 20 GW |
 | dc1-leaf2 | irb.10 | Virtual | TENANT-1 | 10.10.10.1/24 (anycast) | VLAN 10 GW |
 | dc1-leaf2 | irb.20 | Virtual | TENANT-1 | 10.10.20.1/24 (anycast) | VLAN 20 GW |
 
-> Same IP on both leaves, NetBox IP role=`anycast`. Anycast MAC in VRF custom field.
+> `lo0.1` is required in each VRF for EVPN Type-5 IP prefix route advertisement.
+> IRB IPs: same IP on both leaves, NetBox IP role=`anycast`. Anycast MAC in VRF custom field.
 
 ---
 
@@ -429,7 +440,7 @@ Config contexts encode the Juniper ERB (Edge-Routed Bridging) routing instance m
 Leaf routing instances:
   default (master)    - underlay eBGP + overlay eBGP (family evpn signaling)
   EVPN-VXLAN          - virtual-switch: bridge domains, VLANs, VNIs
-  TENANT-1            - vrf: IRB interfaces, L3 inter-VLAN routing, L3VNI
+  TENANT-1            - vrf: lo0.1, IRB interfaces, L3 inter-VLAN routing, L3VNI
   mgmt_junos          - OOB management (fxp0, mgmt default route)
 
 Spine routing instances:
@@ -446,6 +457,11 @@ Spine routing instances:
       "instance_type": "virtual-switch",
       "vtep_source": "lo0.0",
       "encapsulation": "vxlan"
+    },
+    "tenant_vrf": {
+      "instance_type": "vrf",
+      "loopback": "lo0.1",
+      "description": "L3 inter-VLAN routing, Type-5 routes"
     },
     "mgmt_junos": {
       "description": "OOB management"
@@ -528,7 +544,7 @@ Spine routing instances:
 | VLANs | 2 |
 | Devices | 8 |
 | Prefixes | ~12 |
-| IP Addresses | ~12 |
+| IP Addresses | ~14 |
 | Cables | 10 |
 | **Phase 1 total** | **~80 objects** |
 
