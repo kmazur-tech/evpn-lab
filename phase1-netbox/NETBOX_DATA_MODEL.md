@@ -68,7 +68,7 @@ Objects are split into two groups:
 | `anycast_mac` | ipam.vrf | Text | No | Shared anycast gateway MAC per VRF |
 
 > ASN is modeled using native NetBox ASN objects (Step 7), not a custom field - single source of truth.
-> VTEP source interface is a convention (lo0.0 on all leaves) defined in config context, not a per-device field.
+> VTEP source interface is a convention (lo0.1 on all leaves) defined in config context, not a per-device field.
 > Route distinguisher is derived from loopback IP at config render time, not stored.
 
 ---
@@ -172,7 +172,7 @@ vjunos-switch emulates an EX9214 chassis (SMBIOS product=VM-VEX). U height set t
 | ge-0/0/3 | 10GBASE-X-SFP+ | No | |
 | ge-0/0/4 | 10GBASE-X-SFP+ | No | |
 | ge-0/0/5 | 10GBASE-X-SFP+ | No | |
-| lo0 | Virtual | No | Loopback |
+| lo0.1 | Virtual | No | Loopback |
 
 > Only lab-used interfaces templated. vjunos-switch maps eth1=ge-0/0/0, eth2=ge-0/0/1, etc.
 
@@ -326,18 +326,20 @@ Device `local_context_data` example: `{"bgp_asn": 65001}`
 
 ### Loopback IPs
 
-Spines use `lo0` only (default instance). Leaves use two loopback units:
-- `lo0` (unit 0) - default instance: router-ID, VTEP source, underlay/overlay BGP
-- `lo0.1` (unit 1) - VRF TENANT-1: needed for EVPN Type-5 IP prefix route advertisement
+Spines use `lo0.1` only (default instance). Leaves use two loopback units:
+- `lo0.1` - default instance: router-ID, VTEP source, underlay/overlay BGP
+- `lo0.2` - VRF TENANT-1: needed for EVPN Type-5 IP prefix route advertisement
+
+Using unit 1/2 instead of 0/1 to keep naming explicit and avoid bare `lo0` ambiguity.
 
 | Device | Interface | IP | Description | Primary |
 |--------|-----------|-----|-------------|---------|
-| dc1-spine1 | lo0 | 10.0.0.1/32 | Router-ID | Yes |
-| dc1-spine2 | lo0 | 10.0.0.2/32 | Router-ID | Yes |
-| dc1-leaf1 | lo0 | 10.0.0.3/32 | Router-ID / VTEP | Yes |
-| dc1-leaf2 | lo0 | 10.0.0.4/32 | Router-ID / VTEP | Yes |
-| dc1-leaf1 | lo0.1 | 10.0.0.103/32 | VRF TENANT-1 loopback | No |
-| dc1-leaf2 | lo0.1 | 10.0.0.104/32 | VRF TENANT-1 loopback | No |
+| dc1-spine1 | lo0.1 | 10.0.0.1/32 | Router-ID | Yes |
+| dc1-spine2 | lo0.1 | 10.0.0.2/32 | Router-ID | Yes |
+| dc1-leaf1 | lo0.1 | 10.0.0.3/32 | Router-ID / VTEP | Yes |
+| dc1-leaf2 | lo0.1 | 10.0.0.4/32 | Router-ID / VTEP | Yes |
+| dc1-leaf1 | lo0.2 | 10.0.0.103/32 | VRF TENANT-1 loopback | No |
+| dc1-leaf2 | lo0.2 | 10.0.0.104/32 | VRF TENANT-1 loopback | No |
 
 ### P2P Link IPs (assigned to ge-0/0/x)
 
@@ -405,18 +407,18 @@ The following objects are defined here for design completeness. They will be pop
 
 ## Step 15 - IRB Interfaces and VRF Loopback (project Phase 7)
 
-The VRF TENANT-1 routing instance contains IRB interfaces and `lo0.1`:
+The VRF TENANT-1 routing instance contains IRB interfaces and `lo0.2`:
 
 | Device | Interface | Type | VRF | IP | Description |
 |--------|-----------|------|-----|-----|-------------|
-| dc1-leaf1 | lo0.1 | Virtual | TENANT-1 | 10.0.0.103/32 | VRF loopback (Type-5) |
-| dc1-leaf2 | lo0.1 | Virtual | TENANT-1 | 10.0.0.104/32 | VRF loopback (Type-5) |
+| dc1-leaf1 | lo0.2 | Virtual | TENANT-1 | 10.0.0.103/32 | VRF loopback (Type-5) |
+| dc1-leaf2 | lo0.2 | Virtual | TENANT-1 | 10.0.0.104/32 | VRF loopback (Type-5) |
 | dc1-leaf1 | irb.10 | Virtual | TENANT-1 | 10.10.10.1/24 (anycast) | VLAN 10 GW |
 | dc1-leaf1 | irb.20 | Virtual | TENANT-1 | 10.10.20.1/24 (anycast) | VLAN 20 GW |
 | dc1-leaf2 | irb.10 | Virtual | TENANT-1 | 10.10.10.1/24 (anycast) | VLAN 10 GW |
 | dc1-leaf2 | irb.20 | Virtual | TENANT-1 | 10.10.20.1/24 (anycast) | VLAN 20 GW |
 
-> `lo0.1` is required in each VRF for EVPN Type-5 IP prefix route advertisement.
+> `lo0.2` is required in each VRF for EVPN Type-5 IP prefix route advertisement.
 > IRB IPs: same IP on both leaves, NetBox IP role=`anycast`. Anycast MAC in VRF custom field.
 
 ---
@@ -439,8 +441,8 @@ Config contexts encode the Juniper ERB (Edge-Routed Bridging) routing instance m
 ```
 Leaf routing instances:
   default (master)    - underlay eBGP + overlay eBGP (family evpn signaling)
-  EVPN-VXLAN          - virtual-switch: bridge domains, VLANs, VNIs
-  TENANT-1            - vrf: lo0.1, IRB interfaces, L3 inter-VLAN routing, L3VNI
+  EVPN-VXLAN          - virtual-switch: bridge domains, VLANs, VNIs (VTEP source = lo0.1)
+  TENANT-1            - vrf: lo0.2, IRB interfaces, L3 inter-VLAN routing, L3VNI
   mgmt_junos          - OOB management (fxp0, mgmt default route)
 
 Spine routing instances:
@@ -455,12 +457,12 @@ Spine routing instances:
   "routing_instances": {
     "evpn_vxlan": {
       "instance_type": "virtual-switch",
-      "vtep_source": "lo0.0",
+      "vtep_source": "lo0.1",
       "encapsulation": "vxlan"
     },
     "tenant_vrf": {
       "instance_type": "vrf",
-      "loopback": "lo0.1",
+      "loopback": "lo0.2",
       "description": "L3 inter-VLAN routing, Type-5 routes"
     },
     "mgmt_junos": {
@@ -477,7 +479,7 @@ Spine routing instances:
     "bgp_type": "ebgp",
     "family": "evpn signaling",
     "multihop": true,
-    "local_address": "lo0.0"
+    "local_address": "lo0.1"
   }
 }
 ```
@@ -565,6 +567,6 @@ Spine routing instances:
 - **Step ordering:** Create objects in step order (dependencies).
 - **ASN modeling:** Native ASN objects as registry + `local_context_data.bgp_asn` on each device for template access. NetBox ASN objects are site-level only (no device relationship), so local context bridges the gap.
 - **Routing instances:** Follows Juniper ERB model. Underlay + overlay BGP in default instance. L2 overlay in `virtual-switch` instance. L3 tenant routing in `vrf` instance. OOB management in `mgmt_junos`.
-- **Derived values:** Route distinguisher derived from loopback IP at config render time. VTEP source is `lo0.0` on all leaves (in config context).
+- **Derived values:** Route distinguisher derived from loopback IP at config render time. VTEP source is `lo0.1` on all leaves (in config context).
 - **Prefix roles:** Tenant subnets have role "Server". The anycast nature is on the IP address (role=`anycast`), not the prefix.
 - **DC2 (Arista):** Added in project Phase 10 - new site, cEOS device types, EOS platform.

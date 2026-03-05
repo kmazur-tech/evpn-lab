@@ -107,7 +107,7 @@ device_types:
       - { name: ge-0/0/3,  type: 10gbase-x-sfpp, mgmt_only: false }
       - { name: ge-0/0/4,  type: 10gbase-x-sfpp, mgmt_only: false }
       - { name: ge-0/0/5,  type: 10gbase-x-sfpp, mgmt_only: false }
-      - { name: lo0,       type: virtual,        mgmt_only: false, description: Loopback }
+      - { name: lo0.1,     type: virtual,        mgmt_only: false, description: Loopback }
 
   - name: Container Host
     slug: container-host
@@ -290,14 +290,14 @@ devices:
 # Loopback IPs are set as primary_ip4. OOB IPs on fxp0 are set as oob_ip.
 # ---------------------------------------------------------------------------
 loopback_ips:
-  # lo0 (unit 0) - default instance: router-ID, VTEP source
-  - { device: dc1-spine1, interface: lo0, ip: "10.0.0.1/32", description: Router-ID, primary: true }
-  - { device: dc1-spine2, interface: lo0, ip: "10.0.0.2/32", description: Router-ID, primary: true }
-  - { device: dc1-leaf1,  interface: lo0, ip: "10.0.0.3/32", description: "Router-ID / VTEP", primary: true }
-  - { device: dc1-leaf2,  interface: lo0, ip: "10.0.0.4/32", description: "Router-ID / VTEP", primary: true }
-  # lo0.1 (unit 1) - VRF TENANT-1: needed for EVPN Type-5 route advertisement
-  - { device: dc1-leaf1,  interface: lo0.1, ip: "10.0.0.103/32", description: "VRF TENANT-1 loopback", create_interface: true }
-  - { device: dc1-leaf2,  interface: lo0.1, ip: "10.0.0.104/32", description: "VRF TENANT-1 loopback", create_interface: true }
+  # lo0.1 - default instance: router-ID, VTEP source
+  - { device: dc1-spine1, interface: lo0.1, ip: "10.0.0.1/32", description: Router-ID, primary: true }
+  - { device: dc1-spine2, interface: lo0.1, ip: "10.0.0.2/32", description: Router-ID, primary: true }
+  - { device: dc1-leaf1,  interface: lo0.1, ip: "10.0.0.3/32", description: "Router-ID / VTEP", primary: true }
+  - { device: dc1-leaf2,  interface: lo0.1, ip: "10.0.0.4/32", description: "Router-ID / VTEP", primary: true }
+  # lo0.2 - VRF TENANT-1: needed for EVPN Type-5 route advertisement
+  - { device: dc1-leaf1,  interface: lo0.2, ip: "10.0.0.103/32", description: "VRF TENANT-1 loopback", create_interface: true }
+  - { device: dc1-leaf2,  interface: lo0.2, ip: "10.0.0.104/32", description: "VRF TENANT-1 loopback", create_interface: true }
 
 p2p_links:
   - a_device: dc1-spine1
