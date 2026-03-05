@@ -480,6 +480,12 @@ Spine routing instances:
     "family": "evpn signaling",
     "multihop": true,
     "local_address": "lo0.1"
+  },
+  "core_isolation": {
+    "enabled": true,
+    "action": "hard-shutdown",
+    "hold_time_up": 60,
+    "description": "Bring down ESI-LAG interfaces on overlay BGP loss"
   }
 }
 ```

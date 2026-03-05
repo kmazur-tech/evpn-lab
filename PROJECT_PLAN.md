@@ -44,6 +44,9 @@ Scope:
   - OOB management in `mgmt_junos` instance (fxp0)
 - VXLAN with VNI-to-VLAN mapping
 - ESI-LAG (EVPN multihoming) between both leaves and test hosts (Linux containers)
+- EVPN core isolation (enabled by default): automatic ESI-LAG shutdown on overlay BGP loss
+  - Optional: explicit `network-isolation` profiles for faster failover (hard shutdown vs LACP timeout)
+  - Hold-time tuning to prevent flapping during BGP reconvergence
 - Manual baseline verification: `show bgp summary`, `show evpn instance`, `show ethernet-switching table`
 
 Result: a working fabric with L2/L3 traffic passing between hosts over VXLAN.
