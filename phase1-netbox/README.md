@@ -56,16 +56,17 @@ Management addressing is environment-specific - see `.env.example` in the repo r
 
 ### BGP ASN Allocation
 
-eBGP underlay with unique ASN per device:
+Each device has two ASNs: unique underlay (eBGP) + shared overlay (iBGP with route reflectors on spines):
 
-| ASN | Device |
-|-----|--------|
-| 65001 | dc1-spine1 |
-| 65002 | dc1-spine2 |
-| 65003 | dc1-leaf1 |
-| 65004 | dc1-leaf2 |
+| ASN | Purpose | Devices |
+|-----|---------|---------|
+| 65000 | iBGP overlay (EVPN signaling) | All spines + leaves (shared) |
+| 65001 | eBGP underlay | dc1-spine1 |
+| 65002 | eBGP underlay | dc1-spine2 |
+| 65003 | eBGP underlay | dc1-leaf1 |
+| 65004 | eBGP underlay | dc1-leaf2 |
 
-ASN objects are created as the authoritative registry. Per-device ASN is stored in `local_context_data` (`{"bgp_asn": 65001}`) because NetBox ASN objects can only be assigned to sites, not individual devices. This keeps the ASN accessible in templates via `device.local_context_data.bgp_asn`.
+Per-device underlay ASN is stored in `local_context_data` (`{"bgp_asn": 65001}`). The overlay ASN is the same for all devices and stored in role-level config contexts (`"overlay_asn": 65000`).
 
 ### Juniper Routing Instance Model (ERB)
 

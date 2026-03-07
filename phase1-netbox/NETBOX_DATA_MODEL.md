@@ -211,18 +211,20 @@ vjunos-switch emulates an EX9214 chassis (SMBIOS product=VM-VEX). U height set t
 
 ### ASN Objects
 
-ASN objects serve as the authoritative registry. Per-device ASN is stored in `local_context_data` on each device because NetBox native ASN objects can only be assigned to sites, not individual devices.
+ASN objects serve as the authoritative registry. Per-device underlay ASN is stored in `local_context_data` on each device because NetBox native ASN objects can only be assigned to sites, not individual devices. The overlay ASN (shared by all devices) is stored in role-level config contexts.
 
-| ASN | Description |
-|-----|-------------|
-| 65001 | dc1-spine1 |
-| 65002 | dc1-spine2 |
-| 65003 | dc1-leaf1 |
-| 65004 | dc1-leaf2 |
+| ASN | Purpose | Assigned to |
+|-----|---------|-------------|
+| 65000 | iBGP overlay (EVPN signaling) | All spines + leaves (shared) |
+| 65001 | eBGP underlay | dc1-spine1 |
+| 65002 | eBGP underlay | dc1-spine2 |
+| 65003 | eBGP underlay | dc1-leaf1 |
+| 65004 | eBGP underlay | dc1-leaf2 |
 
 Device `local_context_data` example: `{"bgp_asn": 65001}`
+Role config context contains: `"overlay_asn": 65000`
 
-> eBGP underlay: unique ASN per device. ASN registry is in IPAM ASN objects. Per-device value is in local context for direct template access.
+> Each device has two ASNs: unique underlay (eBGP) + shared overlay (iBGP with route reflectors on spines).
 
 ---
 
@@ -497,10 +499,12 @@ Spine routing instances:
     "timers": {"hold": 90, "keepalive": 30}
   },
   "overlay": {
-    "bgp_type": "ebgp",
+    "bgp_type": "ibgp",
+    "overlay_asn": 65000,
     "family": "evpn signaling",
     "multihop": true,
-    "local_address": "lo0.1"
+    "local_address": "lo0.1",
+    "route_reflector_client": true
   },
   "core_isolation": {
     "enabled": true,
@@ -527,7 +531,8 @@ Spine routing instances:
     "timers": {"hold": 90, "keepalive": 30}
   },
   "overlay": {
-    "bgp_type": "ebgp",
+    "bgp_type": "ibgp",
+    "overlay_asn": 65000,
     "family": "evpn signaling",
     "route_reflector": true,
     "cluster_id_from": "loopback"
@@ -566,7 +571,7 @@ Spine routing instances:
 | Platforms | 3 |
 | Device Roles | 3 |
 | Device Types | 2 |
-| ASNs | 4 |
+| ASNs | 5 |
 | VRFs | 1 |
 | Route Targets | 3 |
 | VLAN Groups | 1 |

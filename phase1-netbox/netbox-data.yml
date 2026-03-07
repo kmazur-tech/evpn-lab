@@ -130,10 +130,11 @@ asn_ranges:
   - { name: Lab ASN Range, rir: Private, start: 64512, end: 65534 }
 
 asns:
-  - { asn: 65001, description: dc1-spine1 }
-  - { asn: 65002, description: dc1-spine2 }
-  - { asn: 65003, description: dc1-leaf1 }
-  - { asn: 65004, description: dc1-leaf2 }
+  - { asn: 65000, description: "iBGP overlay (EVPN signaling) - shared by all fabric devices" }
+  - { asn: 65001, description: "eBGP underlay - dc1-spine1" }
+  - { asn: 65002, description: "eBGP underlay - dc1-spine2" }
+  - { asn: 65003, description: "eBGP underlay - dc1-leaf1" }
+  - { asn: 65004, description: "eBGP underlay - dc1-leaf2" }
 
 # ---------------------------------------------------------------------------
 # Step 8 - VRFs, Route Targets, Prefix/VLAN Roles
