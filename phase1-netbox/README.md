@@ -42,10 +42,17 @@ export MGMT_dc1_leaf2=<ip/mask>
 | Block | Purpose |
 |-------|---------|
 | `$MGMT_SUBNET` | Management (OOB, containerlab mgmt bridge) |
-| 10.0.0.0/24 | Loopbacks (router-ID, VTEP source) |
-| 10.0.1.0/24 | DC1 point-to-point spine-leaf links (/31s) |
-| 10.10.10.0/24 | VLAN 10 - tenant server subnet |
-| 10.10.20.0/24 | VLAN 20 - tenant server subnet |
+| 10.0.0.0/24 | Inter-DC P2P links (Phase 10) |
+| 10.1.0.0/16 | DC1 infrastructure supernet |
+| 10.1.0.0/22 | DC1 loopbacks (all routing instances) |
+| 10.1.4.0/24 | DC1 P2P spine-leaf links (/31s) |
+| 10.2.0.0/16 | DC2 infrastructure supernet (Phase 10) |
+| 10.10.0.0/16 | Tenant supernet (stretched across DCs via VXLAN) |
+| 10.11.0.0/16 | DC1 local tenant subnets |
+| 10.12.0.0/16 | DC2 local tenant subnets (Phase 10) |
+
+Each DC summarizes to a single /16. Loopbacks summarize to /22 (room for 4 VRFs).
+Management addressing is environment-specific - see `.env.example` in the repo root.
 
 ### BGP ASN Allocation
 

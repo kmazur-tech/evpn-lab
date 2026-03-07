@@ -267,21 +267,42 @@ Device `local_context_data` example: `{"bgp_asn": 65001}`
 
 ### Prefix Hierarchy
 
+```
+10.0.0.0/24      - Inter-DC P2P links
+10.1.0.0/16      - DC1 infrastructure
+  10.1.0.0/22    - DC1 loopbacks (all instances)
+  10.1.4.0/24    - DC1 P2P spine-leaf
+10.2.0.0/16      - DC2 infrastructure (Phase 10)
+10.10.0.0/16     - Tenant supernet (stretched)
+10.11.0.0/16     - DC1 local tenants
+10.12.0.0/16     - DC2 local tenants (Phase 10)
+```
+
 | Prefix | Site | VRF | Role | Description |
 |--------|------|-----|------|-------------|
 | **Management** | | | | |
 | `$MGMT_SUBNET` | - | - | Management | Lab management network |
-| **Loopbacks** | | | | |
-| 10.0.0.0/24 | - | - | Loopback | Loopback addresses |
-| **DC1 P2P** | | | | |
-| 10.0.1.0/24 | DC1 | - | P2P Link | DC1 spine-leaf P2P links |
-| 10.0.1.0/31 | DC1 | - | P2P Link | spine1 - leaf1 |
-| 10.0.1.2/31 | DC1 | - | P2P Link | spine1 - leaf2 |
-| 10.0.1.4/31 | DC1 | - | P2P Link | spine2 - leaf1 |
-| 10.0.1.6/31 | DC1 | - | P2P Link | spine2 - leaf2 |
-| **Tenant subnets** | | | | |
+| **Inter-DC** | | | | |
+| 10.0.0.0/24 | - | - | P2P Link | Inter-DC P2P links (Phase 10) |
+| **DC1 infrastructure** | | | | |
+| 10.1.0.0/16 | DC1 | - | - | DC1 supernet |
+| 10.1.0.0/22 | DC1 | - | Loopback | DC1 loopbacks (all instances) |
+| 10.1.0.0/24 | DC1 | - | Loopback | DC1 loopbacks, default instance |
+| 10.1.1.0/24 | DC1 | - | Loopback | DC1 loopbacks, VRF TENANT-1 |
+| 10.1.4.0/24 | DC1 | - | P2P Link | DC1 spine-leaf P2P links |
+| 10.1.4.0/31 | DC1 | - | P2P Link | spine1 - leaf1 |
+| 10.1.4.2/31 | DC1 | - | P2P Link | spine1 - leaf2 |
+| 10.1.4.4/31 | DC1 | - | P2P Link | spine2 - leaf1 |
+| 10.1.4.6/31 | DC1 | - | P2P Link | spine2 - leaf2 |
+| **Tenant subnets (stretched)** | | | | |
+| 10.10.0.0/16 | - | - | - | Tenant supernet (stretched across DCs) |
 | 10.10.10.0/24 | - | TENANT-1 | Server | VLAN 10 - Server subnet 1 |
 | 10.10.20.0/24 | - | TENANT-1 | Server | VLAN 20 - Server subnet 2 |
+| **DC1 local tenants** | | | | |
+| 10.11.0.0/16 | DC1 | - | - | DC1 local tenant supernet |
+| **DC2 (Phase 10)** | | | | |
+| 10.2.0.0/16 | - | - | - | DC2 supernet (Phase 10) |
+| 10.12.0.0/16 | - | - | - | DC2 local tenant supernet (Phase 10) |
 
 ---
 
@@ -334,12 +355,12 @@ Using unit 1/2 instead of 0/1 to keep naming explicit and avoid bare `lo0` ambig
 
 | Device | Interface | IP | Description | Primary |
 |--------|-----------|-----|-------------|---------|
-| dc1-spine1 | lo0.1 | 10.0.0.1/32 | Router-ID | Yes |
-| dc1-spine2 | lo0.1 | 10.0.0.2/32 | Router-ID | Yes |
-| dc1-leaf1 | lo0.1 | 10.0.0.3/32 | Router-ID / VTEP | Yes |
-| dc1-leaf2 | lo0.1 | 10.0.0.4/32 | Router-ID / VTEP | Yes |
-| dc1-leaf1 | lo0.2 | 10.0.0.103/32 | VRF TENANT-1 loopback | No |
-| dc1-leaf2 | lo0.2 | 10.0.0.104/32 | VRF TENANT-1 loopback | No |
+| dc1-spine1 | lo0.1 | 10.1.0.1/32 | Router-ID | Yes |
+| dc1-spine2 | lo0.1 | 10.1.0.2/32 | Router-ID | Yes |
+| dc1-leaf1 | lo0.1 | 10.1.0.3/32 | Router-ID / VTEP | Yes |
+| dc1-leaf2 | lo0.1 | 10.1.0.4/32 | Router-ID / VTEP | Yes |
+| dc1-leaf1 | lo0.2 | 10.1.1.3/32 | VRF TENANT-1 loopback | No |
+| dc1-leaf2 | lo0.2 | 10.1.1.4/32 | VRF TENANT-1 loopback | No |
 
 ### P2P Link IPs (assigned to ge-0/0/x)
 
@@ -347,10 +368,10 @@ Full mesh: each spine connects to each leaf.
 
 | A-Device | A-Interface | A-IP | Z-Device | Z-Interface | Z-IP |
 |----------|-------------|------|----------|-------------|------|
-| dc1-spine1 | ge-0/0/0 | 10.0.1.0/31 | dc1-leaf1 | ge-0/0/0 | 10.0.1.1/31 |
-| dc1-spine1 | ge-0/0/1 | 10.0.1.2/31 | dc1-leaf2 | ge-0/0/0 | 10.0.1.3/31 |
-| dc1-spine2 | ge-0/0/0 | 10.0.1.4/31 | dc1-leaf1 | ge-0/0/1 | 10.0.1.5/31 |
-| dc1-spine2 | ge-0/0/1 | 10.0.1.6/31 | dc1-leaf2 | ge-0/0/1 | 10.0.1.7/31 |
+| dc1-spine1 | ge-0/0/0 | 10.1.4.0/31 | dc1-leaf1 | ge-0/0/0 | 10.1.4.1/31 |
+| dc1-spine1 | ge-0/0/1 | 10.1.4.2/31 | dc1-leaf2 | ge-0/0/0 | 10.1.4.3/31 |
+| dc1-spine2 | ge-0/0/0 | 10.1.4.4/31 | dc1-leaf1 | ge-0/0/1 | 10.1.4.5/31 |
+| dc1-spine2 | ge-0/0/1 | 10.1.4.6/31 | dc1-leaf2 | ge-0/0/1 | 10.1.4.7/31 |
 
 ---
 
@@ -411,8 +432,8 @@ The VRF TENANT-1 routing instance contains IRB interfaces and `lo0.2`:
 
 | Device | Interface | Type | VRF | IP | Description |
 |--------|-----------|------|-----|-----|-------------|
-| dc1-leaf1 | lo0.2 | Virtual | TENANT-1 | 10.0.0.103/32 | VRF loopback (Type-5) |
-| dc1-leaf2 | lo0.2 | Virtual | TENANT-1 | 10.0.0.104/32 | VRF loopback (Type-5) |
+| dc1-leaf1 | lo0.2 | Virtual | TENANT-1 | 10.1.1.3/32 | VRF loopback (Type-5) |
+| dc1-leaf2 | lo0.2 | Virtual | TENANT-1 | 10.1.1.4/32 | VRF loopback (Type-5) |
 | dc1-leaf1 | irb.10 | Virtual | TENANT-1 | 10.10.10.1/24 (anycast) | VLAN 10 GW |
 | dc1-leaf1 | irb.20 | Virtual | TENANT-1 | 10.10.20.1/24 (anycast) | VLAN 20 GW |
 | dc1-leaf2 | irb.10 | Virtual | TENANT-1 | 10.10.10.1/24 (anycast) | VLAN 10 GW |

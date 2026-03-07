@@ -168,26 +168,32 @@ aggregates:
   - { prefix: "172.16.0.0/12",  rir: Private, description: "Management address space (env-specific)" }
 
 prefixes:
-  # Management - prefix value comes from $MGMT_SUBNET env var
+  # Management
   - prefix: "$MGMT_SUBNET"
     role: Management
     description: "Lab management network"
 
-  # Loopbacks
-  - prefix: "10.0.0.0/24"
-    role: Loopback
-    description: "Loopback addresses"
+  # Inter-DC
+  - { prefix: "10.0.0.0/24", role: P2P Link, description: "Inter-DC P2P links (Phase 10)" }
 
-  # DC1 P2P
-  - { prefix: "10.0.1.0/24",  site: DC1, role: P2P Link, description: "DC1 spine-leaf P2P links" }
-  - { prefix: "10.0.1.0/31",  site: DC1, role: P2P Link, description: "spine1 - leaf1" }
-  - { prefix: "10.0.1.2/31",  site: DC1, role: P2P Link, description: "spine1 - leaf2" }
-  - { prefix: "10.0.1.4/31",  site: DC1, role: P2P Link, description: "spine2 - leaf1" }
-  - { prefix: "10.0.1.6/31",  site: DC1, role: P2P Link, description: "spine2 - leaf2" }
+  # DC1 infrastructure
+  - { prefix: "10.1.0.0/16",  site: DC1, description: "DC1 infrastructure supernet" }
+  - { prefix: "10.1.0.0/22",  site: DC1, role: Loopback, description: "DC1 loopbacks (all instances)" }
+  - { prefix: "10.1.0.0/24",  site: DC1, role: Loopback, description: "DC1 loopbacks, default instance" }
+  - { prefix: "10.1.1.0/24",  site: DC1, role: Loopback, description: "DC1 loopbacks, VRF TENANT-1" }
+  - { prefix: "10.1.4.0/24",  site: DC1, role: P2P Link, description: "DC1 spine-leaf P2P links" }
+  - { prefix: "10.1.4.0/31",  site: DC1, role: P2P Link, description: "spine1 - leaf1" }
+  - { prefix: "10.1.4.2/31",  site: DC1, role: P2P Link, description: "spine1 - leaf2" }
+  - { prefix: "10.1.4.4/31",  site: DC1, role: P2P Link, description: "spine2 - leaf1" }
+  - { prefix: "10.1.4.6/31",  site: DC1, role: P2P Link, description: "spine2 - leaf2" }
 
-  # Tenant subnets
+  # Tenant subnets (stretched across DCs)
+  - { prefix: "10.10.0.0/16", description: "Tenant supernet (stretched across DCs)" }
   - { prefix: "10.10.10.0/24", vrf: TENANT-1, role: Server, description: "VLAN 10 - Server subnet 1" }
   - { prefix: "10.10.20.0/24", vrf: TENANT-1, role: Server, description: "VLAN 20 - Server subnet 2" }
+
+  # DC1 local tenants
+  - { prefix: "10.11.0.0/16", site: DC1, description: "DC1 local tenant supernet" }
 
 # ---------------------------------------------------------------------------
 # Step 10 - VLAN Groups, VLANs
@@ -291,42 +297,42 @@ devices:
 # ---------------------------------------------------------------------------
 loopback_ips:
   # lo0.1 - default instance: router-ID, VTEP source
-  - { device: dc1-spine1, interface: lo0.1, ip: "10.0.0.1/32", description: Router-ID, primary: true }
-  - { device: dc1-spine2, interface: lo0.1, ip: "10.0.0.2/32", description: Router-ID, primary: true }
-  - { device: dc1-leaf1,  interface: lo0.1, ip: "10.0.0.3/32", description: "Router-ID / VTEP", primary: true }
-  - { device: dc1-leaf2,  interface: lo0.1, ip: "10.0.0.4/32", description: "Router-ID / VTEP", primary: true }
+  - { device: dc1-spine1, interface: lo0.1, ip: "10.1.0.1/32", description: Router-ID, primary: true }
+  - { device: dc1-spine2, interface: lo0.1, ip: "10.1.0.2/32", description: Router-ID, primary: true }
+  - { device: dc1-leaf1,  interface: lo0.1, ip: "10.1.0.3/32", description: "Router-ID / VTEP", primary: true }
+  - { device: dc1-leaf2,  interface: lo0.1, ip: "10.1.0.4/32", description: "Router-ID / VTEP", primary: true }
   # lo0.2 - VRF TENANT-1: needed for EVPN Type-5 route advertisement
-  - { device: dc1-leaf1,  interface: lo0.2, ip: "10.0.0.103/32", description: "VRF TENANT-1 loopback", create_interface: true }
-  - { device: dc1-leaf2,  interface: lo0.2, ip: "10.0.0.104/32", description: "VRF TENANT-1 loopback", create_interface: true }
+  - { device: dc1-leaf1,  interface: lo0.2, ip: "10.1.1.3/32", description: "VRF TENANT-1 loopback", create_interface: true }
+  - { device: dc1-leaf2,  interface: lo0.2, ip: "10.1.1.4/32", description: "VRF TENANT-1 loopback", create_interface: true }
 
 p2p_links:
   - a_device: dc1-spine1
     a_interface: ge-0/0/0
-    a_ip: "10.0.1.0/31"
+    a_ip: "10.1.4.0/31"
     z_device: dc1-leaf1
     z_interface: ge-0/0/0
-    z_ip: "10.0.1.1/31"
+    z_ip: "10.1.4.1/31"
 
   - a_device: dc1-spine1
     a_interface: ge-0/0/1
-    a_ip: "10.0.1.2/31"
+    a_ip: "10.1.4.2/31"
     z_device: dc1-leaf2
     z_interface: ge-0/0/0
-    z_ip: "10.0.1.3/31"
+    z_ip: "10.1.4.3/31"
 
   - a_device: dc1-spine2
     a_interface: ge-0/0/0
-    a_ip: "10.0.1.4/31"
+    a_ip: "10.1.4.4/31"
     z_device: dc1-leaf1
     z_interface: ge-0/0/1
-    z_ip: "10.0.1.5/31"
+    z_ip: "10.1.4.5/31"
 
   - a_device: dc1-spine2
     a_interface: ge-0/0/1
-    a_ip: "10.0.1.6/31"
+    a_ip: "10.1.4.6/31"
     z_device: dc1-leaf2
     z_interface: ge-0/0/1
-    z_ip: "10.0.1.7/31"
+    z_ip: "10.1.4.7/31"
 
 # ---------------------------------------------------------------------------
 # Step 13 - Cables
