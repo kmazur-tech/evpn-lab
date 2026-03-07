@@ -129,10 +129,10 @@ python populate.py
 
 Phase 1 is complete when:
 
-- [ ] All Step 1-13 objects exist in NetBox
-- [ ] `populate.py` runs idempotently (second run creates no new objects)
-- [ ] Every device has correct interfaces, IPs, and cables
-- [ ] ASN objects exist and per-device ASN is in `local_context_data`
-- [ ] Loopback IPs (lo0.1) are set as `primary_ip4` on network devices
-- [ ] OOB IPs (fxp0) are set as `oob_ip` on network devices
-- [ ] NetBox topology view shows correct spine-leaf connectivity
+- [x] All Step 1-13 objects exist in NetBox
+- [x] `populate.py` runs idempotently (second run creates no new objects)
+- [x] Every device has correct interfaces, IPs, and cables
+- [x] ASN objects exist and per-device ASN is in `local_context_data`
+- [x] Loopback IPs (lo0.1) are set as `primary_ip4` on network devices
+- [x] OOB IPs (fxp0) are set as `oob_ip` on network devices
+- [x] NetBox topology view shows correct spine-leaf connectivity
