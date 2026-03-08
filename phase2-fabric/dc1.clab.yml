@@ -1,0 +1,121 @@
+# DC1 EVPN-VXLAN Fabric - Containerlab Topology
+#
+# 2x spine + 2x leaf (Juniper vJunos-switch, EX9214)
+# 4x host (Linux containers)
+#
+# vjunos-switch interface mapping: eth1=ge-0/0/0, eth2=ge-0/0/1, etc.
+# Management via br-clab bridge (env-specific, see .env.example)
+
+name: dc1
+
+mgmt:
+  bridge: ${CLAB_BRIDGE:-br-clab}
+  ipv4-subnet: ${MGMT_SUBNET}
+  ipv4-gw: ${MGMT_GATEWAY}
+
+topology:
+
+  # -------------------------------------------------------------------
+  # Defaults
+  # -------------------------------------------------------------------
+  defaults:
+    labels:
+      project: evpn-lab
+      phase: "2"
+
+  kinds:
+    juniper_vjunosswitch:
+      image: vrnetlab/juniper_vjunos-switch:23.2R1.14
+    linux:
+      image: alpine:latest
+
+  # -------------------------------------------------------------------
+  # Nodes
+  # -------------------------------------------------------------------
+  nodes:
+
+    # Spines
+    dc1-spine1:
+      kind: juniper_vjunosswitch
+      mgmt-ipv4: ${MGMT_dc1_spine1%/*}
+      # startup-config: configs/dc1-spine1.conf
+
+    dc1-spine2:
+      kind: juniper_vjunosswitch
+      mgmt-ipv4: ${MGMT_dc1_spine2%/*}
+      # startup-config: configs/dc1-spine2.conf
+
+    # Leaves
+    dc1-leaf1:
+      kind: juniper_vjunosswitch
+      mgmt-ipv4: ${MGMT_dc1_leaf1%/*}
+      # startup-config: configs/dc1-leaf1.conf
+
+    dc1-leaf2:
+      kind: juniper_vjunosswitch
+      mgmt-ipv4: ${MGMT_dc1_leaf2%/*}
+      # startup-config: configs/dc1-leaf2.conf
+
+    # Hosts
+    dc1-host1:
+      kind: linux
+      exec:
+        - ip addr add 10.10.10.11/24 dev eth1
+        - ip route add default via 10.10.10.1
+
+    dc1-host2:
+      kind: linux
+      exec:
+        - ip addr add 10.10.10.12/24 dev eth1
+        - ip route add default via 10.10.10.1
+
+    dc1-host3:
+      kind: linux
+      exec:
+        - ip link add bond0 type bond mode 802.3ad
+        - ip link set eth1 master bond0
+        - ip link set eth2 master bond0
+        - ip link set bond0 up
+        - ip addr add 10.10.20.13/24 dev bond0
+        - ip route add default via 10.10.20.1
+
+    dc1-host4:
+      kind: linux
+      exec:
+        - ip link add bond0 type bond mode 802.3ad
+        - ip link set eth1 master bond0
+        - ip link set eth2 master bond0
+        - ip link set bond0 up
+        - ip addr add 10.10.20.14/24 dev bond0
+        - ip route add default via 10.10.20.1
+
+  # -------------------------------------------------------------------
+  # Links - matches NetBox cabling (phase1-netbox/netbox-data.yml)
+  # -------------------------------------------------------------------
+  links:
+
+    # Spine-leaf fabric (full mesh)
+    # dc1-spine1 ge-0/0/0 <-> dc1-leaf1  ge-0/0/0  (10.1.4.0/31)
+    - endpoints: ["dc1-spine1:eth1", "dc1-leaf1:eth1"]
+    # dc1-spine1 ge-0/0/1 <-> dc1-leaf2  ge-0/0/0  (10.1.4.2/31)
+    - endpoints: ["dc1-spine1:eth2", "dc1-leaf2:eth1"]
+    # dc1-spine2 ge-0/0/0 <-> dc1-leaf1  ge-0/0/1  (10.1.4.4/31)
+    - endpoints: ["dc1-spine2:eth1", "dc1-leaf1:eth2"]
+    # dc1-spine2 ge-0/0/1 <-> dc1-leaf2  ge-0/0/1  (10.1.4.6/31)
+    - endpoints: ["dc1-spine2:eth2", "dc1-leaf2:eth2"]
+
+    # Host - single-homed
+    # dc1-leaf1 ge-0/0/2 <-> dc1-host1 eth0
+    - endpoints: ["dc1-leaf1:eth3", "dc1-host1:eth1"]
+    # dc1-leaf2 ge-0/0/2 <-> dc1-host2 eth0
+    - endpoints: ["dc1-leaf2:eth3", "dc1-host2:eth1"]
+
+    # Host - dual-homed (ESI-LAG)
+    # dc1-leaf1 ge-0/0/3 <-> dc1-host3 eth0
+    - endpoints: ["dc1-leaf1:eth4", "dc1-host3:eth1"]
+    # dc1-leaf2 ge-0/0/3 <-> dc1-host3 eth1
+    - endpoints: ["dc1-leaf2:eth4", "dc1-host3:eth2"]
+    # dc1-leaf1 ge-0/0/4 <-> dc1-host4 eth0
+    - endpoints: ["dc1-leaf1:eth5", "dc1-host4:eth1"]
+    # dc1-leaf2 ge-0/0/4 <-> dc1-host4 eth1
+    - endpoints: ["dc1-leaf2:eth5", "dc1-host4:eth2"]
