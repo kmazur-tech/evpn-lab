@@ -14,6 +14,7 @@ Environment variables required:
     MGMT_dc1_leaf2  - Management IP/mask for dc1-leaf2
 """
 
+import argparse
 import os
 import sys
 from pathlib import Path
@@ -68,8 +69,13 @@ def ensure_slug(data):
     return data
 
 
+CHECK_MODE = False
+missing_count = 0
+
+
 def get_or_create(endpoint, lookup_keys, data, label=""):
     """Get existing object or create new one. Returns (object, created)."""
+    global missing_count
     data = ensure_slug(data)
     lookup = {k: data[k] for k in lookup_keys if k in data}
     existing = endpoint.filter(**lookup)
@@ -77,6 +83,11 @@ def get_or_create(endpoint, lookup_keys, data, label=""):
     if results:
         print(f"  EXISTS: {label or lookup}")
         return results[0], False
+
+    if CHECK_MODE:
+        print(f"  MISSING: {label or lookup}")
+        missing_count += 1
+        return None, False
 
     try:
         obj = endpoint.create(data)
@@ -88,6 +99,17 @@ def get_or_create(endpoint, lookup_keys, data, label=""):
 
 
 def main():
+    global CHECK_MODE, missing_count
+
+    parser = argparse.ArgumentParser(description="Populate NetBox with EVPN-VXLAN lab data")
+    parser.add_argument("--check", action="store_true",
+                        help="Check mode: verify all objects exist without creating anything")
+    args = parser.parse_args()
+    CHECK_MODE = args.check
+
+    if CHECK_MODE:
+        print("=== CHECK MODE - no changes will be made ===\n")
+
     # Connect to NetBox
     url = os.environ.get("NETBOX_URL")
     token = os.environ.get("NETBOX_TOKEN")
@@ -350,6 +372,8 @@ def main():
             "local_context_data": local_ctx if local_ctx else None,
         }
         device, created = get_or_create(nb.dcim.devices, ["name"], data, dev["name"])
+        if not device:
+            continue
 
         # Assign OOB management IP to fxp0 (NOT primary_ip4 - that's loopback)
         if dev.get("oob_ip") and dev["oob_ip"] != "-":
@@ -378,8 +402,17 @@ def main():
 
     for lo in config["loopback_ips"]:
         device = nb.dcim.devices.get(name=lo["device"])
+        if not device:
+            print(f"  MISSING DEVICE: {lo['device']}")
+            missing_count += 1
+            continue
+
         iface = nb.dcim.interfaces.get(device_id=device.id, name=lo["interface"])
         if not iface:
+            if CHECK_MODE:
+                print(f"  MISSING INTERFACE: {lo['device']}:{lo['interface']}")
+                missing_count += 1
+                continue
             if lo.get("create_interface"):
                 iface = nb.dcim.interfaces.create({
                     "device": device.id,
@@ -394,6 +427,10 @@ def main():
 
         existing = list(nb.ipam.ip_addresses.filter(address=lo["ip"]))
         if not existing:
+            if CHECK_MODE:
+                print(f"  MISSING: {lo['ip']} -> {lo['device']}:{lo['interface']}")
+                missing_count += 1
+                continue
             ip_obj = nb.ipam.ip_addresses.create({
                 "address": lo["ip"],
                 "assigned_object_type": "dcim.interface",
@@ -418,13 +455,22 @@ def main():
             ip = link[f"{side}_ip"]
 
             device = nb.dcim.devices.get(name=dev_name)
+            if not device:
+                print(f"  MISSING DEVICE: {dev_name}")
+                missing_count += 1
+                continue
             iface = nb.dcim.interfaces.get(device_id=device.id, name=intf_name)
             if not iface:
-                print(f"  ERROR: Interface {intf_name} not found on {dev_name}")
+                print(f"  MISSING INTERFACE: {dev_name}:{intf_name}")
+                missing_count += 1
                 continue
 
             existing = list(nb.ipam.ip_addresses.filter(address=ip))
             if not existing:
+                if CHECK_MODE:
+                    print(f"  MISSING: {ip} -> {dev_name}:{intf_name}")
+                    missing_count += 1
+                    continue
                 nb.ipam.ip_addresses.create({
                     "address": ip,
                     "assigned_object_type": "dcim.interface",
@@ -439,17 +485,28 @@ def main():
     print("\n=== Step 13: Cables ===")
     for cable in config["cables"]:
         a_dev = nb.dcim.devices.get(name=cable["a_device"])
-        a_intf = nb.dcim.interfaces.get(device_id=a_dev.id, name=cable["a_interface"])
         z_dev = nb.dcim.devices.get(name=cable["z_device"])
+        if not a_dev or not z_dev:
+            print(f"  MISSING DEVICE for cable {cable['label']}")
+            missing_count += 1
+            continue
+
+        a_intf = nb.dcim.interfaces.get(device_id=a_dev.id, name=cable["a_interface"])
         z_intf = nb.dcim.interfaces.get(device_id=z_dev.id, name=cable["z_interface"])
 
         if not a_intf or not z_intf:
-            print(f"  ERROR: Interface not found for cable {cable['label']}")
+            print(f"  MISSING INTERFACE for cable {cable['label']}")
+            missing_count += 1
             continue
 
         # Check if cable already exists by checking if interface is connected
         if a_intf.cable:
             print(f"  EXISTS: {cable['label']}")
+            continue
+
+        if CHECK_MODE:
+            print(f"  MISSING: cable {cable['label']}")
+            missing_count += 1
             continue
 
         try:
@@ -461,6 +518,10 @@ def main():
             print(f"  CREATED: {cable['label']}")
         except pynetbox.RequestError as e:
             print(f"  ERROR {cable['label']}: {e}")
+
+    if CHECK_MODE:
+        print(f"\n=== CHECK COMPLETE: {missing_count} missing object(s) ===")
+        sys.exit(1 if missing_count > 0 else 0)
 
     print("\n=== Population complete ===")
 

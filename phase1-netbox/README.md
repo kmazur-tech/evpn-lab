@@ -123,7 +123,21 @@ pip install -r requirements.txt
 
 # 3. Populate NetBox (idempotent - safe to re-run)
 python populate.py
+
+# 4. Check mode - verify all objects exist without creating anything
+python populate.py --check
 ```
+
+## Convergence Model
+
+`populate.py` uses **create-only convergence**: it checks if each object exists (by name, slug, or key fields) and creates it if missing. Re-running the script is safe - existing objects are skipped, not duplicated.
+
+What this means in practice:
+- **Adding objects:** Add them to `netbox-data.yml` and re-run. New objects are created, existing ones untouched.
+- **Modifying objects:** Changes to existing objects in `netbox-data.yml` are **not** applied automatically. Modify them in NetBox directly or delete and re-create.
+- **Deleting objects:** Removing entries from `netbox-data.yml` does **not** delete them from NetBox. Remove them manually if needed.
+
+This is intentional for Phase 1 - a full declarative reconciliation engine is out of scope for the initial population script.
 
 ## Definition of Done
 

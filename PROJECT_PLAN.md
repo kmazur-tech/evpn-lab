@@ -20,7 +20,7 @@ Scope:
   - IP Addressing: management, loopback, P2P spine-leaf, host subnets
   - VLANs + VLAN Groups per site
   - Custom Fields: VNI per VLAN, L3VNI per VRF, ESI per LAG, anycast MAC per VRF
-  - ASN modeled via native NetBox ASN objects (no custom field)
+  - ASN modeled via native NetBox ASN objects (registry) + per-device underlay ASN in local_context_data
 - NetBox population:
   - Python script (pynetbox) loading the initial state - no manual GUI clicking
   - Script is part of the repo, repeatable (idempotent)

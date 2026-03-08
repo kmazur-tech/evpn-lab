@@ -67,7 +67,7 @@ Objects are split into two groups:
 | `esi` | dcim.interface | Text | No | Ethernet Segment Identifier (10-byte, colon-separated) |
 | `anycast_mac` | ipam.vrf | Text | No | Shared anycast gateway MAC per VRF |
 
-> ASN is modeled using native NetBox ASN objects (Step 7), not a custom field - single source of truth.
+> ASN objects are the authoritative registry (Step 7). Per-device underlay ASN is in `local_context_data` because NetBox ASNs are site-level only. Overlay ASN (shared) is in role config contexts.
 > VTEP source interface is a convention (lo0.1 on all leaves) defined in config context, not a per-device field.
 > Route distinguisher is derived from loopback IP at config render time, not stored.
 
