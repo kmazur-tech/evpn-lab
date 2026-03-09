@@ -37,23 +37,23 @@ topology:
     # Spines
     dc1-spine1:
       kind: juniper_vjunosswitch
-      mgmt-ipv4: ${MGMT_dc1_spine1%/*}
+      mgmt-ipv4: ${CLAB_IP_dc1_spine1}
       # startup-config: configs/dc1-spine1.conf
 
     dc1-spine2:
       kind: juniper_vjunosswitch
-      mgmt-ipv4: ${MGMT_dc1_spine2%/*}
+      mgmt-ipv4: ${CLAB_IP_dc1_spine2}
       # startup-config: configs/dc1-spine2.conf
 
     # Leaves
     dc1-leaf1:
       kind: juniper_vjunosswitch
-      mgmt-ipv4: ${MGMT_dc1_leaf1%/*}
+      mgmt-ipv4: ${CLAB_IP_dc1_leaf1}
       # startup-config: configs/dc1-leaf1.conf
 
     dc1-leaf2:
       kind: juniper_vjunosswitch
-      mgmt-ipv4: ${MGMT_dc1_leaf2%/*}
+      mgmt-ipv4: ${CLAB_IP_dc1_leaf2}
       # startup-config: configs/dc1-leaf2.conf
 
     # Hosts
