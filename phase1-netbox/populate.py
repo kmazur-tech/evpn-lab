@@ -2,12 +2,13 @@
 """Populate NetBox with EVPN-VXLAN lab data (Phase 1, Steps 1-13).
 
 Reads structured data from netbox-data.yml and creates all objects in
-dependency order. Idempotent - safe to re-run.
+dependency order. Uses create-only convergence - existing objects are
+skipped, not updated or deleted.
 
 Environment variables required:
     NETBOX_URL      - NetBox base URL (e.g. http://netbox:8000)
     NETBOX_TOKEN    - API token (v2 format: nbt_xxx.yyy)
-    MGMT_SUBNET     - Management subnet CIDR (e.g. 172.16.18.0/24)
+    MGMT_SUBNET     - Management subnet CIDR
     MGMT_dc1_spine1 - Management IP/mask for dc1-spine1
     MGMT_dc1_spine2 - Management IP/mask for dc1-spine2
     MGMT_dc1_leaf1  - Management IP/mask for dc1-leaf1
@@ -16,11 +17,23 @@ Environment variables required:
 
 import argparse
 import os
+import re
 import sys
 from pathlib import Path
 
 import pynetbox
 import yaml
+
+# Only these env vars are substituted in netbox-data.yml.
+# Prevents accidental injection from system vars like PATH, HOME, etc.
+EXPECTED_ENV_VARS = [
+    "NETBOX_URL", "NETBOX_TOKEN", "MGMT_SUBNET",
+    "MGMT_dc1_spine1", "MGMT_dc1_spine2",
+    "MGMT_dc1_leaf1", "MGMT_dc1_leaf2",
+]
+
+CHECK_MODE = False
+missing_count = 0
 
 
 def load_config():
@@ -28,24 +41,25 @@ def load_config():
     config_path = Path(__file__).parent / "netbox-data.yml"
     raw = config_path.read_text()
 
-    # Resolve $VARIABLE placeholders (only in values, not comments)
-    import re
-    # Remove comment lines before checking
+    # Resolve only expected $VARIABLE placeholders (skip comments)
     lines = raw.split('\n')
     for i, line in enumerate(lines):
-        stripped = line.lstrip()
-        if stripped.startswith('#'):
+        if line.lstrip().startswith('#'):
             continue
-        for key, value in os.environ.items():
-            lines[i] = lines[i].replace(f"${key}", value)
+        for key in EXPECTED_ENV_VARS:
+            value = os.environ.get(key, "")
+            if value:
+                lines[i] = lines[i].replace(f"${key}", value)
     raw = '\n'.join(lines)
 
-    # Check for unresolved variables in non-comment lines
+    # Check for unresolved expected variables in non-comment lines
     unresolved = []
     for line in raw.split('\n'):
         if line.lstrip().startswith('#'):
             continue
-        unresolved.extend(re.findall(r'\$([A-Z_][A-Za-z0-9_]*)', line))
+        for match in re.findall(r'\$([A-Z_][A-Za-z0-9_]*)', line):
+            if match in EXPECTED_ENV_VARS:
+                unresolved.append(match)
     if unresolved:
         print(f"ERROR: Unresolved env variables: {', '.join(set(unresolved))}")
         print("Set them in your environment. See .env.example in repo root.")
@@ -56,7 +70,6 @@ def load_config():
 
 def slugify(name):
     """Generate a slug from a name."""
-    import re
     slug = name.lower().strip()
     slug = re.sub(r'[^a-z0-9]+', '-', slug)
     return slug.strip('-')
@@ -67,10 +80,6 @@ def ensure_slug(data):
     if "name" in data and "slug" not in data:
         data["slug"] = slugify(data["name"])
     return data
-
-
-CHECK_MODE = False
-missing_count = 0
 
 
 def get_or_create(endpoint, lookup_keys, data, label=""):
@@ -123,7 +132,6 @@ def main():
     # Step 1 - Custom Fields
     print("\n=== Step 1: Custom Fields ===")
     for cf in config["custom_fields"]:
-        # Map type names to NetBox API values
         type_map = {"integer": "integer", "text": "text"}
         data = {
             "name": cf["name"],
@@ -149,7 +157,8 @@ def main():
         for child in region.get("children", []):
             get_or_create(
                 nb.dcim.regions, ["name"],
-                {"name": child["name"], "slug": child["name"].lower(), "parent": parent.id},
+                {"name": child["name"], "slug": child["name"].lower(),
+                 "parent": parent.id if parent else None},
                 f"  {child['name']}",
             )
 
@@ -219,7 +228,6 @@ def main():
         }
         dtype, created = get_or_create(nb.dcim.device_types, ["slug"], data, dt["name"])
 
-        # Create interface templates
         if created and dt.get("interface_templates"):
             for it in dt["interface_templates"]:
                 tmpl_data = {
@@ -272,9 +280,11 @@ def main():
     for vrf in config["vrfs"]:
         import_rts = [nb.ipam.route_targets.get(name=rt) for rt in vrf.get("import_targets", [])]
         export_rts = [nb.ipam.route_targets.get(name=rt) for rt in vrf.get("export_targets", [])]
+        tenant = nb.tenancy.tenants.get(name=vrf["tenant"]) if vrf.get("tenant") else None
         data = {
             "name": vrf["name"],
             "description": vrf.get("description", ""),
+            "tenant": tenant.id if tenant else None,
             "import_targets": [rt.id for rt in import_rts if rt],
             "export_targets": [rt.id for rt in export_rts if rt],
             "custom_fields": vrf.get("custom_fields", {}),
@@ -297,7 +307,9 @@ def main():
         if pfx.get("site"):
             site = nb.dcim.sites.get(name=pfx["site"])
             if site:
-                data["site"] = site.id
+                # NetBox 4.5 uses scope_type/scope_id instead of site
+                data["scope_type"] = "dcim.site"
+                data["scope_id"] = site.id
         if pfx.get("role"):
             role = nb.ipam.roles.get(name=pfx["role"])
             if role:
@@ -306,7 +318,29 @@ def main():
             vrf = nb.ipam.vrfs.get(name=pfx["vrf"])
             if vrf:
                 data["vrf"] = vrf.id
-        get_or_create(nb.ipam.prefixes, ["prefix"], data, pfx["prefix"])
+        if pfx.get("tenant"):
+            tenant = nb.tenancy.tenants.get(name=pfx["tenant"])
+            if tenant:
+                data["tenant"] = tenant.id
+
+        # Prefix lookup includes VRF and site scope to avoid false matches
+        # when the same CIDR exists in different VRFs or sites.
+        lookup = {"prefix": pfx["prefix"]}
+        if data.get("vrf"):
+            lookup["vrf_id"] = data["vrf"]
+        if data.get("scope_id"):
+            lookup["scope_id"] = data["scope_id"]
+
+        existing = list(nb.ipam.prefixes.filter(**lookup))
+        if existing:
+            print(f"  EXISTS: {pfx['prefix']}")
+        else:
+            if CHECK_MODE:
+                print(f"  MISSING: {pfx['prefix']}")
+                missing_count += 1
+            else:
+                nb.ipam.prefixes.create(data)
+                print(f"  CREATED: {pfx['prefix']}")
 
     # Step 10 - VLAN Groups, VLANs
     print("\n=== Step 10: VLAN Groups, VLANs ===")
@@ -335,16 +369,22 @@ def main():
             "description": vlan.get("description", ""),
             "custom_fields": vlan.get("custom_fields", {}),
         }
-        # Check if VLAN exists in this group
+        # VLANs require composite lookup (vid + group) because the same VID
+        # can exist in different VLAN groups. get_or_create() uses simple
+        # field equality which doesn't support foreign key filters like group_id.
         existing = list(nb.ipam.vlans.filter(vid=vlan["vid"], group_id=group.id if group else None))
         if existing:
             print(f"  EXISTS: VLAN {vlan['vid']}")
         else:
-            try:
-                nb.ipam.vlans.create(data)
-                print(f"  CREATED: VLAN {vlan['vid']}")
-            except pynetbox.RequestError as e:
-                print(f"  ERROR VLAN {vlan['vid']}: {e}")
+            if CHECK_MODE:
+                print(f"  MISSING: VLAN {vlan['vid']}")
+                missing_count += 1
+            else:
+                try:
+                    nb.ipam.vlans.create(data)
+                    print(f"  CREATED: VLAN {vlan['vid']}")
+                except pynetbox.RequestError as e:
+                    print(f"  ERROR VLAN {vlan['vid']}: {e}")
 
     # Step 11 - Devices
     print("\n=== Step 11: Devices ===")
@@ -499,7 +539,6 @@ def main():
             missing_count += 1
             continue
 
-        # Check if cable already exists by checking if interface is connected
         if a_intf.cable:
             print(f"  EXISTS: {cable['label']}")
             continue
@@ -525,7 +564,6 @@ def main():
 
     print("\n=== Population complete ===")
 
-    # Summary
     print(f"\nDevices:    {len(list(nb.dcim.devices.all()))}")
     print(f"Interfaces: {len(list(nb.dcim.interfaces.all()))}")
     print(f"IPs:        {len(list(nb.ipam.ip_addresses.all()))}")

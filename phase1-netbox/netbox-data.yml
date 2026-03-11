@@ -142,6 +142,7 @@ asns:
 vrfs:
   - name: TENANT-1
     rd: auto
+    tenant: Lab Operations
     description: "Tenant VRF (symmetric IRB)"
     custom_fields:
       l3vni: 5000
@@ -190,8 +191,8 @@ prefixes:
 
   # Tenant subnets (stretched across DCs)
   - { prefix: "10.10.0.0/16", description: "Tenant supernet (stretched across DCs)" }
-  - { prefix: "10.10.10.0/24", vrf: TENANT-1, role: Server, description: "VLAN 10 - Server subnet 1" }
-  - { prefix: "10.10.20.0/24", vrf: TENANT-1, role: Server, description: "VLAN 20 - Server subnet 2" }
+  - { prefix: "10.10.10.0/24", vrf: TENANT-1, role: Server, tenant: Lab Operations, description: "VLAN 10 - Server subnet 1" }
+  - { prefix: "10.10.20.0/24", vrf: TENANT-1, role: Server, tenant: Lab Operations, description: "VLAN 20 - Server subnet 2" }
 
   # DC1 local tenants
   - { prefix: "10.11.0.0/16", site: DC1, description: "DC1 local tenant supernet" }
@@ -302,9 +303,7 @@ loopback_ips:
   - { device: dc1-spine2, interface: lo0.1, ip: "10.1.0.2/32", description: Router-ID, primary: true }
   - { device: dc1-leaf1,  interface: lo0.1, ip: "10.1.0.3/32", description: "Router-ID / VTEP", primary: true }
   - { device: dc1-leaf2,  interface: lo0.1, ip: "10.1.0.4/32", description: "Router-ID / VTEP", primary: true }
-  # lo0.2 - VRF TENANT-1: needed for EVPN Type-5 route advertisement
-  - { device: dc1-leaf1,  interface: lo0.2, ip: "10.1.1.3/32", description: "VRF TENANT-1 loopback", create_interface: true }
-  - { device: dc1-leaf2,  interface: lo0.2, ip: "10.1.1.4/32", description: "VRF TENANT-1 loopback", create_interface: true }
+  # lo0.2 (VRF TENANT-1) is created in Phase 7 when symmetric IRB routing is configured
 
 p2p_links:
   - a_device: dc1-spine1
