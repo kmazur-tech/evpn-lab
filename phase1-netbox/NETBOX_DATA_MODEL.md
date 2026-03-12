@@ -428,9 +428,9 @@ The following objects are defined here for design completeness. They will be pop
 
 ---
 
-## Step 15 - IRB Interfaces and VRF Loopback (project Phase 7)
+## Step 15 - IRB Interfaces and VRF Loopback (project Phase 2)
 
-The VRF TENANT-1 routing instance contains IRB interfaces and `lo0.2`:
+The VRF TENANT-1 routing instance contains IRB interfaces and `lo0.2`. These are part of Phase 2 (full L2+L3 fabric) not Phase 7.
 
 | Device | Interface | Type | VRF | IP | Description |
 |--------|-----------|------|-----|-----|-------------|
@@ -589,7 +589,7 @@ Spine routing instances:
 | Object Type | Phase | Count |
 |-------------|-------|-------|
 | LAG Interfaces | 2 | ~10 |
-| IRB Interfaces + IPs | 7 | ~8 |
+| IRB Interfaces + VRF loopback + IPs | 2 | ~8 |
 | L2VPN Instances | 2 | 2 |
 | Config Contexts | 2, 8 | 3 |
 
