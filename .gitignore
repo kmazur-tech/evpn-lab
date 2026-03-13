@@ -16,6 +16,9 @@ venv/
 *.swp
 *.swo
 
+# Reference configs (company-specific, not for public repo)
+config-temp/
+
 # Claude Code
 .claude/
 
