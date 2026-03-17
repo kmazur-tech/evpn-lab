@@ -65,7 +65,9 @@ Scope:
 - Manual baseline verification: `show bgp summary`, `show evpn instance`, `show ethernet-switching table`
 - Traffic tests: L2 within VLAN, L3 inter-VLAN, ESI-LAG failover
 
-Result: a fully operational fabric with L2/L3 traffic, EVPN multihoming, and production-grade operational features.
+Known vjunos-switch limitation: IRB L3 gateway (inter-VLAN routing) does not work on the simulated EX9214 data plane. The bridge-to-IRB punt path is not functional in the simulator - hosts cannot ARP the gateway despite correct config, routing tables, and EVPN routes. L2 VXLAN bridging, ESI-LAG, and EVPN route exchange all work correctly. The config is validated against two production EVPN-VXLAN fabrics and is correct for real hardware. Consider vjunos-router (MX simulation) for L3 testing if needed.
+
+Result: a working fabric with L2 VXLAN bridging, ESI-LAG multihoming, and production-grade operational features. L3 inter-VLAN routing requires real hardware or vjunos-router.
 
 ---
 
