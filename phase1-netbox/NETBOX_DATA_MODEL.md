@@ -603,9 +603,12 @@ Spine routing instances:
 - **Routing instances:** Follows Juniper ERB model. Underlay + overlay BGP in default instance. L2 overlay in `virtual-switch` instance. L3 tenant routing in `vrf` instance. OOB management in `mgmt_junos`.
 - **Derived values:** Route distinguisher derived from loopback IP at config render time. VTEP source is `lo0.1` on all leaves (in config context).
 - **vjunos-switch platform notes** (validated on 23.2R1.14):
-  - Uses `vlans` with `l3-interface` (not `bridge-domains` with `routing-interface`)
-  - `vtep-source-interface` goes inside the `virtual-switch` routing instance (not global `switch-options`)
-  - `routing-options router-id` must be set explicitly (defaults to 0.0.0.0, EVPN rejects it)
+  - Uses `mac-vrf` with `service-type vlan-aware`, `vlans` with `l3-interface`
+  - `vtep-source-interface` inside the routing instance (not global `switch-options`)
+  - `routing-options router-id` must be set explicitly (defaults to 0.0.0.0)
+  - IRB uses `virtual-gateway-address` + `virtual-gateway-v4-mac` + `virtual-gateway-accept-data`
+  - IRB ARP replies not generated (data forwarding works, workaround: static ARP on hosts)
+  - MTU max 9192
   - See `phase2-fabric/configs/dc1-leaf1.conf` for validated reference config
 - **Prefix roles:** Tenant subnets have role "Server". The anycast nature is on the IP address (role=`anycast`), not the prefix.
 - **DC2 (Arista):** Added in project Phase 10 - new site, cEOS device types, EOS platform.

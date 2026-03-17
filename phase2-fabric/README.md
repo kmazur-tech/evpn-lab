@@ -33,21 +33,48 @@ Validated on vjunos-switch 23.2R1.14:
 
 ## vjunos-switch Limitations
 
-Some production features cannot be enabled on vjunos-switch (single virtual RE):
+### IRB ARP limitation
+
+vjunos-switch (EX9214 simulation) does not generate ARP replies from IRB interfaces. The data forwarding path works correctly - once the host knows the gateway MAC, all L2/L3 traffic flows through IRB including inter-VLAN routing.
+
+**Workaround:** Set static ARP on test hosts before traffic tests:
+```bash
+# On each host, set gateway MAC (virtual-gateway-v4-mac from IRB config)
+docker exec <host> arp -s 10.10.10.1 00:00:5e:00:01:01  # VLAN 10 gateway
+docker exec <host> arp -s 10.10.20.1 00:00:5e:00:01:01  # VLAN 20 gateway
+```
+
+**Verified working with static ARP:**
+- L2 within VLAN (host1 -> host2 across VXLAN)
+- L3 inter-VLAN (host1 VLAN10 -> host3 VLAN20, ttl=63)
+- ESI-LAG (host3 -> host4, both dual-homed)
+
+### Other limitations (single virtual RE)
 
 | Feature | Reason | Production recommendation |
 |---------|--------|--------------------------|
-| `nonstop-routing` | Requires `chassis redundancy graceful-switchover` and `system commit synchronize` (dual-RE only) | Enable on production devices with dual REs for hitless RE switchover |
+| `nonstop-routing` | Requires dual-RE graceful-switchover | Enable on production devices |
 | `nonstop-bridging` | Same dual-RE dependency | Enable alongside nonstop-routing |
-| `network-services enhanced-ip` | Not supported on vjunos | Required on some QFX platforms for VXLAN |
-| `vxlan-routing overlay-ecmp` | Not supported on vjunos | Enables ECMP across VXLAN tunnels on hardware platforms |
+| `network-services enhanced-ip` | Not supported on vjunos | Required on some QFX platforms |
+| `vxlan-routing overlay-ecmp` | Not supported on vjunos | Enables ECMP across VXLAN tunnels |
+
+### Alternative virtual platforms considered
+
+| Platform | IRB L3 | Status | Issue |
+|----------|--------|--------|-------|
+| vjunos-switch | Works (static ARP) | Active, free | ARP replies not generated |
+| vjunos-router (vMX) | Full support | Active, free | Different config syntax (bridge-domains) |
+| vPTX (vJunosEvolved) | Partial | Active, free | Anycast MAC ignored |
+| vQFX | Full support | Abandoned | Last version ~2020 (Junos 19.4) |
 
 ## Platform-Specific Syntax (vjunos-switch)
 
 Discovered during deployment - differs from some Juniper documentation examples:
 
+- Uses `mac-vrf` instance type with `service-type vlan-aware` (or `virtual-switch`)
 - Uses `vlans` with `l3-interface` (not `bridge-domains` with `routing-interface`)
-- `vtep-source-interface` goes inside the `virtual-switch` routing instance (not global `switch-options`)
+- `vtep-source-interface` goes inside the routing instance (not global `switch-options`)
+- IRB uses `virtual-gateway-address` + `virtual-gateway-v4-mac` + `virtual-gateway-accept-data`
 - `routing-options router-id` must be set explicitly (defaults to 0.0.0.0)
 - Maximum MTU is 9192 (not 9216)
 
