@@ -111,41 +111,70 @@ show lldp neighbors
 
 ## Smoke Tests
 
-All tests validated on clean deploy with startup-config and setup-hosts.sh.
+All tests automated in `smoke-tests.sh`. Run after `setup-hosts.sh`:
 
-### Control plane
+```bash
+bash smoke-tests.sh
+```
 
-| Test | Command | Expected |
-|------|---------|----------|
-| BGP underlay | `show bgp summary` | 4/4 Established on each device |
-| BGP overlay (EVPN) | `show bgp summary` on spine | 2 EVPN peers Established |
-| LLDP neighbors | `show lldp neighbors` | 2 neighbors per leaf, 2 per spine |
+### 1. Control plane
+
+| Test | Verification | Expected |
+|------|-------------|----------|
+| BGP underlay | `show bgp summary` on all 4 devices | 0 down peers |
+| BGP overlay (EVPN) | `show bgp summary` on spines | 2 EVPN peers Established |
 | EVPN routes | `show route table EVPN-VXLAN.evpn.0` | Type-2 MAC/IP + Type-3 IM routes |
-| VTEP tunnel | `show ethernet-switching vxlan-tunnel-end-point remote` | Remote VTEP with VNI 10010/10020 |
-| LACP | `show lacp interfaces` | ae0/ae1 Collecting/Distributing |
-| MAC table | `show ethernet-switching table` | Local + remote (DR) MACs |
+| VTEP tunnel | `show ethernet-switching vxlan-tunnel-end-point remote` | Remote VTEP 10.1.0.3/4 with VNI 10010/10020 |
+| Remote MAC learning | `show ethernet-switching table` | DR (Dynamic Remote) entries present |
+| LACP | `show lacp interfaces ae0` | Collecting/Distributing |
+| BFD sessions | `show bfd session` | Sessions Up (may not show on vjunos) |
+| LLDP neighbors | `show lldp neighbors` | >= 2 per device |
+| ESI state | `show evpn instance extensive` | all-active entries present |
+| Core isolation | `show configuration protocols network-isolation` | core-isolation configured |
 
-### Data plane
+### 2. Underlay reachability
 
-| Test | Command | Expected |
-|------|---------|----------|
-| L2 same VLAN cross-leaf | `host1 ping 10.10.10.12` | Pass (via VXLAN) |
-| L3 inter-VLAN | `host1 ping 10.10.20.13` | Pass (ttl=63, via IRB + VRF) |
-| L2 ESI-LAG same VLAN | `host3 ping 10.10.20.14` | Pass (both dual-homed) |
-| L3 cross-VLAN cross-leaf | `host2 ping 10.10.20.14` | Pass |
-| Gateway reachability | `host1 ping 10.10.10.1` | Pass (with static ARP) |
+| Test | Verification | Expected |
+|------|-------------|----------|
+| Leaf-to-leaf loopback | Ping all loopbacks from each leaf | All reachable via ECMP |
+| Leaf-to-spine loopback | Ping spine loopbacks from each leaf | Direct reachability |
 
-### Failover
+### 3. Data plane
 
-| Test | Command | Expected |
-|------|---------|----------|
-| ESI-LAG failover | Disable leaf1 `ae0`+`ae1`, ping host3->host4 | Traffic continues via leaf2 |
-| ESI-LAG restore | Re-enable leaf1 `ae0`+`ae1`, ping host3->host4 | Traffic restored on both paths |
+| Test | Path | Expected |
+|------|------|----------|
+| L2 same VLAN cross-leaf | host1 (leaf1) -> host2 (leaf2) VLAN 10 | Pass (via VXLAN) |
+| L3 inter-VLAN | host1 (VLAN10) -> host3 (VLAN20) | Pass (ttl=63, via IRB) |
+| L3 cross-VLAN cross-leaf | host2 (leaf2 VLAN10) -> host4 (leaf1+2 VLAN20) | Pass |
+| ESI-LAG same VLAN | host3 -> host4 (both dual-homed VLAN20) | Pass |
+| Gateway reachability | host1 -> 10.10.10.1 | Pass (static ARP) |
+| Gateway reachability | host3 -> 10.10.20.1 | Pass (static ARP) |
+
+### 4. Failover: ESI-LAG
+
+| Test | Action | Expected |
+|------|--------|----------|
+| ESI-LAG failover | Disable leaf1 ae0+ae1 | host3->host4 continues via leaf2 |
+| ESI-LAG restore | Re-enable leaf1 ae0+ae1 | Traffic restored on both paths |
+
+### 5. Failover: Spine
+
+| Test | Action | Expected |
+|------|--------|----------|
+| Spine failover | Disable spine1 ge-0/0/0+ge-0/0/1 | L2+L3 traffic via spine2 |
+| Spine restore | Re-enable spine1 interfaces | Traffic via both spines |
+
+### 6. Expected failures
+
+| Test | Action | Expected |
+|------|--------|----------|
+| Single-homed isolation | Disable leaf1 ge-0/0/2 | host1 loses all connectivity (correct - no redundancy) |
 
 ### Not testable (vjunos limitations)
 
 | Test | Reason |
 |------|--------|
 | Dynamic ARP from hosts to IRB | IRB does not generate ARP replies (static ARP workaround) |
+| Core isolation trigger | Would require killing all overlay BGP - hard to test cleanly on vjunos |
 | nonstop-routing failover | Requires dual-RE |
 | ECMP overlay | vxlan-routing overlay-ecmp not supported |
