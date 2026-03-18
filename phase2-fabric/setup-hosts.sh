@@ -47,6 +47,7 @@ docker exec clab-${LAB_NAME}-dc1-host3 sh -c "
   ip link add bond0 type bond
   echo 802.3ad > /sys/class/net/bond0/bonding/mode
   echo 100 > /sys/class/net/bond0/bonding/miimon
+  echo fast > /sys/class/net/bond0/bonding/lacp_rate
 
   # Add slaves
   ip link set eth1 down
@@ -74,6 +75,7 @@ docker exec clab-${LAB_NAME}-dc1-host4 sh -c "
   ip link add bond0 type bond
   echo 802.3ad > /sys/class/net/bond0/bonding/mode
   echo 100 > /sys/class/net/bond0/bonding/miimon
+  echo fast > /sys/class/net/bond0/bonding/lacp_rate
 
   ip link set eth1 down
   ip link set eth2 down

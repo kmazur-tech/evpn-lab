@@ -83,6 +83,7 @@ Discovered during deployment - differs from some Juniper documentation examples:
 | File | Description |
 |------|-------------|
 | `dc1.clab.yml` | Containerlab topology (4 switches + 4 hosts) |
+| `setup-hosts.sh` | Host setup: IPs, 802.3ad bonding (LACP fast), static ARP, traffic tests |
 | `configs/dc1-spine1.conf` | Validated spine config |
 | `configs/dc1-spine2.conf` | Validated spine config |
 | `configs/dc1-leaf1.conf` | Validated leaf config |
@@ -98,9 +99,53 @@ source ../evpn-lab-env/env.sh
 cd phase2-fabric
 sudo containerlab deploy -t dc1.clab.yml
 
-# Verify BGP sessions
+# Wait for switches to boot (~2-4 min), then configure hosts
+bash setup-hosts.sh
+
+# Verify
 ssh admin@$CLAB_IP_dc1_spine1  # password: TestLabPass1
 show bgp summary
 show evpn instance
 show lldp neighbors
 ```
+
+## Smoke Tests
+
+All tests validated on clean deploy with startup-config and setup-hosts.sh.
+
+### Control plane
+
+| Test | Command | Expected |
+|------|---------|----------|
+| BGP underlay | `show bgp summary` | 4/4 Established on each device |
+| BGP overlay (EVPN) | `show bgp summary` on spine | 2 EVPN peers Established |
+| LLDP neighbors | `show lldp neighbors` | 2 neighbors per leaf, 2 per spine |
+| EVPN routes | `show route table EVPN-VXLAN.evpn.0` | Type-2 MAC/IP + Type-3 IM routes |
+| VTEP tunnel | `show ethernet-switching vxlan-tunnel-end-point remote` | Remote VTEP with VNI 10010/10020 |
+| LACP | `show lacp interfaces` | ae0/ae1 Collecting/Distributing |
+| MAC table | `show ethernet-switching table` | Local + remote (DR) MACs |
+
+### Data plane
+
+| Test | Command | Expected |
+|------|---------|----------|
+| L2 same VLAN cross-leaf | `host1 ping 10.10.10.12` | Pass (via VXLAN) |
+| L3 inter-VLAN | `host1 ping 10.10.20.13` | Pass (ttl=63, via IRB + VRF) |
+| L2 ESI-LAG same VLAN | `host3 ping 10.10.20.14` | Pass (both dual-homed) |
+| L3 cross-VLAN cross-leaf | `host2 ping 10.10.20.14` | Pass |
+| Gateway reachability | `host1 ping 10.10.10.1` | Pass (with static ARP) |
+
+### Failover
+
+| Test | Command | Expected |
+|------|---------|----------|
+| ESI-LAG failover | Disable leaf1 `ae0`+`ae1`, ping host3->host4 | Traffic continues via leaf2 |
+| ESI-LAG restore | Re-enable leaf1 `ae0`+`ae1`, ping host3->host4 | Traffic restored on both paths |
+
+### Not testable (vjunos limitations)
+
+| Test | Reason |
+|------|--------|
+| Dynamic ARP from hosts to IRB | IRB does not generate ARP replies (static ARP workaround) |
+| nonstop-routing failover | Requires dual-RE |
+| ECMP overlay | vxlan-routing overlay-ecmp not supported |
