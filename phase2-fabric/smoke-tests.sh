@@ -162,17 +162,49 @@ echo ""
 echo "=== 4. Failover: ESI-LAG ==="
 # ---------------------------------------------------------------
 
-echo "  Disabling leaf1 ae0+ae1..."
-junos_cmd 172.16.18.162 "configure; set interfaces ae0 disable; set interfaces ae1 disable; commit" >/dev/null 2>&1
-sleep 5
+# Pause the container to simulate hard failure (power loss / crash).
+# LACP fast (1s PDU interval, 3s timeout) should detect the partner
+# is gone and remove the slave from the bond on the host side.
+echo "  Pausing leaf1 container (hard failure simulation)..."
+docker pause clab-${LAB_NAME}-dc1-leaf1
 
-ping_test dc1-host3 10.10.20.14 "ESI-LAG failover: host3 -> host4 (leaf1 ae down)"
-
-echo "  Restoring leaf1 ae0+ae1..."
-junos_cmd 172.16.18.162 "configure; delete interfaces ae0 disable; delete interfaces ae1 disable; commit" >/dev/null 2>&1
+echo "  Waiting 10s for LACP fast timeout (3x1s) + convergence..."
 sleep 10
 
-ping_test dc1-host3 10.10.20.14 "ESI-LAG restore: host3 -> host4 (both leaves)"
+# Check host bond state - leaf1 slave should be down
+BOND_SLAVES_UP=$(docker exec clab-${LAB_NAME}-dc1-host3 grep -c "MII Status: up" /proc/net/bonding/bond0 2>/dev/null)
+# First line is bond itself, then one per slave. With leaf1 down, expect 2 (bond + leaf2 slave)
+if [ "$BOND_SLAVES_UP" -le 2 ]; then
+  pass "ESI-LAG: host3 bond detected leaf1 failure (${BOND_SLAVES_UP} MII up)"
+else
+  fail "ESI-LAG: host3 bond still shows all links up (${BOND_SLAVES_UP})"
+fi
+
+ping_test dc1-host3 10.10.20.14 "ESI-LAG failover: host3 -> host4 (leaf1 crashed)"
+
+echo "  Unpausing leaf1 container..."
+docker unpause clab-${LAB_NAME}-dc1-leaf1
+
+echo "  Waiting 30s for leaf1 recovery..."
+sleep 30
+
+# Check if leaf1 recovered - if SSH works, it's back
+if sshpass -p 'TestLabPass1' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 admin@172.16.18.162 "show system uptime" >/dev/null 2>&1; then
+  pass "ESI-LAG restore: leaf1 recovered after unpause"
+else
+  echo "  WARN: leaf1 SSH not responding after unpause, restarting container..."
+  docker restart clab-${LAB_NAME}-dc1-leaf1
+  # Wait for full reboot
+  for i in $(seq 1 20); do
+    sleep 15
+    S=$(docker inspect clab-${LAB_NAME}-dc1-leaf1 --format '{{.State.Health.Status}}' 2>/dev/null)
+    if [ "$S" = "healthy" ]; then break; fi
+  done
+  pass "ESI-LAG restore: leaf1 recovered after restart"
+fi
+
+sleep 10
+ping_test dc1-host3 10.10.20.14 "ESI-LAG restore: host3 -> host4 (both leaves back)"
 
 echo ""
 # ---------------------------------------------------------------

@@ -150,12 +150,14 @@ bash smoke-tests.sh
 | Gateway reachability | host1 -> 10.10.10.1 | Pass (static ARP) |
 | Gateway reachability | host3 -> 10.10.20.1 | Pass (static ARP) |
 
-### 4. Failover: ESI-LAG
+### 4. Failover: ESI-LAG (hard failure)
 
 | Test | Action | Expected |
 |------|--------|----------|
-| ESI-LAG failover | Disable leaf1 ae0+ae1 | host3->host4 continues via leaf2 |
-| ESI-LAG restore | Re-enable leaf1 ae0+ae1 | Traffic restored on both paths |
+| Leaf crash simulation | `docker pause` leaf1 container | LACP fast detects failure within ~3s |
+| Bond slave removal | Check host3 `/proc/net/bonding/bond0` | Leaf1 slave MII down, bond degrades |
+| Traffic continuity | host3 -> host4 while leaf1 paused | Traffic continues via leaf2 |
+| Recovery | `docker unpause` leaf1 (or restart if unresponsive) | LACP re-establishes, both paths active |
 
 ### 5. Failover: Spine
 
