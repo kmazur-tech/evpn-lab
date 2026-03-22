@@ -171,13 +171,13 @@ docker pause clab-${LAB_NAME}-dc1-leaf1
 echo "  Waiting 10s for LACP fast timeout (3x1s) + convergence..."
 sleep 10
 
-# Check host bond state - leaf1 slave should be down
-BOND_SLAVES_UP=$(docker exec clab-${LAB_NAME}-dc1-host3 grep -c "MII Status: up" /proc/net/bonding/bond0 2>/dev/null)
-# First line is bond itself, then one per slave. With leaf1 down, expect 2 (bond + leaf2 slave)
-if [ "$BOND_SLAVES_UP" -le 2 ]; then
-  pass "ESI-LAG: host3 bond detected leaf1 failure (${BOND_SLAVES_UP} MII up)"
+# Check LACP aggregator - with leaf1 paused, active aggregator should have 1 port
+# (LACP detects missing PDUs and moves the failed slave to a separate aggregator)
+AGG_PORTS=$(docker exec clab-${LAB_NAME}-dc1-host3 grep "Number of ports" /proc/net/bonding/bond0 | head -1 | awk '{print $NF}')
+if [ "$AGG_PORTS" = "1" ]; then
+  pass "ESI-LAG: LACP detected leaf1 failure (active aggregator: 1 port)"
 else
-  fail "ESI-LAG: host3 bond still shows all links up (${BOND_SLAVES_UP})"
+  fail "ESI-LAG: active aggregator still has $AGG_PORTS ports (expected 1)"
 fi
 
 ping_test dc1-host3 10.10.20.14 "ESI-LAG failover: host3 -> host4 (leaf1 crashed)"
