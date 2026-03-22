@@ -51,11 +51,12 @@ for name_ip in "dc1-spine1:172.16.18.160" "dc1-spine2:172.16.18.161" \
 done
 
 # EVPN routes on leaf1
-EVPN_ROUTES=$(junos_cmd 172.16.18.162 "show route table EVPN-VXLAN.evpn.0" | grep "destinations" | awk '{print $1}')
+EVPN_LINE=$(junos_cmd 172.16.18.162 "show route table EVPN-VXLAN.evpn.0" | grep "destinations")
+EVPN_ROUTES=$(echo "$EVPN_LINE" | sed 's/.*: \([0-9]*\) destinations.*/\1/')
 if [ -n "$EVPN_ROUTES" ] && [ "$EVPN_ROUTES" -gt 0 ] 2>/dev/null; then
   pass "leaf1 EVPN routes: $EVPN_ROUTES destinations"
 else
-  fail "leaf1 EVPN routes: none or parse error"
+  fail "leaf1 EVPN routes: none or parse error ($EVPN_LINE)"
 fi
 
 # VTEP tunnel
@@ -123,15 +124,16 @@ echo ""
 echo "=== 2. Underlay Reachability ==="
 # ---------------------------------------------------------------
 
-# Every leaf should reach every other leaf's loopback
-for src_ip in 172.16.18.162 172.16.18.163; do
+# Every leaf should reach every other leaf/spine loopback
+# Must specify source loopback - default source uses mgmt which can't route to underlay
+for src_entry in "172.16.18.162:10.1.0.3:dc1-leaf1" "172.16.18.163:10.1.0.4:dc1-leaf2"; do
+  src_ip=${src_entry%%:*}; rest=${src_entry#*:}; src_lo=${rest%%:*}; src_name=${rest#*:}
   for dst_lo in 10.1.0.1 10.1.0.2 10.1.0.3 10.1.0.4; do
-    SRC_NAME=$(junos_cmd $src_ip "show system information" | grep "host-name" | awk '{print $NF}' | tr -d ';')
-    RESULT=$(junos_cmd $src_ip "ping $dst_lo count 1 rapid wait 2" | grep "received" | awk '{print $4}')
+    RESULT=$(junos_cmd $src_ip "ping $dst_lo source $src_lo count 1 rapid wait 2" | grep "received" | awk '{print $4}')
     if [ "$RESULT" = "1" ]; then
-      pass "$SRC_NAME -> $dst_lo (loopback)"
+      pass "$src_name -> $dst_lo (loopback)"
     else
-      fail "$SRC_NAME -> $dst_lo (loopback unreachable)"
+      fail "$src_name -> $dst_lo (loopback unreachable)"
     fi
   done
 done
