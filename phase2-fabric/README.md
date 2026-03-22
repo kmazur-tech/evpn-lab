@@ -159,7 +159,15 @@ bash smoke-tests.sh
 | Traffic continuity | host3 -> host4 while leaf1 paused | Traffic continues via leaf2 |
 | Recovery | `docker unpause` leaf1 (or restart if unresponsive) | LACP re-establishes, both paths active |
 
-### 5. Failover: Spine
+### 5. Failover: Core Isolation
+
+| Test | Action | Expected |
+|------|--------|----------|
+| Overlay BGP loss | `deactivate protocols bgp group OVERLAY` on leaf1 | Core isolation brings ae0/ae1 link down |
+| Traffic continuity | host3 -> host4 while leaf1 isolated | Traffic via leaf2 |
+| Recovery | `activate protocols bgp group OVERLAY` on leaf1 | BGP re-establishes, ae0/ae1 come back up |
+
+### 6. Failover: Spine
 
 | Test | Action | Expected |
 |------|--------|----------|
@@ -172,11 +180,16 @@ bash smoke-tests.sh
 |------|--------|----------|
 | Single-homed isolation | Disable leaf1 ge-0/0/2 | host1 loses all connectivity (correct - no redundancy) |
 
+### 7. Expected failures
+
+| Test | Action | Expected |
+|------|--------|----------|
+| Single-homed isolation | Disable leaf1 ge-0/0/2 | host1 loses all connectivity (correct) |
+
 ### Not testable (vjunos limitations)
 
 | Test | Reason |
 |------|--------|
 | Dynamic ARP from hosts to IRB | IRB does not generate ARP replies (static ARP workaround) |
-| Core isolation trigger | Would require killing all overlay BGP - hard to test cleanly on vjunos |
 | nonstop-routing failover | Requires dual-RE |
 | ECMP overlay | vxlan-routing overlay-ecmp not supported |

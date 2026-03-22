@@ -208,7 +208,47 @@ ping_test dc1-host3 10.10.20.14 "ESI-LAG restore: host3 -> host4 (both leaves ba
 
 echo ""
 # ---------------------------------------------------------------
-echo "=== 5. Failover: Spine ==="
+echo "=== 5. Failover: Core Isolation ==="
+# ---------------------------------------------------------------
+
+# Deactivate overlay BGP on leaf1 to simulate EVPN core loss.
+# Core isolation should automatically bring down ESI-LAG interfaces
+# to prevent traffic blackholing through an isolated leaf.
+echo "  Deactivating overlay BGP on leaf1..."
+junos_cmd 172.16.18.162 "configure; deactivate protocols bgp group OVERLAY; commit" >/dev/null 2>&1
+
+echo "  Waiting 15s for core-isolation to trigger..."
+sleep 15
+
+# ae0 should be link-down (core isolation shut it)
+AE0_LINK=$(junos_cmd 172.16.18.162 "show interfaces ae0 terse" | grep "ae0 " | awk '{print $3}')
+if [ "$AE0_LINK" = "down" ]; then
+  pass "Core isolation: ae0 brought down after overlay BGP loss"
+else
+  fail "Core isolation: ae0 still $AE0_LINK (expected down)"
+fi
+
+ping_test dc1-host3 10.10.20.14 "Core isolation: host3 -> host4 (leaf1 isolated, via leaf2)"
+
+echo "  Restoring overlay BGP on leaf1..."
+junos_cmd 172.16.18.162 "configure; activate protocols bgp group OVERLAY; commit" >/dev/null 2>&1
+
+echo "  Waiting 30s for BGP + LACP recovery..."
+sleep 30
+
+# Verify ae0 came back
+AE0_LINK=$(junos_cmd 172.16.18.162 "show interfaces ae0 terse" | grep "ae0 " | awk '{print $3}')
+if [ "$AE0_LINK" = "up" ]; then
+  pass "Core isolation restore: ae0 back up after overlay BGP restored"
+else
+  fail "Core isolation restore: ae0 still $AE0_LINK (expected up)"
+fi
+
+ping_test dc1-host3 10.10.20.14 "Core isolation restore: host3 -> host4 (both leaves)"
+
+echo ""
+# ---------------------------------------------------------------
+echo "=== 6. Failover: Spine ==="
 # ---------------------------------------------------------------
 
 echo "  Disabling spine1 underlay interfaces..."
@@ -226,7 +266,7 @@ ping_test dc1-host1 10.10.10.12 "Spine restore: host1 -> host2 (both spines)"
 
 echo ""
 # ---------------------------------------------------------------
-echo "=== 6. Expected Failures ==="
+echo "=== 7. Expected Failures ==="
 # ---------------------------------------------------------------
 
 # Single-homed host loses connectivity when its leaf port is disabled
