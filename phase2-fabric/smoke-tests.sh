@@ -51,6 +51,19 @@ junos_cmd() {
 echo "============================================"
 echo "  DC1 EVPN-VXLAN Smoke Tests"
 echo "============================================"
+
+# ---------------------------------------------------------------
+echo ""
+echo "=== Pre-flight: waiting for fabric convergence ==="
+# ---------------------------------------------------------------
+
+# Wait until all 4 devices have 0 BGP down peers before starting tests.
+# On fresh deploy, BGP needs 30-60s after switches become healthy.
+for name_ip in "dc1-spine1:172.16.18.160" "dc1-spine2:172.16.18.161" \
+               "dc1-leaf1:172.16.18.162" "dc1-leaf2:172.16.18.163"; do
+  name=${name_ip%%:*}; ip=${name_ip##*:}
+  wait_bgp_converged $ip $name
+done
 echo ""
 
 # ---------------------------------------------------------------
@@ -87,7 +100,7 @@ else
 fi
 
 # Remote MAC learning
-REMOTE_MACS=$(junos_cmd 172.16.18.162 "show ethernet-switching table" | grep -c "DR" 2>/dev/null || echo "0")
+REMOTE_MACS=$(junos_cmd 172.16.18.162 "show ethernet-switching table" | grep -c "DR" 2>/dev/null | tail -1 || echo "0")
 if [ "$REMOTE_MACS" -gt 0 ]; then
   pass "leaf1 remote MACs learned via EVPN: $REMOTE_MACS"
 else
@@ -103,7 +116,7 @@ else
 fi
 
 # BFD sessions
-BFD_UP=$(junos_cmd 172.16.18.162 "show bfd session" | grep -c "Up" 2>/dev/null || echo "0")
+BFD_UP=$(junos_cmd 172.16.18.162 "show bfd session" | grep -c "Up" 2>/dev/null | tail -1 || echo "0")
 if [ "$BFD_UP" -gt 0 ]; then
   pass "leaf1 BFD sessions up: $BFD_UP"
 else
