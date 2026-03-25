@@ -10,9 +10,28 @@ set -u
 LAB_NAME="${1:-dc1}"
 GW_MAC="00:00:5e:00:01:01"
 FAILURES=0
+MAX_WAIT=120  # max seconds to wait for any single recovery
 
 pass() { echo "  PASS: $1"; }
 fail() { echo "  FAIL: $1"; FAILURES=$((FAILURES+1)); }
+
+# Wait for a Junos device to have 0 BGP down peers.
+# Polls every 10s, gives up after MAX_WAIT seconds.
+wait_bgp_converged() {
+  local ip=$1 name=$2
+  local waited=0
+  while [ $waited -lt $MAX_WAIT ]; do
+    DOWN=$(junos_cmd $ip "show bgp summary" | grep "Down peers" | awk '{print $NF}')
+    if [ "$DOWN" = "0" ]; then
+      echo "  $name BGP converged (${waited}s)"
+      return 0
+    fi
+    sleep 10
+    waited=$((waited+10))
+  done
+  echo "  $name BGP NOT converged after ${MAX_WAIT}s ($DOWN down)"
+  return 1
+}
 
 ping_test() {
   local src=$1 dst_ip=$2 label=$3
@@ -187,25 +206,33 @@ ping_test dc1-host3 10.10.20.14 "ESI-LAG failover: host3 -> host4 (leaf1 crashed
 echo "  Unpausing leaf1 container..."
 docker unpause clab-${LAB_NAME}-dc1-leaf1
 
-echo "  Waiting 30s for leaf1 recovery..."
-sleep 30
+echo "  Waiting for leaf1 recovery..."
+# Try SSH first, restart if unresponsive
+waited=0
+while [ $waited -lt $MAX_WAIT ]; do
+  if sshpass -p 'TestLabPass1' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 admin@172.16.18.162 "show system uptime" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 10
+  waited=$((waited+10))
+  if [ $waited -ge 60 ]; then
+    echo "  WARN: leaf1 SSH not responding after ${waited}s, restarting..."
+    docker restart clab-${LAB_NAME}-dc1-leaf1
+    for i in $(seq 1 20); do
+      sleep 15
+      S=$(docker inspect clab-${LAB_NAME}-dc1-leaf1 --format '{{.State.Health.Status}}' 2>/dev/null)
+      if [ "$S" = "healthy" ]; then break; fi
+    done
+    break
+  fi
+done
 
-# Check if leaf1 recovered - if SSH works, it's back
-if sshpass -p 'TestLabPass1' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 admin@172.16.18.162 "show system uptime" >/dev/null 2>&1; then
-  pass "ESI-LAG restore: leaf1 recovered after unpause"
+if wait_bgp_converged 172.16.18.162 "leaf1"; then
+  pass "ESI-LAG restore: leaf1 recovered"
 else
-  echo "  WARN: leaf1 SSH not responding after unpause, restarting container..."
-  docker restart clab-${LAB_NAME}-dc1-leaf1
-  # Wait for full reboot
-  for i in $(seq 1 20); do
-    sleep 15
-    S=$(docker inspect clab-${LAB_NAME}-dc1-leaf1 --format '{{.State.Health.Status}}' 2>/dev/null)
-    if [ "$S" = "healthy" ]; then break; fi
-  done
-  pass "ESI-LAG restore: leaf1 recovered after restart"
+  fail "ESI-LAG restore: leaf1 BGP not converged"
 fi
 
-sleep 10
 ping_test dc1-host3 10.10.20.14 "ESI-LAG restore: host3 -> host4 (both leaves back)"
 
 echo ""
@@ -235,15 +262,23 @@ ping_test dc1-host3 10.10.20.14 "Core isolation: host3 -> host4 (leaf1 isolated,
 echo "  Restoring overlay BGP on leaf1..."
 junos_cmd 172.16.18.162 "configure; activate protocols bgp group OVERLAY; commit" >/dev/null 2>&1
 
-echo "  Waiting 30s for BGP + LACP recovery..."
-sleep 30
+echo "  Waiting for BGP + LACP recovery (includes hold-time up 60s)..."
+wait_bgp_converged 172.16.18.162 "leaf1"
 
-# Verify ae0 came back
-AE0_LINK=$(junos_cmd 172.16.18.162 "show interfaces ae0 terse" | grep "ae0 " | awk '{print $3}')
+# Core isolation has hold-time up (60s) - ae0 stays down after BGP recovers
+# to prevent flapping. Wait for ae0 to come back.
+waited=0
+while [ $waited -lt $MAX_WAIT ]; do
+  AE0_LINK=$(junos_cmd 172.16.18.162 "show interfaces ae0 terse" | grep "ae0 " | awk '{print $3}')
+  if [ "$AE0_LINK" = "up" ]; then break; fi
+  sleep 10
+  waited=$((waited+10))
+done
+
 if [ "$AE0_LINK" = "up" ]; then
-  pass "Core isolation restore: ae0 back up after overlay BGP restored"
+  pass "Core isolation restore: ae0 back up (${waited}s after BGP)"
 else
-  fail "Core isolation restore: ae0 still $AE0_LINK (expected up)"
+  fail "Core isolation restore: ae0 still $AE0_LINK after ${MAX_WAIT}s"
 fi
 
 ping_test dc1-host3 10.10.20.14 "Core isolation restore: host3 -> host4 (both leaves)"
@@ -262,7 +297,13 @@ ping_test dc1-host1 10.10.20.13 "Spine failover: host1 -> host3 L3 (spine1 down)
 
 echo "  Restoring spine1..."
 junos_cmd 172.16.18.160 "configure; delete interfaces ge-0/0/0 disable; delete interfaces ge-0/0/1 disable; commit" >/dev/null 2>&1
-sleep 10
+
+echo "  Waiting for BGP reconvergence..."
+if wait_bgp_converged 172.16.18.160 "spine1"; then
+  pass "Spine restore: spine1 BGP re-established"
+else
+  fail "Spine restore: spine1 BGP not converged"
+fi
 
 ping_test dc1-host1 10.10.10.12 "Spine restore: host1 -> host2 (both spines)"
 
