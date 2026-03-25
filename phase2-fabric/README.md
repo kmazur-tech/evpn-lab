@@ -2,7 +2,7 @@
 
 A fully operational EVPN-VXLAN leaf-spine fabric running on containerlab with Juniper vJunos-switch (EX9214).
 
-**Status:** Base fabric operational (BGP/EVPN up). ESI-LAG and host connectivity in progress.
+**Status:** Complete. All 37 smoke tests pass. Full from-scratch deploy in ~8 minutes.
 
 ## Architecture
 

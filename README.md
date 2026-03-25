@@ -63,7 +63,7 @@ An automated EVPN-VXLAN data center fabric built with Infrastructure as Code pri
 | Phase | Description | Status |
 |-------|-------------|--------|
 | 1 | [NetBox as Source of Truth](phase1-netbox/) | Done |
-| 2 | EVPN+VXLAN+ESI-LAG Fabric (containerlab) | Planned |
+| 2 | [EVPN+VXLAN+ESI-LAG Fabric](phase2-fabric/) | Done |
 | 3 | Nornir IaC Framework | Planned |
 | 4 | Batfish Pre-Deployment Validation | Planned |
 | 5 | Suzieq Post-Deployment Validation | Planned |
