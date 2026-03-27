@@ -24,8 +24,8 @@ Validated on vjunos-switch 23.2R1.14:
 | BGP | log-updown, graceful-restart, mtu-discovery, dont-help-shared-fate-bfd-down |
 | BGP underlay | eBGP, multipath multiple-as, BFD single-hop |
 | BGP overlay | iBGP AS 65000, vpn-apply-export, no-nexthop-change, signaling loops 2, BFD automatic |
-| EVPN | duplicate-mac-detection, multicast-mode ingress-replication, no-arp-suppression |
-| Forwarding | chained-composite-next-hop ingress evpn |
+| EVPN | duplicate-mac-detection, multicast-mode ingress-replication, ARP suppression (default-on) |
+| Forwarding | chained-composite-next-hop ingress evpn, forwarding-table export LOAD-BALANCE (per-packet ECMP) |
 | Chassis | aggregated-devices ethernet device-count 48 |
 | LLDP | port-id-subtype interface-name, interface all |
 | MTU | 9192 (vjunos max) on fabric and host-facing interfaces |
@@ -33,23 +33,13 @@ Validated on vjunos-switch 23.2R1.14:
 
 ## vjunos-switch Limitations
 
-### IRB ARP limitation
+### Dynamic ARP works (no workaround needed)
 
-vjunos-switch (EX9214 simulation) does not generate ARP replies from IRB interfaces. The data forwarding path works correctly - once the host knows the gateway MAC, all L2/L3 traffic flows through IRB including inter-VLAN routing.
+Earlier revisions of this lab carried `no-arp-suppression` per VLAN and a static ARP workaround on hosts. That was the bug, not a vJunos limitation. With ARP suppression at its Junos default (ON), the leaf snoops local host ARPs into the EVPN database, originates Type-2 (MAC+IP) routes, and replies locally to gateway ARPs. Hosts learn the anycast gateway MAC dynamically.
 
-**Workaround:** Set static ARP on test hosts before traffic tests:
-```bash
-# On each host, set gateway MAC (virtual-gateway-v4-mac from IRB config)
-docker exec <host> arp -s 10.10.10.1 00:00:5e:00:01:01  # VLAN 10 gateway
-docker exec <host> arp -s 10.10.20.1 00:00:5e:00:01:01  # VLAN 20 gateway
-```
+Note: `proxy-macip-advertisement` is **not** supported on vJunos-switch / EX9200 (syntax error at `routing-instances <mac-vrf> protocols evpn`). It is also not needed in ERB - it is a CRB construct for L2-only leaves. ERB leaves snoop ARP locally because they own the IRB.
 
-**Verified working with static ARP:**
-- L2 within VLAN (host1 -> host2 across VXLAN)
-- L3 inter-VLAN (host1 VLAN10 -> host3 VLAN20, ttl=63)
-- ESI-LAG (host3 -> host4, both dual-homed)
-
-### Other limitations (single virtual RE)
+### Limitations (single virtual RE)
 
 | Feature | Reason | Production recommendation |
 |---------|--------|--------------------------|
@@ -62,7 +52,7 @@ docker exec <host> arp -s 10.10.20.1 00:00:5e:00:01:01  # VLAN 20 gateway
 
 | Platform | IRB L3 | Status | Issue |
 |----------|--------|--------|-------|
-| vjunos-switch | Works (static ARP) | Active, free | ARP replies not generated |
+| vjunos-switch | Works (default ARP suppression) | Active, free | - |
 | vjunos-router (vMX) | Full support | Active, free | Different config syntax (bridge-domains) |
 | vPTX (vJunosEvolved) | Partial | Active, free | Anycast MAC ignored |
 | vQFX | Full support | Abandoned | Last version ~2020 (Junos 19.4) |
@@ -83,7 +73,7 @@ Discovered during deployment - differs from some Juniper documentation examples:
 | File | Description |
 |------|-------------|
 | `dc1.clab.yml` | Containerlab topology (4 switches + 4 hosts) |
-| `setup-hosts.sh` | Host setup: IPs, 802.3ad bonding (LACP fast), static ARP, traffic tests |
+| `setup-hosts.sh` | Host setup: IPs, 802.3ad bonding (LACP fast), traffic tests |
 | `configs/dc1-spine1.conf` | Validated spine config |
 | `configs/dc1-spine2.conf` | Validated spine config |
 | `configs/dc1-leaf1.conf` | Validated leaf config |
@@ -147,8 +137,8 @@ bash smoke-tests.sh
 | L3 inter-VLAN | host1 (VLAN10) -> host3 (VLAN20) | Pass (ttl=63, via IRB) |
 | L3 cross-VLAN cross-leaf | host2 (leaf2 VLAN10) -> host4 (leaf1+2 VLAN20) | Pass |
 | ESI-LAG same VLAN | host3 -> host4 (both dual-homed VLAN20) | Pass |
-| Gateway reachability | host1 -> 10.10.10.1 | Pass (static ARP) |
-| Gateway reachability | host3 -> 10.10.20.1 | Pass (static ARP) |
+| Gateway reachability | host1 -> 10.10.10.1 | Pass (dynamic ARP via EVPN) |
+| Gateway reachability | host3 -> 10.10.20.1 | Pass (dynamic ARP via EVPN) |
 
 ### 4. Failover: ESI-LAG (hard failure)
 
@@ -190,6 +180,5 @@ bash smoke-tests.sh
 
 | Test | Reason |
 |------|--------|
-| Dynamic ARP from hosts to IRB | IRB does not generate ARP replies (static ARP workaround) |
 | nonstop-routing failover | Requires dual-RE |
 | ECMP overlay | vxlan-routing overlay-ecmp not supported |

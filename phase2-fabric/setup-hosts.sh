@@ -8,13 +8,13 @@
 #   host3: dual-homed ESI-LAG to both leaves, VLAN 20 (10.10.20.13)
 #   host4: dual-homed ESI-LAG to both leaves, VLAN 20 (10.10.20.14)
 #
-# vjunos-switch IRB does not generate ARP replies.
-# Static ARP entries are set on all hosts for the anycast gateway MAC.
+# Hosts learn the anycast gateway MAC dynamically via EVPN ARP suppression
+# (default-on once `no-arp-suppression` is removed from the leaf VLAN config).
 
 set -e
 
 LAB_NAME="${1:-dc1}"
-GW_MAC="00:00:5e:00:01:01"  # virtual-gateway-v4-mac from leaf IRB config
+GW_MAC="00:00:5e:00:01:01"  # virtual-gateway-v4-mac from leaf IRB config (used for verification only)
 
 echo "=== Configuring hosts for lab: $LAB_NAME ==="
 
@@ -23,7 +23,6 @@ echo "[host1] Single-homed leaf1, VLAN 10"
 docker exec clab-${LAB_NAME}-dc1-host1 sh -c "
   ip addr add 10.10.10.11/24 dev eth1 2>/dev/null || true
   ip route replace default via 10.10.10.1
-  arp -s 10.10.10.1 ${GW_MAC}
 "
 
 # --- host2: single-homed, VLAN 10 ---
@@ -31,7 +30,6 @@ echo "[host2] Single-homed leaf2, VLAN 10"
 docker exec clab-${LAB_NAME}-dc1-host2 sh -c "
   ip addr add 10.10.10.12/24 dev eth1 2>/dev/null || true
   ip route replace default via 10.10.10.1
-  arp -s 10.10.10.1 ${GW_MAC}
 "
 
 # --- host3: dual-homed ESI-LAG, VLAN 20 ---
@@ -61,9 +59,6 @@ docker exec clab-${LAB_NAME}-dc1-host3 sh -c "
   # IP config
   ip addr add 10.10.20.13/24 dev bond0 2>/dev/null || true
   ip route replace default via 10.10.20.1
-
-  # Static ARP for gateway
-  arp -s 10.10.20.1 ${GW_MAC}
 "
 
 # --- host4: dual-homed ESI-LAG, VLAN 20 ---
@@ -87,8 +82,6 @@ docker exec clab-${LAB_NAME}-dc1-host4 sh -c "
 
   ip addr add 10.10.20.14/24 dev bond0 2>/dev/null || true
   ip route replace default via 10.10.20.1
-
-  arp -s 10.10.20.1 ${GW_MAC}
 "
 
 echo ""

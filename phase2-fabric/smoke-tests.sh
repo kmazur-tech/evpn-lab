@@ -343,6 +343,76 @@ sleep 5
 
 echo ""
 # ---------------------------------------------------------------
+echo "=== 8. EVPN Deep Validation ==="
+# ---------------------------------------------------------------
+
+# A. Underlay ECMP next-hop count
+# Asserts the forwarding-table export LOAD-BALANCE policy is active.
+# Without it, BGP multipath shows multiple paths but PFE installs only one.
+ECMP_NH=$(junos_cmd 172.16.18.162 "show route forwarding-table destination 10.1.0.4/32 table default" | grep -cE "ucst .* ge-")
+if [ "$ECMP_NH" = "2" ]; then
+  pass "ECMP: leaf1 -> leaf2 loopback installed via 2 next-hops (both spines)"
+else
+  fail "ECMP: leaf1 -> leaf2 loopback has $ECMP_NH next-hops in PFE (expected 2)"
+fi
+
+# B. EVPN route-type breakdown on leaf1.
+# Type-2 = MAC/IP, Type-3 = IMET (one per remote VTEP per L2VNI), Type-5 = IP-prefix.
+# With 1 remote leaf, 2 L2VNIs, hosts on both VLANs: T2 >= 4, T3 >= 2, T5 >= 1.
+T2=$(junos_cmd 172.16.18.162 "show route table bgp.evpn.0 match-prefix 2:*" | grep -c "^2:")
+T3=$(junos_cmd 172.16.18.162 "show route table bgp.evpn.0 match-prefix 3:*" | grep -c "^3:")
+T5=$(junos_cmd 172.16.18.162 "show route table bgp.evpn.0 match-prefix 5:*" | grep -c "^5:")
+if [ "$T2" -ge 4 ]; then pass "EVPN Type-2 (MAC/IP) routes: $T2"; else fail "EVPN Type-2 routes: $T2 (expected >= 4)"; fi
+if [ "$T3" -ge 2 ]; then pass "EVPN Type-3 (IMET) routes: $T3"; else fail "EVPN Type-3 routes: $T3 (expected >= 2)"; fi
+if [ "$T5" -ge 1 ]; then pass "EVPN Type-5 (IP-prefix) routes: $T5"; else fail "EVPN Type-5 routes: $T5 (expected >= 1)"; fi
+
+# C. Type-5 actually programs TENANT-1.inet.0
+# Confirms L3VNI control plane is wired up, not just routes in bgp.evpn.0.
+T5_VRF=$(junos_cmd 172.16.18.162 "show route table TENANT-1.inet.0 protocol evpn" | grep -c "\*\[EVPN")
+if [ "$T5_VRF" -ge 1 ]; then
+  pass "TENANT-1.inet.0: $T5_VRF routes installed via EVPN (L3VNI working)"
+else
+  fail "TENANT-1.inet.0: no EVPN routes (Type-5 not programming VRF)"
+fi
+
+# D. Per-peer overlay BGP: Established AND receiving EVPN NLRI.
+# Replaces "0 down peers" which can hide an Idle peer with family mismatch.
+# Check Received prefixes (not Active) - with two RRs, only one wins best-path
+# but both should be receiving the full set.
+for peer in 10.1.0.1 10.1.0.2; do
+  NBR=$(junos_cmd 172.16.18.162 "show bgp neighbor $peer")
+  STATE=$(echo "$NBR" | grep -m1 "State: " | awk '{print $4}')
+  RECVD=$(echo "$NBR" | grep -m1 "Received prefixes" | awk '{print $NF}')
+  if [ "$STATE" = "Established" ] && [ -n "$RECVD" ] && [ "$RECVD" -gt 0 ] 2>/dev/null; then
+    pass "Overlay BGP leaf1 -> $peer: Established, $RECVD received EVPN prefixes"
+  else
+    fail "Overlay BGP leaf1 -> $peer: state=$STATE received=$RECVD"
+  fi
+done
+
+# E. Jumbo MTU end-to-end across the underlay.
+# 8972 = 9000 - 20 IP - 8 ICMP. Underlay MTU 9192 leaves room for 50B VXLAN overhead.
+# Catches a too-small underlay MTU that ARP-sized traffic would never expose.
+MTU_OK=$(junos_cmd 172.16.18.162 "ping 10.1.0.4 source 10.1.0.3 size 8972 do-not-fragment count 3 rapid" | grep -o "0% packet loss")
+if [ "$MTU_OK" = "0% packet loss" ]; then
+  pass "MTU: jumbo (size 8972 DF) leaf1 -> leaf2 loopback"
+else
+  fail "MTU: jumbo ping leaf1 -> leaf2 loopback failed (underlay MTU too small?)"
+fi
+
+# F. EVPN database must contain MAC+IP entries (regression test for no-arp-suppression).
+# With ARP suppression at default-on, leaves snoop host ARPs into the EVPN db.
+# If `no-arp-suppression` is re-introduced, locally-learned entries lose their IP column.
+# Count database entries that have a non-empty IP field.
+DB_WITH_IP=$(junos_cmd 172.16.18.162 "show evpn database" | awk 'NR>2 && NF>=6 && $NF ~ /^[0-9]+\./ {c++} END {print c+0}')
+if [ "$DB_WITH_IP" -ge 6 ]; then
+  pass "EVPN database: $DB_WITH_IP entries with MAC+IP (ARP suppression working)"
+else
+  fail "EVPN database: only $DB_WITH_IP MAC+IP entries (no-arp-suppression regression?)"
+fi
+
+echo ""
+# ---------------------------------------------------------------
 echo "============================================"
 if [ $FAILURES -eq 0 ]; then
   echo "  ALL TESTS PASSED"
