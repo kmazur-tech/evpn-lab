@@ -199,6 +199,10 @@ echo "=== 4. Failover: ESI-LAG ==="
 # Pause the container to simulate hard failure (power loss / crash).
 # LACP fast (1s PDU interval, 3s timeout) should detect the partner
 # is gone and remove the slave from the bond on the host side.
+# Baseline: count remote VTEP entries on leaf2 pointing at leaf1 (10.1.0.3).
+# Used by the post-failure withdrawal check below.
+VTEP_BEFORE=$(junos_cmd 172.16.18.163 "show ethernet-switching vxlan-tunnel-end-point remote" | grep -c "^ 10.1.0.3 ")
+
 echo "  Pausing leaf1 container (hard failure simulation)..."
 docker pause clab-${LAB_NAME}-dc1-leaf1
 
@@ -215,6 +219,18 @@ else
 fi
 
 ping_test dc1-host3 10.10.20.14 "ESI-LAG failover: host3 -> host4 (leaf1 crashed)"
+
+# Post-failure withdrawal: leaf2 should drop the remote VTEP entry for the
+# crashed leaf once BGP hold timer expires (~90s on default Junos timers).
+# We have already waited 10s for LACP - wait the rest before sampling.
+echo "  Waiting for BGP hold timer expiry to verify VTEP withdrawal..."
+sleep 90
+VTEP_DURING=$(junos_cmd 172.16.18.163 "show ethernet-switching vxlan-tunnel-end-point remote" | grep -c "^ 10.1.0.3 ")
+if [ "$VTEP_BEFORE" = "1" ] && [ "$VTEP_DURING" = "0" ]; then
+  pass "Post-failure withdrawal: leaf2 dropped remote VTEP 10.1.0.3 (was=$VTEP_BEFORE now=$VTEP_DURING)"
+else
+  fail "Post-failure withdrawal: leaf2 VTEP for 10.1.0.3 was=$VTEP_BEFORE now=$VTEP_DURING (expected 1 -> 0)"
+fi
 
 echo "  Unpausing leaf1 container..."
 docker unpause clab-${LAB_NAME}-dc1-leaf1
@@ -247,6 +263,14 @@ else
 fi
 
 ping_test dc1-host3 10.10.20.14 "ESI-LAG restore: host3 -> host4 (both leaves back)"
+
+# Reinstall: the same VTEP entry should reappear after BGP recovers.
+VTEP_AFTER=$(junos_cmd 172.16.18.163 "show ethernet-switching vxlan-tunnel-end-point remote" | grep -c "^ 10.1.0.3 ")
+if [ "$VTEP_AFTER" = "1" ]; then
+  pass "Post-recovery reinstall: leaf2 re-learned remote VTEP 10.1.0.3"
+else
+  fail "Post-recovery reinstall: leaf2 VTEP for 10.1.0.3 = $VTEP_AFTER (expected 1)"
+fi
 
 echo ""
 # ---------------------------------------------------------------
@@ -398,6 +422,46 @@ if [ "$MTU_OK" = "0% packet loss" ]; then
   pass "MTU: jumbo (size 8972 DF) leaf1 -> leaf2 loopback"
 else
   fail "MTU: jumbo ping leaf1 -> leaf2 loopback failed (underlay MTU too small?)"
+fi
+
+# G. DF election + ESI consistency across both leaves.
+# For each LACP-derived ESI (01:00:00...), both leaves must agree on the DF.
+# Mismatch = split-brain BUM forwarder = duplicated broadcast traffic.
+DF_L1=$(junos_cmd 172.16.18.162 "show evpn instance designated-forwarder")
+DF_L2=$(junos_cmd 172.16.18.163 "show evpn instance designated-forwarder")
+ESI_L1=$(echo "$DF_L1" | grep -c "ESI: 01:")
+ESI_L2=$(echo "$DF_L2" | grep -c "ESI: 01:")
+if [ "$ESI_L1" -ge 2 ] && [ "$ESI_L1" = "$ESI_L2" ]; then
+  pass "ESI consistency: both leaves see $ESI_L1 LACP-derived ESIs"
+else
+  fail "ESI consistency: leaf1=$ESI_L1 leaf2=$ESI_L2 (expected matching, >= 2)"
+fi
+
+DF_MISMATCH=0
+DF_CHECKED=0
+while read -r esi; do
+  [ -z "$esi" ] && continue
+  DF1=$(echo "$DF_L1" | awk -v e="$esi" '$0~e{getline; print $NF}')
+  DF2=$(echo "$DF_L2" | awk -v e="$esi" '$0~e{getline; print $NF}')
+  DF_CHECKED=$((DF_CHECKED+1))
+  if [ -z "$DF1" ] || [ "$DF1" != "$DF2" ]; then
+    DF_MISMATCH=$((DF_MISMATCH+1))
+  fi
+done <<< "$(echo "$DF_L1" | awk '/ESI: 01:/ {print $2}')"
+if [ "$DF_CHECKED" -gt 0 ] && [ "$DF_MISMATCH" = "0" ]; then
+  pass "DF election: $DF_CHECKED ESIs, both leaves agree on DF"
+else
+  fail "DF election: $DF_MISMATCH/$DF_CHECKED ESIs have mismatched DF between leaves"
+fi
+
+# H. Duplicate-MAC detection state must be empty.
+# duplicate-mac-detection is configured in EVPN-VXLAN; any entry here means
+# a real loop or mis-cabling, not a false positive.
+DUP=$(junos_cmd 172.16.18.162 "show evpn database state duplicate" | grep -cE "^[[:space:]]*[0-9]+[[:space:]]")
+if [ "$DUP" = "0" ]; then
+  pass "EVPN duplicate-MAC: 0 duplicate entries"
+else
+  fail "EVPN duplicate-MAC: $DUP duplicate entries (loop or mis-cabling?)"
 fi
 
 # F. EVPN database must contain MAC+IP entries (regression test for no-arp-suppression).
