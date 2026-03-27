@@ -464,6 +464,38 @@ else
   fail "EVPN duplicate-MAC: $DUP duplicate entries (loop or mis-cabling?)"
 fi
 
+# J. BFD session health on leaf1.
+# Assert every BFD session is Up AND every session reports Local diagnostic None.
+# Catches the case where a session is technically Up but flapping with diag bits.
+BFD_OUT=$(junos_cmd 172.16.18.162 "show bfd session extensive")
+BFD_UP_COUNT=$(echo "$BFD_OUT" | grep -cE "^[0-9.]+ +Up ")
+BFD_DIAG_OK=$(echo "$BFD_OUT" | grep -c "Local diagnostic None")
+if [ "$BFD_UP_COUNT" -ge 2 ] && [ "$BFD_DIAG_OK" = "$BFD_UP_COUNT" ]; then
+  pass "BFD: $BFD_UP_COUNT sessions Up, all with diag=None"
+else
+  fail "BFD: $BFD_UP_COUNT up, $BFD_DIAG_OK clean diag (expected matching, >= 2)"
+fi
+
+# K. Underlay interface error/drop counters on leaf1.
+# Carrier transitions are allowed to be > 0 (Section 6 spine failover causes flaps),
+# but Errors and Drops on the fabric interfaces should always be 0.
+# A nonzero count here means real packet loss on the underlay.
+IFACE_BAD=0
+for iface in ge-0/0/0 ge-0/0/1; do
+  STATS=$(junos_cmd 172.16.18.162 "show interfaces $iface extensive" | grep -A1 "Input errors:" | tail -1)
+  ERRS=$(echo "$STATS" | sed -n 's/.*Errors: \([0-9]*\).*/\1/p')
+  DROPS=$(echo "$STATS" | sed -n 's/.*Drops: \([0-9]*\).*/\1/p')
+  if [ "${ERRS:-1}" != "0" ] || [ "${DROPS:-1}" != "0" ]; then
+    IFACE_BAD=$((IFACE_BAD+1))
+    echo "    leaf1 $iface: errors=$ERRS drops=$DROPS"
+  fi
+done
+if [ "$IFACE_BAD" = "0" ]; then
+  pass "Underlay counters: leaf1 fabric interfaces clean (0 errors, 0 drops)"
+else
+  fail "Underlay counters: $IFACE_BAD fabric interfaces have errors/drops"
+fi
+
 # F. EVPN database must contain MAC+IP entries (regression test for no-arp-suppression).
 # With ARP suppression at default-on, leaves snoop host ARPs into the EVPN db.
 # If `no-arp-suppression` is re-introduced, locally-learned entries lose their IP column.
