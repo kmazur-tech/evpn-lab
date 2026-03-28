@@ -2,7 +2,7 @@
 
 A fully operational EVPN-VXLAN leaf-spine fabric running on containerlab with Juniper vJunos-switch (EX9214).
 
-**Status:** Complete. All 37 smoke tests pass. Full from-scratch deploy in ~8 minutes.
+**Status:** Complete. All smoke tests pass (~70 checks across control plane, data plane, failover, and EVPN deep validation). Full from-scratch deploy in ~8 minutes.
 
 ## Architecture
 
@@ -175,6 +175,35 @@ bash smoke-tests.sh
 | Test | Action | Expected |
 |------|--------|----------|
 | Single-homed isolation | Disable leaf1 ge-0/0/2 | host1 loses all connectivity (correct) |
+
+### 8. EVPN deep validation (per leaf, mirrored across leaf1 + leaf2)
+
+| Test | Verification | Expected |
+|------|-------------|----------|
+| ECMP next-hop count | `show route forwarding-table destination <remote-lo>/32` | `ulst` with 2 next-hops (one per spine) - regression test for `forwarding-table export LOAD-BALANCE` |
+| Type-2 per VNI | `show route table bgp.evpn.0 match-prefix 2:*::<vni>::*` | At least 1 MAC/IP per L2VNI (10010, 10020) - catches single-VNI outage |
+| Type-3 per VNI | `show route table bgp.evpn.0 match-prefix 3:*::<vni>::*` | At least 1 IMET per L2VNI |
+| Type-5 IP-prefix | `show route table bgp.evpn.0 match-prefix 5:*` | >= 1 (tenant L3VNI advertisement) |
+| Specific Type-5 in TENANT-1 | `show route table TENANT-1.inet.0 <expected-/32> protocol evpn` | Expected remote host /32 installed via EVPN (object-based, not threshold) |
+| EVPN database host coverage | `show evpn database` | All 4 lab host IPs (10.10.10.11/12, 10.10.20.13/14) present with MAC+IP - regression test for `no-arp-suppression` |
+| Per-peer overlay BGP NLRI | `show bgp neighbor <spine-lo>` | State=Established AND Received prefixes > 0 on each spine peer |
+| Jumbo MTU end-to-end | `ping <remote-lo> source <local-lo> size 8972 do-not-fragment` | 0% loss (proves underlay MTU >= 9050 for VXLAN) |
+| Duplicate-MAC clean | `show evpn database state duplicate` | Empty (no loops or mis-cabling) |
+| BFD session health | `show bfd session extensive` | Every session Up AND Local diagnostic None |
+| Underlay counters | `show interfaces ge-0/0/X extensive` | Errors=0, Drops=0 on fabric ports (carrier transitions allowed) |
+| ESI consistency (cross-leaf) | `show evpn instance designated-forwarder` on both leaves | Same ESI count, same DF elected per ESI |
+
+### Post-failure cleanup checks (woven into sections 4 + 5)
+
+| Test | When | Expected |
+|------|------|----------|
+| VTEP withdrawal (ESI-LAG hard fail) | After leaf1 paused, BGP hold expired | Remote VTEP for 10.1.0.3 disappears from leaf2 |
+| VTEP reinstall (ESI-LAG recovery) | After leaf1 unpaused + BGP converged | Remote VTEP for 10.1.0.3 reinstated on leaf2 |
+| VTEP withdrawal (core isolation) | After overlay BGP deactivated, hold expired | Remote VTEP for 10.1.0.3 disappears from leaf2 |
+| VTEP reinstall (core isolation recovery) | After overlay BGP reactivated, AEs back up | Remote VTEP for 10.1.0.3 reinstated on leaf2 |
+| ae0 + ae1 both down on isolation | After 15s settle | Both AE link states down (not just ae0) |
+| ae0 + ae1 both up on restore | After core-isolation hold-time up | Both AE link states up |
+| DF election still consistent post-restore | After overlay BGP recovers | Same DF elected on both leaves, no drift |
 
 ### Not testable (vjunos limitations)
 

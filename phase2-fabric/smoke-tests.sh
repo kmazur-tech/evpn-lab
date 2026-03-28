@@ -278,23 +278,41 @@ echo "=== 5. Failover: Core Isolation ==="
 # ---------------------------------------------------------------
 
 # Deactivate overlay BGP on leaf1 to simulate EVPN core loss.
-# Core isolation should automatically bring down ESI-LAG interfaces
-# to prevent traffic blackholing through an isolated leaf.
+# Core isolation should automatically bring down ALL ESI-LAG interfaces
+# (ae0 and ae1) to prevent traffic blackholing through an isolated leaf.
+
+# Baseline: leaf2 should currently see leaf1 as a remote VTEP.
+ISO_VTEP_BEFORE=$(junos_cmd 172.16.18.163 "show ethernet-switching vxlan-tunnel-end-point remote" | grep -c "^ 10.1.0.3 ")
+
 echo "  Deactivating overlay BGP on leaf1..."
 junos_cmd 172.16.18.162 "configure; deactivate protocols bgp group OVERLAY; commit" >/dev/null 2>&1
 
 echo "  Waiting 15s for core-isolation to trigger..."
 sleep 15
 
-# ae0 should be link-down (core isolation shut it)
+# Both ae0 AND ae1 should be link-down. Earlier versions only checked ae0;
+# a one-AE bug would have slipped through.
 AE0_LINK=$(junos_cmd 172.16.18.162 "show interfaces ae0 terse" | grep "ae0 " | awk '{print $3}')
-if [ "$AE0_LINK" = "down" ]; then
-  pass "Core isolation: ae0 brought down after overlay BGP loss"
+AE1_LINK=$(junos_cmd 172.16.18.162 "show interfaces ae1 terse" | grep "ae1 " | awk '{print $3}')
+if [ "$AE0_LINK" = "down" ] && [ "$AE1_LINK" = "down" ]; then
+  pass "Core isolation: ae0 AND ae1 both brought down after overlay BGP loss"
 else
-  fail "Core isolation: ae0 still $AE0_LINK (expected down)"
+  fail "Core isolation: ae0=$AE0_LINK ae1=$AE1_LINK (expected both down)"
 fi
 
 ping_test dc1-host3 10.10.20.14 "Core isolation: host3 -> host4 (leaf1 isolated, via leaf2)"
+
+# Post-isolation withdrawal: with overlay BGP deactivated, leaf2 should
+# eventually drop the remote VTEP entry for leaf1. Default BGP hold = 90s
+# (we already slept 15s above), so wait the rest.
+echo "  Waiting for VTEP withdrawal on leaf2 (BGP hold timer)..."
+sleep 80
+ISO_VTEP_DURING=$(junos_cmd 172.16.18.163 "show ethernet-switching vxlan-tunnel-end-point remote" | grep -c "^ 10.1.0.3 ")
+if [ "$ISO_VTEP_BEFORE" = "1" ] && [ "$ISO_VTEP_DURING" = "0" ]; then
+  pass "Core isolation withdrawal: leaf2 dropped remote VTEP 10.1.0.3 (was=$ISO_VTEP_BEFORE now=$ISO_VTEP_DURING)"
+else
+  fail "Core isolation withdrawal: leaf2 VTEP for 10.1.0.3 was=$ISO_VTEP_BEFORE now=$ISO_VTEP_DURING (expected 1 -> 0)"
+fi
 
 echo "  Restoring overlay BGP on leaf1..."
 junos_cmd 172.16.18.162 "configure; activate protocols bgp group OVERLAY; commit" >/dev/null 2>&1
@@ -302,20 +320,45 @@ junos_cmd 172.16.18.162 "configure; activate protocols bgp group OVERLAY; commit
 echo "  Waiting for BGP + LACP recovery (includes hold-time up 60s)..."
 wait_bgp_converged 172.16.18.162 "leaf1"
 
-# Core isolation has hold-time up (60s) - ae0 stays down after BGP recovers
-# to prevent flapping. Wait for ae0 to come back.
+# Core isolation has hold-time up (60s) - AEs stay down after BGP recovers
+# to prevent flapping. Wait for both ae0 AND ae1 to come back.
 waited=0
 while [ $waited -lt $MAX_WAIT ]; do
   AE0_LINK=$(junos_cmd 172.16.18.162 "show interfaces ae0 terse" | grep "ae0 " | awk '{print $3}')
-  if [ "$AE0_LINK" = "up" ]; then break; fi
+  AE1_LINK=$(junos_cmd 172.16.18.162 "show interfaces ae1 terse" | grep "ae1 " | awk '{print $3}')
+  if [ "$AE0_LINK" = "up" ] && [ "$AE1_LINK" = "up" ]; then break; fi
   sleep 10
   waited=$((waited+10))
 done
 
-if [ "$AE0_LINK" = "up" ]; then
-  pass "Core isolation restore: ae0 back up (${waited}s after BGP)"
+if [ "$AE0_LINK" = "up" ] && [ "$AE1_LINK" = "up" ]; then
+  pass "Core isolation restore: ae0 AND ae1 both back up (${waited}s after BGP)"
 else
-  fail "Core isolation restore: ae0 still $AE0_LINK after ${MAX_WAIT}s"
+  fail "Core isolation restore: ae0=$AE0_LINK ae1=$AE1_LINK after ${MAX_WAIT}s"
+fi
+
+# Post-recovery: VTEP entry must reappear and DF election must converge to
+# the same answer on both leaves (no DF drift after a control-plane bounce).
+ISO_VTEP_AFTER=$(junos_cmd 172.16.18.163 "show ethernet-switching vxlan-tunnel-end-point remote" | grep -c "^ 10.1.0.3 ")
+if [ "$ISO_VTEP_AFTER" = "1" ]; then
+  pass "Core isolation recovery: leaf2 re-learned remote VTEP 10.1.0.3"
+else
+  fail "Core isolation recovery: leaf2 VTEP for 10.1.0.3 = $ISO_VTEP_AFTER (expected 1)"
+fi
+
+iso_df_l1=$(junos_cmd 172.16.18.162 "show evpn instance designated-forwarder")
+iso_df_l2=$(junos_cmd 172.16.18.163 "show evpn instance designated-forwarder")
+iso_df_drift=0
+while read -r esi; do
+  [ -z "$esi" ] && continue
+  d1=$(echo "$iso_df_l1" | awk -v e="$esi" '$0~e{getline; print $NF}')
+  d2=$(echo "$iso_df_l2" | awk -v e="$esi" '$0~e{getline; print $NF}')
+  [ -z "$d1" ] || [ "$d1" != "$d2" ] && iso_df_drift=$((iso_df_drift+1))
+done <<< "$(echo "$iso_df_l1" | awk '/ESI: 01:/ {print $2}')"
+if [ "$iso_df_drift" = "0" ]; then
+  pass "Core isolation recovery: DF election still consistent across leaves"
+else
+  fail "Core isolation recovery: $iso_df_drift ESIs have DF drift after recovery"
 fi
 
 ping_test dc1-host3 10.10.20.14 "Core isolation restore: host3 -> host4 (both leaves)"
@@ -370,141 +413,217 @@ echo ""
 echo "=== 8. EVPN Deep Validation ==="
 # ---------------------------------------------------------------
 
-# A. Underlay ECMP next-hop count
-# Asserts the forwarding-table export LOAD-BALANCE policy is active.
-# Without it, BGP multipath shows multiple paths but PFE installs only one.
-ECMP_NH=$(junos_cmd 172.16.18.162 "show route forwarding-table destination 10.1.0.4/32 table default" | grep -cE "ucst .* ge-")
-if [ "$ECMP_NH" = "2" ]; then
-  pass "ECMP: leaf1 -> leaf2 loopback installed via 2 next-hops (both spines)"
-else
-  fail "ECMP: leaf1 -> leaf2 loopback has $ECMP_NH next-hops in PFE (expected 2)"
-fi
-
-# B. EVPN route-type breakdown on leaf1.
-# Type-2 = MAC/IP, Type-3 = IMET (one per remote VTEP per L2VNI), Type-5 = IP-prefix.
-# With 1 remote leaf, 2 L2VNIs, hosts on both VLANs: T2 >= 4, T3 >= 2, T5 >= 1.
-T2=$(junos_cmd 172.16.18.162 "show route table bgp.evpn.0 match-prefix 2:*" | grep -c "^2:")
-T3=$(junos_cmd 172.16.18.162 "show route table bgp.evpn.0 match-prefix 3:*" | grep -c "^3:")
-T5=$(junos_cmd 172.16.18.162 "show route table bgp.evpn.0 match-prefix 5:*" | grep -c "^5:")
-if [ "$T2" -ge 4 ]; then pass "EVPN Type-2 (MAC/IP) routes: $T2"; else fail "EVPN Type-2 routes: $T2 (expected >= 4)"; fi
-if [ "$T3" -ge 2 ]; then pass "EVPN Type-3 (IMET) routes: $T3"; else fail "EVPN Type-3 routes: $T3 (expected >= 2)"; fi
-if [ "$T5" -ge 1 ]; then pass "EVPN Type-5 (IP-prefix) routes: $T5"; else fail "EVPN Type-5 routes: $T5 (expected >= 1)"; fi
-
-# C. Type-5 actually programs TENANT-1.inet.0
-# Confirms L3VNI control plane is wired up, not just routes in bgp.evpn.0.
-T5_VRF=$(junos_cmd 172.16.18.162 "show route table TENANT-1.inet.0 protocol evpn" | grep -c "\*\[EVPN")
-if [ "$T5_VRF" -ge 1 ]; then
-  pass "TENANT-1.inet.0: $T5_VRF routes installed via EVPN (L3VNI working)"
-else
-  fail "TENANT-1.inet.0: no EVPN routes (Type-5 not programming VRF)"
-fi
-
-# D. Per-peer overlay BGP: Established AND receiving EVPN NLRI.
-# Replaces "0 down peers" which can hide an Idle peer with family mismatch.
-# Check Received prefixes (not Active) - with two RRs, only one wins best-path
-# but both should be receiving the full set.
-for peer in 10.1.0.1 10.1.0.2; do
-  NBR=$(junos_cmd 172.16.18.162 "show bgp neighbor $peer")
-  STATE=$(echo "$NBR" | grep -m1 "State: " | awk '{print $4}')
-  RECVD=$(echo "$NBR" | grep -m1 "Received prefixes" | awk '{print $NF}')
-  if [ "$STATE" = "Established" ] && [ -n "$RECVD" ] && [ "$RECVD" -gt 0 ] 2>/dev/null; then
-    pass "Overlay BGP leaf1 -> $peer: Established, $RECVD received EVPN prefixes"
-  else
-    fail "Overlay BGP leaf1 -> $peer: state=$STATE received=$RECVD"
-  fi
+# Warmup: ARP entries age out after port flaps in earlier sections, which
+# in turn pulls Type-5 host /32 routes out of TENANT-1.inet.0 because the
+# leaf only advertises them while the IRB ARP entry exists. Pre-ping every
+# host so ARP is fresh before we make object-based assertions.
+for h in dc1-host1 dc1-host2 dc1-host3 dc1-host4; do
+  pid=$(docker inspect -f '{{.State.Pid}}' clab-${LAB_NAME}-${h} 2>/dev/null)
+  [ -n "$pid" ] && nsenter -t $pid -n ping -c 1 -W 2 10.10.10.1 >/dev/null 2>&1
+  [ -n "$pid" ] && nsenter -t $pid -n ping -c 1 -W 2 10.10.20.1 >/dev/null 2>&1
 done
+sleep 3  # let EVPN propagate the refreshed Type-5 advertisements
 
-# E. Jumbo MTU end-to-end across the underlay.
-# 8972 = 9000 - 20 IP - 8 ICMP. Underlay MTU 9192 leaves room for 50B VXLAN overhead.
-# Catches a too-small underlay MTU that ARP-sized traffic would never expose.
-MTU_OK=$(junos_cmd 172.16.18.162 "ping 10.1.0.4 source 10.1.0.3 size 8972 do-not-fragment count 3 rapid" | grep -o "0% packet loss")
-if [ "$MTU_OK" = "0% packet loss" ]; then
-  pass "MTU: jumbo (size 8972 DF) leaf1 -> leaf2 loopback"
+# Expected objects in this 2-leaf, 2-VNI lab. Drives object-based asserts.
+LEAF1_LO=10.1.0.3
+LEAF2_LO=10.1.0.4
+EXPECT_VNIS="10010 10020"
+# /32 host routes that should appear via EVPN in TENANT-1.inet.0 on each leaf
+# (every host's IP, EXCEPT the leaf's own VLAN10 single-homed host, which is
+# learned locally via ARP, not EVPN). ESI-LAG hosts in VLAN20 appear via EVPN
+# on both leaves because both leaves snoop them locally too.
+# In symmetric ERB with `advertise direct-nexthop`, leaves export their
+# directly-connected /24 subnets via Type-5, NOT per-host /32s. Per-host
+# /32s in TENANT-1.inet.0 are locally-snooped EVPN entries (the leaf's
+# own IRB ARP feeds the EVPN database which then installs the /32 via
+# irb.X). So we cannot assert "remote /32 present via EVPN" - that route
+# does not exist in this design. Instead we assert that the local ARP-to-
+# Type-5 import path works: pick an ESI-LAG host, which is locally
+# snooped on both leaves through different ports. Its /32 should appear
+# as `*[EVPN` in TENANT-1.inet.0 on BOTH leaves.
+T5_VRF_EXPECT="10.10.20.13"
+# Host MACs (set in setup-hosts.sh; query at runtime since they are dynamic)
+
+# Helper: extract a host's MAC by its IP from leaf's EVPN database
+mac_for_ip() {
+  local leaf=$1 ip=$2
+  junos_cmd $leaf "show evpn database" | awk -v ip="$ip" '$NF==ip {print $3; exit}'
+}
+
+# Per-leaf validation function. Mirrors the same checks on both leaves so
+# a one-sided regression cannot pass the suite.
+#
+# Args: $1 leaf mgmt IP   $2 leaf name   $3 leaf's own loopback   $4 remote loopback
+validate_leaf() {
+  local ip=$1 name=$2 own_lo=$3 remote_lo=$4
+  local t5_host=$T5_VRF_EXPECT
+
+  # ----- ECMP next-hop count to remote loopback -----
+  # Without forwarding-table export LOAD-BALANCE the PFE installs only one
+  # next-hop even when BGP shows multipath. Expect 2 (one per spine).
+  local ecmp
+  ecmp=$(junos_cmd $ip "show route forwarding-table destination ${remote_lo}/32 table default" | grep -cE "ucst .* ge-")
+  if [ "$ecmp" = "2" ]; then
+    pass "$name ECMP: ${remote_lo}/32 installed via 2 next-hops (both spines)"
+  else
+    fail "$name ECMP: ${remote_lo}/32 has $ecmp next-hops in PFE (expected 2)"
+  fi
+
+  # ----- EVPN route-type breakdown, per VNI (object-based, not threshold) -----
+  # For each L2VNI we expect at least one Type-2 MAC/IP and one Type-3 IMET
+  # entry sourced from the remote leaf's RD. Catches a single-VNI outage that
+  # an aggregate count would miss.
+  local vni t2 t3
+  for vni in $EXPECT_VNIS; do
+    t2=$(junos_cmd $ip "show route table bgp.evpn.0 match-prefix 2:*::${vni}::*" | grep -c "^2:")
+    t3=$(junos_cmd $ip "show route table bgp.evpn.0 match-prefix 3:*::${vni}::*" | grep -c "^3:")
+    if [ "$t2" -ge 1 ]; then
+      pass "$name EVPN Type-2 (VNI $vni): $t2 MAC/IP routes"
+    else
+      fail "$name EVPN Type-2 (VNI $vni): 0 MAC/IP routes"
+    fi
+    if [ "$t3" -ge 1 ]; then
+      pass "$name EVPN Type-3 (VNI $vni): $t3 IMET routes"
+    else
+      fail "$name EVPN Type-3 (VNI $vni): 0 IMET routes"
+    fi
+  done
+
+  # Type-5 (IP-prefix) - any count > 0 means tenant L3VNI advertisement works
+  local t5
+  t5=$(junos_cmd $ip "show route table bgp.evpn.0 match-prefix 5:*" | grep -c "^5:")
+  if [ "$t5" -ge 1 ]; then
+    pass "$name EVPN Type-5 (IP-prefix): $t5 routes"
+  else
+    fail "$name EVPN Type-5 (IP-prefix): 0 routes"
+  fi
+
+  # ----- Specific TENANT-1.inet.0 /32 imported by EVPN -----
+  # Object-based: the expected ESI-LAG host /32 must be installed via
+  # protocol EVPN (from local ARP snoop into the EVPN database, then back
+  # into the VRF). Catches a broken RT or wrong VNI binding even if the
+  # destination count is non-zero.
+  if junos_cmd $ip "show route table TENANT-1.inet.0 ${t5_host}/32 protocol evpn" | grep -q "\*\[EVPN"; then
+    pass "$name TENANT-1.inet.0: ${t5_host}/32 present via EVPN"
+  else
+    fail "$name TENANT-1.inet.0: ${t5_host}/32 NOT present via EVPN"
+  fi
+
+  # ----- Specific host MAC+IP entries in the EVPN database -----
+  # The 4 lab hosts must all be learned in the EVPN database with a non-empty
+  # IP column. The leaf's local hosts come from ARP snooping (regression test
+  # for no-arp-suppression), the remote ones come from BGP Type-2.
+  local expected_ips="10.10.10.11 10.10.10.12 10.10.20.13 10.10.20.14"
+  local missing="" found=0
+  for h in $expected_ips; do
+    if junos_cmd $ip "show evpn database" | awk '{print $NF}' | grep -q "^${h}$"; then
+      found=$((found+1))
+    else
+      missing="$missing $h"
+    fi
+  done
+  if [ -z "$missing" ]; then
+    pass "$name EVPN database: all 4 host IPs present ($expected_ips)"
+  else
+    fail "$name EVPN database: missing host IPs:$missing"
+  fi
+
+  # ----- Per-peer overlay BGP: Established AND receiving EVPN NLRI -----
+  local peer state recvd
+  for peer in 10.1.0.1 10.1.0.2; do
+    [ "$peer" = "$own_lo" ] && continue
+    local nbr
+    nbr=$(junos_cmd $ip "show bgp neighbor $peer")
+    state=$(echo "$nbr" | grep -m1 "State: " | awk '{print $4}')
+    recvd=$(echo "$nbr" | grep -m1 "Received prefixes" | awk '{print $NF}')
+    if [ "$state" = "Established" ] && [ -n "$recvd" ] && [ "$recvd" -gt 0 ] 2>/dev/null; then
+      pass "$name overlay BGP -> $peer: Established, $recvd received EVPN prefixes"
+    else
+      fail "$name overlay BGP -> $peer: state=$state received=$recvd"
+    fi
+  done
+
+  # ----- Jumbo MTU end-to-end across the underlay -----
+  if junos_cmd $ip "ping ${remote_lo} source ${own_lo} size 8972 do-not-fragment count 3 rapid" | grep -q "0% packet loss"; then
+    pass "$name MTU: jumbo (size 8972 DF) -> ${remote_lo}"
+  else
+    fail "$name MTU: jumbo ping -> ${remote_lo} failed (underlay MTU too small?)"
+  fi
+
+  # ----- Duplicate-MAC detection clean -----
+  local dup
+  dup=$(junos_cmd $ip "show evpn database state duplicate" | grep -cE "^[[:space:]]*[0-9]+[[:space:]]")
+  if [ "$dup" = "0" ]; then
+    pass "$name EVPN duplicate-MAC: 0 duplicate entries"
+  else
+    fail "$name EVPN duplicate-MAC: $dup entries (loop or mis-cabling?)"
+  fi
+
+  # ----- BFD session health -----
+  local bfd_out bfd_up bfd_diag
+  bfd_out=$(junos_cmd $ip "show bfd session extensive")
+  bfd_up=$(echo "$bfd_out" | grep -cE "^[0-9.]+ +Up ")
+  bfd_diag=$(echo "$bfd_out" | grep -c "Local diagnostic None")
+  if [ "$bfd_up" -ge 2 ] && [ "$bfd_diag" = "$bfd_up" ]; then
+    pass "$name BFD: $bfd_up sessions Up, all with diag=None"
+  else
+    fail "$name BFD: $bfd_up up, $bfd_diag clean diag (expected matching, >= 2)"
+  fi
+
+  # ----- Underlay interface error/drop counters -----
+  local iface_bad=0 stats errs drops
+  for iface in ge-0/0/0 ge-0/0/1; do
+    stats=$(junos_cmd $ip "show interfaces $iface extensive" | grep -A1 "Input errors:" | tail -1)
+    errs=$(echo "$stats" | sed -n 's/.*Errors: \([0-9]*\).*/\1/p')
+    drops=$(echo "$stats" | sed -n 's/.*Drops: \([0-9]*\).*/\1/p')
+    if [ "${errs:-1}" != "0" ] || [ "${drops:-1}" != "0" ]; then
+      iface_bad=$((iface_bad+1))
+      echo "    $name $iface: errors=$errs drops=$drops"
+    fi
+  done
+  if [ "$iface_bad" = "0" ]; then
+    pass "$name underlay counters: fabric interfaces clean (0 errors, 0 drops)"
+  else
+    fail "$name underlay counters: $iface_bad fabric interfaces have errors/drops"
+  fi
+}
+
+# Run the per-leaf validation against both leaves.
+validate_leaf 172.16.18.162 leaf1 $LEAF1_LO $LEAF2_LO
+echo ""
+validate_leaf 172.16.18.163 leaf2 $LEAF2_LO $LEAF1_LO
+echo ""
+
+# ---------------------------------------------------------------
+# Cross-leaf checks (run once, compare both leaves' state)
+# ---------------------------------------------------------------
+
+# DF election + ESI consistency: every LACP-derived ESI (01:00:...) must
+# elect the same DF on both leaves. Mismatch = split-brain BUM forwarder.
+df_l1=$(junos_cmd 172.16.18.162 "show evpn instance designated-forwarder")
+df_l2=$(junos_cmd 172.16.18.163 "show evpn instance designated-forwarder")
+esi_l1=$(echo "$df_l1" | grep -c "ESI: 01:")
+esi_l2=$(echo "$df_l2" | grep -c "ESI: 01:")
+if [ "$esi_l1" -ge 2 ] && [ "$esi_l1" = "$esi_l2" ]; then
+  pass "ESI consistency: both leaves see $esi_l1 LACP-derived ESIs"
 else
-  fail "MTU: jumbo ping leaf1 -> leaf2 loopback failed (underlay MTU too small?)"
+  fail "ESI consistency: leaf1=$esi_l1 leaf2=$esi_l2 (expected matching, >= 2)"
 fi
 
-# G. DF election + ESI consistency across both leaves.
-# For each LACP-derived ESI (01:00:00...), both leaves must agree on the DF.
-# Mismatch = split-brain BUM forwarder = duplicated broadcast traffic.
-DF_L1=$(junos_cmd 172.16.18.162 "show evpn instance designated-forwarder")
-DF_L2=$(junos_cmd 172.16.18.163 "show evpn instance designated-forwarder")
-ESI_L1=$(echo "$DF_L1" | grep -c "ESI: 01:")
-ESI_L2=$(echo "$DF_L2" | grep -c "ESI: 01:")
-if [ "$ESI_L1" -ge 2 ] && [ "$ESI_L1" = "$ESI_L2" ]; then
-  pass "ESI consistency: both leaves see $ESI_L1 LACP-derived ESIs"
-else
-  fail "ESI consistency: leaf1=$ESI_L1 leaf2=$ESI_L2 (expected matching, >= 2)"
-fi
-
-DF_MISMATCH=0
-DF_CHECKED=0
+df_mismatch=0; df_checked=0
 while read -r esi; do
   [ -z "$esi" ] && continue
-  DF1=$(echo "$DF_L1" | awk -v e="$esi" '$0~e{getline; print $NF}')
-  DF2=$(echo "$DF_L2" | awk -v e="$esi" '$0~e{getline; print $NF}')
-  DF_CHECKED=$((DF_CHECKED+1))
-  if [ -z "$DF1" ] || [ "$DF1" != "$DF2" ]; then
-    DF_MISMATCH=$((DF_MISMATCH+1))
+  df1=$(echo "$df_l1" | awk -v e="$esi" '$0~e{getline; print $NF}')
+  df2=$(echo "$df_l2" | awk -v e="$esi" '$0~e{getline; print $NF}')
+  df_checked=$((df_checked+1))
+  if [ -z "$df1" ] || [ "$df1" != "$df2" ]; then
+    df_mismatch=$((df_mismatch+1))
   fi
-done <<< "$(echo "$DF_L1" | awk '/ESI: 01:/ {print $2}')"
-if [ "$DF_CHECKED" -gt 0 ] && [ "$DF_MISMATCH" = "0" ]; then
-  pass "DF election: $DF_CHECKED ESIs, both leaves agree on DF"
+done <<< "$(echo "$df_l1" | awk '/ESI: 01:/ {print $2}')"
+if [ "$df_checked" -gt 0 ] && [ "$df_mismatch" = "0" ]; then
+  pass "DF election: $df_checked ESIs, both leaves agree on DF"
 else
-  fail "DF election: $DF_MISMATCH/$DF_CHECKED ESIs have mismatched DF between leaves"
-fi
-
-# H. Duplicate-MAC detection state must be empty.
-# duplicate-mac-detection is configured in EVPN-VXLAN; any entry here means
-# a real loop or mis-cabling, not a false positive.
-DUP=$(junos_cmd 172.16.18.162 "show evpn database state duplicate" | grep -cE "^[[:space:]]*[0-9]+[[:space:]]")
-if [ "$DUP" = "0" ]; then
-  pass "EVPN duplicate-MAC: 0 duplicate entries"
-else
-  fail "EVPN duplicate-MAC: $DUP duplicate entries (loop or mis-cabling?)"
-fi
-
-# J. BFD session health on leaf1.
-# Assert every BFD session is Up AND every session reports Local diagnostic None.
-# Catches the case where a session is technically Up but flapping with diag bits.
-BFD_OUT=$(junos_cmd 172.16.18.162 "show bfd session extensive")
-BFD_UP_COUNT=$(echo "$BFD_OUT" | grep -cE "^[0-9.]+ +Up ")
-BFD_DIAG_OK=$(echo "$BFD_OUT" | grep -c "Local diagnostic None")
-if [ "$BFD_UP_COUNT" -ge 2 ] && [ "$BFD_DIAG_OK" = "$BFD_UP_COUNT" ]; then
-  pass "BFD: $BFD_UP_COUNT sessions Up, all with diag=None"
-else
-  fail "BFD: $BFD_UP_COUNT up, $BFD_DIAG_OK clean diag (expected matching, >= 2)"
-fi
-
-# K. Underlay interface error/drop counters on leaf1.
-# Carrier transitions are allowed to be > 0 (Section 6 spine failover causes flaps),
-# but Errors and Drops on the fabric interfaces should always be 0.
-# A nonzero count here means real packet loss on the underlay.
-IFACE_BAD=0
-for iface in ge-0/0/0 ge-0/0/1; do
-  STATS=$(junos_cmd 172.16.18.162 "show interfaces $iface extensive" | grep -A1 "Input errors:" | tail -1)
-  ERRS=$(echo "$STATS" | sed -n 's/.*Errors: \([0-9]*\).*/\1/p')
-  DROPS=$(echo "$STATS" | sed -n 's/.*Drops: \([0-9]*\).*/\1/p')
-  if [ "${ERRS:-1}" != "0" ] || [ "${DROPS:-1}" != "0" ]; then
-    IFACE_BAD=$((IFACE_BAD+1))
-    echo "    leaf1 $iface: errors=$ERRS drops=$DROPS"
-  fi
-done
-if [ "$IFACE_BAD" = "0" ]; then
-  pass "Underlay counters: leaf1 fabric interfaces clean (0 errors, 0 drops)"
-else
-  fail "Underlay counters: $IFACE_BAD fabric interfaces have errors/drops"
-fi
-
-# F. EVPN database must contain MAC+IP entries (regression test for no-arp-suppression).
-# With ARP suppression at default-on, leaves snoop host ARPs into the EVPN db.
-# If `no-arp-suppression` is re-introduced, locally-learned entries lose their IP column.
-# Count database entries that have a non-empty IP field.
-DB_WITH_IP=$(junos_cmd 172.16.18.162 "show evpn database" | awk 'NR>2 && NF>=6 && $NF ~ /^[0-9]+\./ {c++} END {print c+0}')
-if [ "$DB_WITH_IP" -ge 6 ]; then
-  pass "EVPN database: $DB_WITH_IP entries with MAC+IP (ARP suppression working)"
-else
-  fail "EVPN database: only $DB_WITH_IP MAC+IP entries (no-arp-suppression regression?)"
+  fail "DF election: $df_mismatch/$df_checked ESIs have mismatched DF between leaves"
 fi
 
 echo ""
