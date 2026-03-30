@@ -39,7 +39,7 @@ Scope:
 - Juniper ERB (Edge-Routed Bridging) architecture:
   - Underlay eBGP in default routing instance (unique ASN per device)
   - Overlay iBGP with `family evpn signaling` in default instance (spines as route reflectors, AS 65000)
-  - L2 overlay in `virtual-switch` routing instance (vlans, VNI-to-VLAN)
+  - L2 overlay in `mac-vrf` routing instance with `service-type vlan-aware` (vlans, VNI-to-VLAN, vtep-source-interface)
   - L3 tenant routing in `vrf` instance (IRB anycast gateway, lo0.2, L3VNI, Type-5 routes)
   - OOB management in `mgmt_junos` instance (fxp0)
 - VXLAN with VNI-to-VLAN mapping
@@ -52,18 +52,34 @@ Scope:
 - BGP operational features:
   - log-updown, graceful-restart, mtu-discovery
   - multipath multiple-as (underlay)
-  - vpn-apply-export, multihop no-nexthop-change, signaling loops 2 (overlay)
+  - multihop no-nexthop-change, signaling loops 2 (overlay)
+  - hold-time 30 (JVD timer, both UNDERLAY and OVERLAY groups)
   - graceful-restart dont-help-shared-fate-bfd-down
-- BFD: multiplier 3, session-mode (single-hop underlay, multihop overlay)
-- EVPN: duplicate-mac-detection, multicast-mode ingress-replication (ARP suppression at default-on so leaves snoop host ARPs into the EVPN database)
-- Forwarding plane: chained-composite-next-hop ingress evpn, forwarding-table export LOAD-BALANCE (per-packet ECMP), vxlan-routing overlay-ecmp
-- Chassis: aggregated-devices ethernet device-count, network-services enhanced-ip
-- nonstop-routing, layer2-control nonstop-bridging
+- BFD: multiplier 3, minimum-interval 1000 (single-hop underlay, multihop overlay)
+- EVPN: duplicate-mac-detection, multicast-mode ingress-replication. Leave ARP suppression at the Junos default (ON) so leaves snoop host ARPs into the EVPN database and originate Type-2 (MAC+IP). `proxy-macip-advertisement` is intentionally NOT set: not supported on vJunos-switch (syntax error) and not needed in ERB anyway, where every leaf owns the IRB locally.
+- Forwarding plane: chained-composite-next-hop ingress evpn, forwarding-table export LOAD-BALANCE policy with `load-balance per-packet` (mandatory for the PFE to install ECMP - without it BGP multipath shows multiple paths but only one next-hop is programmed)
+- Chassis: aggregated-devices ethernet device-count
+- IRB: `family inet mtu 9000`, `no-redirects`, virtual-gateway-address + virtual-gateway-v4-mac (anycast)
 - LLDP on all interfaces (port-id-subtype interface-name)
-- Jumbo frames (mtu 9216 on fabric and host-facing interfaces)
-- Storm control profiles on external-facing interfaces
-- Manual baseline verification: `show bgp summary`, `show evpn instance`, `show ethernet-switching table`
-- Traffic tests: L2 within VLAN, L3 inter-VLAN, ESI-LAG failover
+- Jumbo MTU 9192 on fabric and host-facing interfaces (vJunos-switch caps at 9192, not 9216)
+- Storm control profile on access ports
+- Network-isolation profile on leaves with explicit core-isolation tracking
+- 76-check smoke test suite (`smoke-tests.sh`) covering:
+  - 3-stage pre-flight: BGP convergence, LLDP population, FIB programmed
+  - Control plane: per-device BGP, EVPN routes, VTEP tunnels, LACP, BFD, LLDP, ESI, core-isolation
+  - Data plane: L2 same-VLAN cross-leaf, L3 inter-VLAN, ESI-LAG, anycast gateway
+  - Failover: ESI-LAG hard fail (docker pause), core isolation, spine failover, single-homed isolation
+  - EVPN deep validation per leaf (mirrored): ECMP next-hop count in PFE, per-VNI Type-2/3, Type-5 in tenant VRF, jumbo MTU 8972 DF end-to-end, BFD diag, duplicate-MAC, EVPN database object asserts, BGP per-peer NLRI counters, interface error/drop counters
+  - Cross-leaf invariants: ESI consistency, DF election agreement
+  - Post-failure cleanup: VTEP withdrawal/reinstall after both ESI-LAG hard fail and core isolation
+  - Poll-based waits (no hardcoded sleeps), JSON+jq parsers for fragile fields
+  - Run time ~2 minutes on a converged fabric
+
+Production-only features (NOT testable on vJunos-switch single-RE virtual platform - documented for completeness, deferred to real hardware):
+- `nonstop-routing` and `layer2-control nonstop-bridging` (require dual RE)
+- `network-services enhanced-ip` (QFX-only)
+- `vxlan-routing overlay-ecmp` (PFE-only feature, not in vJunos)
+- BFD sub-second timers (vJunos PFE-less BFD won't run faster than 1000ms)
 
 Validated against two production EVPN-VXLAN fabrics. Earlier revisions of this lab carried `no-arp-suppression` per VLAN and a static-ARP workaround on hosts because vJunos-switch IRBs were assumed to not generate ARP replies. That assumption was wrong - the bug was `no-arp-suppression` itself, which disabled the EVPN ARP-snoop-and-reply mechanism. With ARP suppression at its Junos default (ON), leaves snoop local host ARPs into the EVPN database, originate Type-2 (MAC+IP) routes, and reply locally to gateway ARPs. Hosts learn the anycast gateway MAC dynamically without any host-side workaround.
 
@@ -106,22 +122,39 @@ Result: configuration errors caught before touching any device.
 
 ---
 
-## Phase 5 - Suzieq Post-Deployment Validation
+## Phase 5 - Suzieq Operational State Monitoring + NetBox Drift Detection
 
-Operational state validation after deployment - does what's running match the intent in NetBox.
+Re-scope rationale: the Phase 2 smoke test suite already covers the originally-planned assertions (BGP Established + per-peer EVPN NLRI, per-VNI Type-2/3, Type-5, TENANT-1 /32 object asserts, ESI-LAG with cross-leaf DF election consistency, LLDP neighbor counts, VXLAN tunnel state, MAC/IP entries against an expected host list). Re-implementing those in Suzieq would be duplication. Phase 5 instead focuses on what the smoke suite cannot do: continuous time-series state, vendor-neutral schema (needed for Phase 10 multi-vendor), and intent-vs-state diff against NetBox.
+
+Smoke tests = deploy-time gate (one-shot, runs in CI after `containerlab deploy`).
+Suzieq = runtime monitor (cron, dashboards, alerts).
 
 Scope:
-- Suzieq collecting data from devices (SSH/NETCONF) after deployment
-- Assertions in Python or Suzieq CLI:
-  - All BGP sessions in Established state
-  - EVPN routes present on all leaves
-  - ESI-LAG active on both leaves
-  - LLDP neighbors matching the topology (and NetBox)
-  - VXLAN interfaces up
-  - MAC/IP entries in EVPN tables matching expectations
-- Pass/fail report per assertion
+- Suzieq collector container in docker-compose, polling all DC1 devices via SSH every 60s, persisting to its Parquet store
+- **NetBox-versus-Suzieq diff layer** - the killer use case:
+  - Pull intent from NetBox API (devices, interfaces, BGP sessions, VLANs, VNIs, expected LLDP topology)
+  - Pull state from Suzieq tables (`bgp`, `lldp`, `interfaces`, `evpnVni`, `routes`, `macs`)
+  - Diff and report drift: missing BGP session, LLDP neighbor change vs NetBox cabling, VLAN-to-VNI mismatch, unexpected loopback advertised, etc.
+  - This is "validation against intent" - the part that has zero overlap with the smoke suite
+- **Time-series assertions** (things the smoke suite cannot answer because it is point-in-time):
+  - BGP session flap count > 0 in last N minutes
+  - LLDP neighbor change since baseline
+  - EVPN Type-2/3/5 route count delta over time (sudden drops = silent withdraw)
+  - VXLAN VTEP appear/disappear events
+  - Interface error/drop counter rate (not just absolute value)
+  - MAC mobility events (mac moved between VTEPs)
+- **Strict assertions mirroring the smoke suite depth** (run by Suzieq on every poll, not just at deploy):
+  - All BGP sessions Established AND each session has received-prefix-count > 0 per peer per AFI/SAFI
+  - Per-VNI Type-2 / Type-3 route presence (not aggregate count)
+  - ESI consistency: same ESI string seen on both leaves of a multi-homed group, identical DF election outcome
+  - VTEP count per leaf == expected (from NetBox topology)
+  - Specific tenant host /32s present in TENANT-1.inet.0 via EVPN
+  - BFD session diag == None on every session
+  - LLDP neighbor table matches NetBox cabling exactly (name + interface, not just count)
+- Pass/fail report per assertion + structured output for the Phase 6 CI pipeline
+- Optional: Suzieq REST API exposed for ad-hoc queries from operators
 
-Result: automated verification that the fabric operates according to intent.
+Result: automated drift detection between NetBox intent and live fabric state, plus a queryable time-series record of fabric behavior. Smoke and Suzieq are complementary: smoke says "this deploy landed cleanly," Suzieq says "is the fabric still in spec right now and how did it get there."
 
 ---
 
@@ -137,8 +170,9 @@ Scope:
   3. **Batfish Validate** - offline analysis of generated configs + differential analysis
   4. **Batfish Results -> PR Comment** - bot posts to PR what will change (new BGP sessions, modified ACLs, affected prefixes)
   5. **Deploy** - containerlab up + Nornir deploy (optional, `workflow_dispatch` on self-hosted runner)
-  6. **Suzieq Assert** - operational state validation after deployment
-  7. **Teardown** - containerlab destroy
+  6. **Smoke gate** - run `phase2-fabric/smoke-tests.sh` (~2 min). Hard fail = block merge.
+  7. **Suzieq drift check** - NetBox-vs-state diff (Phase 5 Python harness). Soft fail = warn.
+  8. **Teardown** - containerlab destroy
 - Stages 5-7 may live in a separate workflow (spinning up the lab in CI is resource-intensive)
 - Pipeline status badge in README
 
@@ -146,22 +180,25 @@ Result: every change to NetBox/templates is automatically validated. PRs include
 
 ---
 
-## Phase 7 - ECMP + Forwarding Optimization
+## Phase 7 - Forwarding Scale + Convergence Tuning
 
-Optimizing traffic forwarding and load balancing across the fabric.
+Most originally-scoped Phase 7 items landed in Phase 2 during the JVD best-practice review:
+- Per-packet ECMP via forwarding-table export LOAD-BALANCE - DONE in Phase 2 (was a critical bug fix; the PFE was installing only one next-hop until the policy was added)
+- Anycast gateway, IRB interfaces, Type-5 routing - DONE in Phase 2
+- ESI-LAG failover, leaf failure traffic takeover - DONE in Phase 2 (smoke tests Section 4)
+- proxy-macip-advertisement - DROPPED. Not supported on vJunos-switch and not needed in ERB anyway (CRB construct for L2-only leaves)
 
-Note: anycast gateway, IRB interfaces, and Type-5 routing moved to Phase 2.
+Remaining scope - things that genuinely need a dedicated phase:
+- VXLAN routing scale tuning: `interface-num`, `next-hop` table sizing, `shared-tunnels` (production-class scale, not relevant in a 4-device lab but worth modeling)
+- Richer BGP export policy: per-subnet direct route advertisement instead of loopback-only export, with explicit allow/deny terms
+- ECMP fast-reroute (BGP PIC + FRR) for sub-second failover under specific failure modes
+- BGP add-path / multipath multiple-as tuning across spine RR boundary
+- BFD micro-BFD on aggregated interfaces (would need physical hardware to validate)
+- Selective route leaking between tenant VRFs (preview of multi-tenant work)
 
-Scope:
-- ECMP load balancing: forwarding-table export PFE-LB (per-packet)
-- ECMP fast-reroute for sub-second failover
-- VXLAN routing scale tuning (interface-num, next-hop count, shared-tunnels)
-- Richer BGP export policy (direct routes per subnet, not just loopback)
-- proxy-macip-advertisement on IRB interfaces
-- Extended Suzieq assertions: ECMP working (traceroute from hosts), both leaves as gateway
-- Failover tests: shutting down one leaf, verifying traffic takeover
+Most of these need real hardware to actually validate. May be re-scoped or merged into Phase 10 (multi-DC) where scale starts to matter.
 
-Result: optimized forwarding with ECMP load balancing and fast convergence.
+Result: forwarding-plane scale knobs documented and where possible exercised; remaining items deferred to hardware lab.
 
 ---
 
@@ -290,10 +327,15 @@ Batfish: offline validation (BGP, ACL, routing, diff)
 Nornir + NAPALM: deploy to devices
     │
     ▼
-Suzieq: operational state validation
+smoke-tests.sh: 76-check deploy-time gate (BGP, EVPN, failover, ECMP, MTU, ESI/DF, ...)
     │
-    ├── FAIL -> discrepancy report
+    ├── FAIL -> block merge, dump diagnostics, teardown
     │
     ▼ PASS
+Suzieq: continuous state monitor + NetBox drift check
+    │
+    ├── DRIFT -> warn (cron-driven, not deploy-blocking)
+    │
+    ▼ in-spec
 ✅ Fabric matches intent
 ```
