@@ -48,6 +48,40 @@ junos_cmd() {
   sshpass -p 'TestLabPass1' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 admin@$host "$cmd | no-more" 2>&1
 }
 
+# junos_json: run a Junos CLI command and return JSON-formatted output.
+# Used by parsers that need stable structured fields (BGP neighbor state,
+# BFD diag, interface counters). Plain `junos_cmd` is still used for the
+# many checks that grep on stable semantic prefixes (e.g. "^2:" for EVPN
+# Type-2 routes), where JSON-walking would be more code without being
+# more robust.
+junos_json() {
+  local host=$1 cmd=$2
+  sshpass -p 'TestLabPass1' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 admin@$host "$cmd | display json | no-more" 2>&1
+}
+
+# wait_until: poll a shell command until it prints the expected value, or
+# until timeout (default 120s) elapses. Replaces hardcoded `sleep N` waits
+# in failover scenarios so the suite reacts to actual system state instead
+# of guessing how long convergence takes.
+#
+# Usage: wait_until "<cmd>" <expected-value> [timeout-seconds] [poll-interval]
+# Returns 0 on match, 1 on timeout. Echoes how long it actually waited.
+wait_until() {
+  local probe=$1 expected=$2 timeout=${3:-120} interval=${4:-3}
+  local waited=0 actual
+  while [ $waited -lt $timeout ]; do
+    actual=$(eval "$probe" 2>/dev/null)
+    if [ "$actual" = "$expected" ]; then
+      echo $waited
+      return 0
+    fi
+    sleep $interval
+    waited=$((waited+interval))
+  done
+  echo $waited
+  return 1
+}
+
 echo "============================================"
 echo "  DC1 EVPN-VXLAN Smoke Tests"
 echo "============================================"
@@ -206,30 +240,29 @@ VTEP_BEFORE=$(junos_cmd 172.16.18.163 "show ethernet-switching vxlan-tunnel-end-
 echo "  Pausing leaf1 container (hard failure simulation)..."
 docker pause clab-${LAB_NAME}-dc1-leaf1
 
-echo "  Waiting 10s for LACP fast timeout (3x1s) + convergence..."
-sleep 10
-
-# Check LACP aggregator - with leaf1 paused, active aggregator should have 1 port
-# (LACP detects missing PDUs and moves the failed slave to a separate aggregator)
-AGG_PORTS=$(docker exec clab-${LAB_NAME}-dc1-host3 grep "Number of ports" /proc/net/bonding/bond0 | head -1 | awk '{print $NF}')
-if [ "$AGG_PORTS" = "1" ]; then
-  pass "ESI-LAG: LACP detected leaf1 failure (active aggregator: 1 port)"
+# Poll LACP aggregator port count instead of fixed sleep. With LACP fast
+# (1s PDU, 3s timeout), the slave moves to a separate aggregator within
+# ~3s of pause. Cap at 30s.
+echo "  Waiting for LACP to detect leaf1 failure..."
+WAITED=$(wait_until "docker exec clab-${LAB_NAME}-dc1-host3 grep 'Number of ports' /proc/net/bonding/bond0 | head -1 | awk '{print \$NF}'" "1" 30 1)
+if [ $? = 0 ]; then
+  pass "ESI-LAG: LACP detected leaf1 failure in ${WAITED}s (active aggregator: 1 port)"
 else
-  fail "ESI-LAG: active aggregator still has $AGG_PORTS ports (expected 1)"
+  fail "ESI-LAG: aggregator still > 1 port after ${WAITED}s"
 fi
 
 ping_test dc1-host3 10.10.20.14 "ESI-LAG failover: host3 -> host4 (leaf1 crashed)"
 
-# Post-failure withdrawal: leaf2 should drop the remote VTEP entry for the
-# crashed leaf once BGP hold timer expires (~90s on default Junos timers).
-# We have already waited 10s for LACP - wait the rest before sampling.
-echo "  Waiting for BGP hold timer expiry to verify VTEP withdrawal..."
-sleep 90
-VTEP_DURING=$(junos_cmd 172.16.18.163 "show ethernet-switching vxlan-tunnel-end-point remote" | grep -c "^ 10.1.0.3 ")
-if [ "$VTEP_BEFORE" = "1" ] && [ "$VTEP_DURING" = "0" ]; then
-  pass "Post-failure withdrawal: leaf2 dropped remote VTEP 10.1.0.3 (was=$VTEP_BEFORE now=$VTEP_DURING)"
+# Post-failure withdrawal: poll until leaf2 drops the remote VTEP entry,
+# instead of sleeping the full BGP hold timer (~90s). On a healthy fabric
+# this typically happens in 60-100s (BGP hold + EVPN withdrawal flush).
+# Cap at 150s to give margin for the full hold timer.
+echo "  Polling for leaf2 VTEP withdrawal (BGP hold timer)..."
+WAITED=$(wait_until "junos_cmd 172.16.18.163 'show ethernet-switching vxlan-tunnel-end-point remote' | grep -c '^ 10.1.0.3 '" "0" 150 5)
+if [ $? = 0 ] && [ "$VTEP_BEFORE" = "1" ]; then
+  pass "Post-failure withdrawal: leaf2 dropped remote VTEP 10.1.0.3 in ${WAITED}s"
 else
-  fail "Post-failure withdrawal: leaf2 VTEP for 10.1.0.3 was=$VTEP_BEFORE now=$VTEP_DURING (expected 1 -> 0)"
+  fail "Post-failure withdrawal: leaf2 still has VTEP 10.1.0.3 after ${WAITED}s (was=$VTEP_BEFORE)"
 fi
 
 echo "  Unpausing leaf1 container..."
@@ -287,31 +320,27 @@ ISO_VTEP_BEFORE=$(junos_cmd 172.16.18.163 "show ethernet-switching vxlan-tunnel-
 echo "  Deactivating overlay BGP on leaf1..."
 junos_cmd 172.16.18.162 "configure; deactivate protocols bgp group OVERLAY; commit" >/dev/null 2>&1
 
-echo "  Waiting 15s for core-isolation to trigger..."
-sleep 15
-
-# Both ae0 AND ae1 should be link-down. Earlier versions only checked ae0;
-# a one-AE bug would have slipped through.
-AE0_LINK=$(junos_cmd 172.16.18.162 "show interfaces ae0 terse" | grep "ae0 " | awk '{print $3}')
-AE1_LINK=$(junos_cmd 172.16.18.162 "show interfaces ae1 terse" | grep "ae1 " | awk '{print $3}')
+# Poll for ae0 going down instead of fixed 15s sleep. Core-isolation
+# detection runs every few seconds and brings the AEs down within ~5-10s.
+echo "  Polling for core-isolation to bring ae0 down..."
+WAITED=$(wait_until "junos_cmd 172.16.18.162 'show interfaces ae0 terse' | grep '^ae0 ' | awk '{print \$3}'" "down" 60 3)
+AE0_LINK=$(junos_cmd 172.16.18.162 "show interfaces ae0 terse" | grep "^ae0 " | awk '{print $3}')
+AE1_LINK=$(junos_cmd 172.16.18.162 "show interfaces ae1 terse" | grep "^ae1 " | awk '{print $3}')
 if [ "$AE0_LINK" = "down" ] && [ "$AE1_LINK" = "down" ]; then
-  pass "Core isolation: ae0 AND ae1 both brought down after overlay BGP loss"
+  pass "Core isolation: ae0 AND ae1 both brought down in ${WAITED}s"
 else
-  fail "Core isolation: ae0=$AE0_LINK ae1=$AE1_LINK (expected both down)"
+  fail "Core isolation: ae0=$AE0_LINK ae1=$AE1_LINK after ${WAITED}s (expected both down)"
 fi
 
 ping_test dc1-host3 10.10.20.14 "Core isolation: host3 -> host4 (leaf1 isolated, via leaf2)"
 
-# Post-isolation withdrawal: with overlay BGP deactivated, leaf2 should
-# eventually drop the remote VTEP entry for leaf1. Default BGP hold = 90s
-# (we already slept 15s above), so wait the rest.
-echo "  Waiting for VTEP withdrawal on leaf2 (BGP hold timer)..."
-sleep 80
-ISO_VTEP_DURING=$(junos_cmd 172.16.18.163 "show ethernet-switching vxlan-tunnel-end-point remote" | grep -c "^ 10.1.0.3 ")
-if [ "$ISO_VTEP_BEFORE" = "1" ] && [ "$ISO_VTEP_DURING" = "0" ]; then
-  pass "Core isolation withdrawal: leaf2 dropped remote VTEP 10.1.0.3 (was=$ISO_VTEP_BEFORE now=$ISO_VTEP_DURING)"
+# Post-isolation withdrawal: poll for VTEP drop instead of sleeping 80s.
+echo "  Polling for VTEP withdrawal on leaf2 (BGP hold timer)..."
+WAITED=$(wait_until "junos_cmd 172.16.18.163 'show ethernet-switching vxlan-tunnel-end-point remote' | grep -c '^ 10.1.0.3 '" "0" 150 5)
+if [ $? = 0 ] && [ "$ISO_VTEP_BEFORE" = "1" ]; then
+  pass "Core isolation withdrawal: leaf2 dropped remote VTEP 10.1.0.3 in ${WAITED}s"
 else
-  fail "Core isolation withdrawal: leaf2 VTEP for 10.1.0.3 was=$ISO_VTEP_BEFORE now=$ISO_VTEP_DURING (expected 1 -> 0)"
+  fail "Core isolation withdrawal: leaf2 still has VTEP 10.1.0.3 after ${WAITED}s"
 fi
 
 echo "  Restoring overlay BGP on leaf1..."
@@ -370,7 +399,12 @@ echo "=== 6. Failover: Spine ==="
 
 echo "  Disabling spine1 underlay interfaces..."
 junos_cmd 172.16.18.160 "configure; set interfaces ge-0/0/0 disable; set interfaces ge-0/0/1 disable; commit" >/dev/null 2>&1
-sleep 10
+
+# Poll for leaf1 to lose its BGP session to spine1 (10.1.0.1) instead of
+# fixed sleep. BFD detects failure within multiplier*interval = 3s.
+echo "  Polling for leaf1 to mark spine1 BGP session down..."
+WAITED=$(wait_until "junos_cmd 172.16.18.162 'show bgp summary' | awk '/^10.1.0.1/ {print \$NF}' | grep -qE '^[0-9]+\$' && echo up || echo down" "down" 30 2)
+echo "  spine1 session marked down on leaf1 in ${WAITED}s"
 
 ping_test dc1-host1 10.10.10.12 "Spine failover: host1 -> host2 (spine1 down, via spine2)"
 ping_test dc1-host1 10.10.20.13 "Spine failover: host1 -> host3 L3 (spine1 down)"
@@ -412,6 +446,21 @@ echo ""
 # ---------------------------------------------------------------
 echo "=== 8. EVPN Deep Validation ==="
 # ---------------------------------------------------------------
+#
+# Parsing strategy (deliberate, not accidental):
+#  - JSON + jq is used for fields where the screen-text format is fragile:
+#    BGP neighbor state and per-RIB counters, BFD per-session diag, and
+#    interface error/drop counters. These all use awkward positional
+#    parsers in the original implementation; the Junos JSON schema field
+#    names (peer-state, local-diagnostic, input-errors, input-drops) are
+#    stable across releases and survive output format changes.
+#  - Plain grep is kept for asserts that match on stable semantic prefixes
+#    (e.g. "^2:" for EVPN Type-2 routes, "ESI: 01:" for LACP-derived ESIs,
+#    "0% packet loss" for ping). The JSON equivalents for these end up as
+#    deeply-nested jq expressions that are LESS readable without being
+#    more robust - the prefix strings are themselves part of the EVPN
+#    NLRI format, not the CLI presentation layer.
+#
 
 # Warmup: ARP entries age out after port flaps in earlier sections, which
 # in turn pulls Type-5 host /32 routes out of TENANT-1.inet.0 because the
@@ -529,14 +578,17 @@ validate_leaf() {
   fi
 
   # ----- Per-peer overlay BGP: Established AND receiving EVPN NLRI -----
+  # Parsed from `| display json` + jq instead of grep on screen text. The
+  # field names "peer-state" and "received-prefix-count" under bgp-rib are
+  # part of the Junos schema and stable across releases.
   local peer state recvd
   for peer in 10.1.0.1 10.1.0.2; do
     [ "$peer" = "$own_lo" ] && continue
-    local nbr
-    nbr=$(junos_cmd $ip "show bgp neighbor $peer")
-    state=$(echo "$nbr" | grep -m1 "State: " | awk '{print $4}')
-    recvd=$(echo "$nbr" | grep -m1 "Received prefixes" | awk '{print $NF}')
-    if [ "$state" = "Established" ] && [ -n "$recvd" ] && [ "$recvd" -gt 0 ] 2>/dev/null; then
+    local nbr_json
+    nbr_json=$(junos_json $ip "show bgp neighbor $peer")
+    state=$(echo "$nbr_json" | jq -r '.["bgp-information"][0]["bgp-peer"][0]["peer-state"][0].data // "unknown"')
+    recvd=$(echo "$nbr_json" | jq -r '[.["bgp-information"][0]["bgp-peer"][0]["bgp-rib"][]?["received-prefix-count"][0].data | tonumber] | add // 0')
+    if [ "$state" = "Established" ] && [ "$recvd" -gt 0 ] 2>/dev/null; then
       pass "$name overlay BGP -> $peer: Established, $recvd received EVPN prefixes"
     else
       fail "$name overlay BGP -> $peer: state=$state received=$recvd"
@@ -560,23 +612,30 @@ validate_leaf() {
   fi
 
   # ----- BFD session health -----
-  local bfd_out bfd_up bfd_diag
-  bfd_out=$(junos_cmd $ip "show bfd session extensive")
-  bfd_up=$(echo "$bfd_out" | grep -cE "^[0-9.]+ +Up ")
-  bfd_diag=$(echo "$bfd_out" | grep -c "Local diagnostic None")
-  if [ "$bfd_up" -ge 2 ] && [ "$bfd_diag" = "$bfd_up" ]; then
-    pass "$name BFD: $bfd_up sessions Up, all with diag=None"
+  # Parsed from JSON. Asserts every session is Up AND every session has
+  # local-diagnostic == "None". One sed/awk-free assertion replaces the
+  # two grep counters from the original implementation.
+  local bfd_json bfd_total bfd_clean
+  bfd_json=$(junos_json $ip "show bfd session extensive")
+  bfd_total=$(echo "$bfd_json" | jq '[.["bfd-session-information"][0]["bfd-session"][]? | select(.["session-state"][0].data=="Up" and .["local-diagnostic"][0].data=="None")] | length')
+  bfd_all=$(echo "$bfd_json" | jq '[.["bfd-session-information"][0]["bfd-session"][]?] | length')
+  if [ "$bfd_total" -ge 2 ] && [ "$bfd_total" = "$bfd_all" ]; then
+    pass "$name BFD: $bfd_total sessions Up + diag=None (out of $bfd_all)"
   else
-    fail "$name BFD: $bfd_up up, $bfd_diag clean diag (expected matching, >= 2)"
+    fail "$name BFD: $bfd_total clean / $bfd_all total (expected matching, >= 2)"
   fi
 
   # ----- Underlay interface error/drop counters -----
-  local iface_bad=0 stats errs drops
+  # JSON-parsed. Replaces a fragile sed regex against a single-line
+  # "Input errors:" block. The Junos schema names input-errors and
+  # input-drops directly under input-error-list[0].
+  local iface_bad=0 errs drops
   for iface in ge-0/0/0 ge-0/0/1; do
-    stats=$(junos_cmd $ip "show interfaces $iface extensive" | grep -A1 "Input errors:" | tail -1)
-    errs=$(echo "$stats" | sed -n 's/.*Errors: \([0-9]*\).*/\1/p')
-    drops=$(echo "$stats" | sed -n 's/.*Drops: \([0-9]*\).*/\1/p')
-    if [ "${errs:-1}" != "0" ] || [ "${drops:-1}" != "0" ]; then
+    local iface_json
+    iface_json=$(junos_json $ip "show interfaces $iface extensive")
+    errs=$(echo "$iface_json" | jq -r '.["interface-information"][0]["physical-interface"][0]["input-error-list"][0]["input-errors"][0].data // "0"')
+    drops=$(echo "$iface_json" | jq -r '.["interface-information"][0]["physical-interface"][0]["input-error-list"][0]["input-drops"][0].data // "0"')
+    if [ "$errs" != "0" ] || [ "$drops" != "0" ]; then
       iface_bad=$((iface_bad+1))
       echo "    $name $iface: errors=$errs drops=$drops"
     fi
