@@ -7,7 +7,8 @@
 # Management via br-clab bridge (env-specific, see .env.example)
 #
 # After deploy, run: bash setup-hosts.sh
-# (configures IPs, bonding, static ARP on hosts)
+# (configures IPs and 802.3ad bonding on hosts; gateway ARP is learned
+# dynamically via EVPN ARP suppression on the leaves, no static ARP needed)
 
 name: dc1
 

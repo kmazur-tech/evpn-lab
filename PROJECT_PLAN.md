@@ -55,8 +55,8 @@ Scope:
   - vpn-apply-export, multihop no-nexthop-change, signaling loops 2 (overlay)
   - graceful-restart dont-help-shared-fate-bfd-down
 - BFD: multiplier 3, session-mode (single-hop underlay, multihop overlay)
-- EVPN: duplicate-mac-detection, multicast-mode ingress-replication, no-arp-suppression per VLAN
-- Forwarding plane: chained-composite-next-hop ingress evpn, vxlan-routing overlay-ecmp
+- EVPN: duplicate-mac-detection, multicast-mode ingress-replication (ARP suppression at default-on so leaves snoop host ARPs into the EVPN database)
+- Forwarding plane: chained-composite-next-hop ingress evpn, forwarding-table export LOAD-BALANCE (per-packet ECMP), vxlan-routing overlay-ecmp
 - Chassis: aggregated-devices ethernet device-count, network-services enhanced-ip
 - nonstop-routing, layer2-control nonstop-bridging
 - LLDP on all interfaces (port-id-subtype interface-name)
@@ -65,9 +65,9 @@ Scope:
 - Manual baseline verification: `show bgp summary`, `show evpn instance`, `show ethernet-switching table`
 - Traffic tests: L2 within VLAN, L3 inter-VLAN, ESI-LAG failover
 
-Known vjunos-switch limitation: IRB does not generate ARP replies to host requests. The data forwarding path (bridge-to-IRB and IRB-to-bridge) works correctly - inter-VLAN routing functions once MAC is known. Workaround: static ARP entries on test hosts (`arp -s <gateway> <irb-mac>`). Config is validated against two production EVPN-VXLAN fabrics.
+Validated against two production EVPN-VXLAN fabrics. Earlier revisions of this lab carried `no-arp-suppression` per VLAN and a static-ARP workaround on hosts because vJunos-switch IRBs were assumed to not generate ARP replies. That assumption was wrong - the bug was `no-arp-suppression` itself, which disabled the EVPN ARP-snoop-and-reply mechanism. With ARP suppression at its Junos default (ON), leaves snoop local host ARPs into the EVPN database, originate Type-2 (MAC+IP) routes, and reply locally to gateway ARPs. Hosts learn the anycast gateway MAC dynamically without any host-side workaround.
 
-Result: a fully operational fabric with L2 VXLAN bridging, L3 inter-VLAN routing (with static ARP on hosts), ESI-LAG multihoming, and production-grade operational features.
+Result: a fully operational fabric with L2 VXLAN bridging, L3 inter-VLAN routing (anycast gateway, dynamic ARP), ESI-LAG multihoming, per-packet ECMP across both spines, and a 76-check smoke test suite covering control plane, data plane, failover, EVPN deep validation, and post-failure cleanup.
 
 ---
 

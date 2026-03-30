@@ -164,17 +164,11 @@ bash smoke-tests.sh
 | Spine failover | Disable spine1 ge-0/0/0+ge-0/0/1 | L2+L3 traffic via spine2 |
 | Spine restore | Re-enable spine1 interfaces | Traffic via both spines |
 
-### 6. Expected failures
-
-| Test | Action | Expected |
-|------|--------|----------|
-| Single-homed isolation | Disable leaf1 ge-0/0/2 | host1 loses all connectivity (correct - no redundancy) |
-
 ### 7. Expected failures
 
 | Test | Action | Expected |
 |------|--------|----------|
-| Single-homed isolation | Disable leaf1 ge-0/0/2 | host1 loses all connectivity (correct) |
+| Single-homed isolation | Disable leaf1 ge-0/0/2 | host1 loses all connectivity (correct - no redundancy) |
 
 ### 8. EVPN deep validation (per leaf, mirrored across leaf1 + leaf2)
 

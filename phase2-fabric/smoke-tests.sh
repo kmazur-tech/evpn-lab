@@ -232,7 +232,7 @@ ping_test dc1-host2 10.10.20.14 "L3: host2 (leaf2 VLAN10) -> host4 (leaf1+2 VLAN
 # ESI-LAG same VLAN
 ping_test dc1-host3 10.10.20.14 "ESI-LAG: host3 -> host4 (both dual-homed VLAN20)"
 
-# Gateway reachability (static ARP)
+# Gateway reachability (dynamic ARP via EVPN suppression)
 ping_test dc1-host1 10.10.10.1 "GW: host1 -> 10.10.10.1 (virtual gateway)"
 ping_test dc1-host3 10.10.20.1 "GW: host3 -> 10.10.20.1 (virtual gateway)"
 

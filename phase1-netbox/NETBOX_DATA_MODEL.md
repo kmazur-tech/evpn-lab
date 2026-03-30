@@ -607,7 +607,7 @@ Spine routing instances:
   - `vtep-source-interface` inside the routing instance (not global `switch-options`)
   - `routing-options router-id` must be set explicitly (defaults to 0.0.0.0)
   - IRB uses `virtual-gateway-address` + `virtual-gateway-v4-mac` + `virtual-gateway-accept-data`
-  - IRB ARP replies not generated (data forwarding works, workaround: static ARP on hosts)
+  - IRB ARP replies work via EVPN ARP suppression (default-on); leave `no-arp-suppression` UNSET on VLANs - setting it disables the snoop-and-reply path and forces a host-side workaround for no real benefit
   - MTU max 9192
   - See `phase2-fabric/configs/dc1-leaf1.conf` for validated reference config
 - **Prefix roles:** Tenant subnets have role "Server". The anycast nature is on the IP address (role=`anycast`), not the prefix.
