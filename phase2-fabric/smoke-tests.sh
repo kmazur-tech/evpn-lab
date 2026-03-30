@@ -102,12 +102,49 @@ echo ""
 echo "=== Pre-flight: waiting for fabric convergence ==="
 # ---------------------------------------------------------------
 
-# Wait until all 4 devices have 0 BGP down peers before starting tests.
-# On fresh deploy, BGP needs 30-60s after switches become healthy.
-for name_ip in "dc1-spine1:172.16.18.160" "dc1-spine2:172.16.18.161" \
-               "dc1-leaf1:172.16.18.162" "dc1-leaf2:172.16.18.163"; do
+# Three-stage convergence wait. On a warm fabric all stages return in 0s;
+# on a fresh cold-boot deploy we previously saw transient failures because
+# the suite started while LLDP was still empty or the first FIB push had
+# not landed yet. Pre-flight now blocks until each stage actually settles.
+#
+# Stage 1: BGP - 0 down peers. Needed before any control-plane assertion.
+# Stage 2: LLDP - >= 2 neighbors per device. Needed before Section 1's
+#          LLDP count assertion. LLDP TX defaults to 30s so on a fresh
+#          boot the first round of advertisements can take a moment.
+# Stage 3: FIB - each leaf has the remote leaf loopback installed via at
+#          least one ge- next-hop. Proves the underlay forwarding plane
+#          is wired up before Section 6 (spine failover) starts kicking
+#          interfaces around. Without this the very first ping in
+#          Section 6 can race the initial FIB push.
+
+DEVICES="dc1-spine1:172.16.18.160 dc1-spine2:172.16.18.161 dc1-leaf1:172.16.18.162 dc1-leaf2:172.16.18.163"
+
+echo "  Stage 1/3: BGP convergence"
+for name_ip in $DEVICES; do
   name=${name_ip%%:*}; ip=${name_ip##*:}
   wait_bgp_converged $ip $name
+done
+
+echo "  Stage 2/3: LLDP neighbor population"
+for name_ip in $DEVICES; do
+  name=${name_ip%%:*}; ip=${name_ip##*:}
+  WAITED=$(wait_until "junos_cmd $ip 'show lldp neighbors' | grep -c '^ge-'" "2" 90 5)
+  if [ $? = 0 ]; then
+    echo "  $name LLDP populated (${WAITED}s)"
+  else
+    echo "  WARN: $name LLDP not >= 2 after ${WAITED}s, continuing anyway"
+  fi
+done
+
+echo "  Stage 3/3: underlay FIB programmed"
+for entry in "172.16.18.162:dc1-leaf1:10.1.0.4" "172.16.18.163:dc1-leaf2:10.1.0.3"; do
+  ip=${entry%%:*}; rest=${entry#*:}; name=${rest%%:*}; remote=${rest##*:}
+  WAITED=$(wait_until "junos_cmd $ip 'show route forwarding-table destination ${remote}/32 table default' | grep -cE 'ucst .* ge-'" "2" 60 3)
+  if [ $? = 0 ]; then
+    echo "  $name FIB to $remote installed with 2 next-hops (${WAITED}s)"
+  else
+    echo "  WARN: $name FIB to $remote not fully installed after ${WAITED}s, continuing anyway"
+  fi
 done
 echo ""
 
@@ -412,9 +449,14 @@ echo "  Disabling spine1 underlay interfaces..."
 junos_cmd 172.16.18.160 "configure; set interfaces ge-0/0/0 disable; set interfaces ge-0/0/1 disable; commit" >/dev/null 2>&1
 
 # Poll for leaf1 to lose its BGP session to spine1 (10.1.0.1) instead of
-# fixed sleep. BFD detects failure within multiplier*interval = 3s.
+# fixed sleep. BFD detects failure within multiplier*interval = 3s; the
+# session moves to Active/Connect state shortly after. The probe checks
+# whether the bgp summary line ends in one of the non-Established state
+# words (Active, Connect, Idle, OpenSent, OpenConfirm); for an Established
+# session the last column is "<active>/<received>/<accepted>/<damped>"
+# which contains slashes, not a state word.
 echo "  Polling for leaf1 to mark spine1 BGP session down..."
-WAITED=$(wait_until "junos_cmd 172.16.18.162 'show bgp summary' | awk '/^10.1.0.1/ {print \$NF}' | grep -qE '^[0-9]+\$' && echo up || echo down" "down" 30 2)
+WAITED=$(wait_until "junos_cmd 172.16.18.162 'show bgp summary' | awk '/^10.1.0.1/ {if (\$NF ~ /^(Active|Connect|Idle|OpenSent|OpenConfirm)\$/) print \"down\"; else print \"up\"}'" "down" 30 2)
 echo "  spine1 session marked down on leaf1 in ${WAITED}s"
 
 ping_test dc1-host1 10.10.10.12 "Spine failover: host1 -> host2 (spine1 down, via spine2)"
