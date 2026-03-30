@@ -27,6 +27,11 @@ custom_fields:
     type: text
     description: "Shared anycast gateway MAC per VRF"
 
+  - name: tenant_id
+    content_types: ["ipam.vrf"]
+    type: integer
+    description: "Sequential tenant identifier (1, 2, ...). Used to encode the L2 MAC-VRF route-distinguisher as <router_id>:<tenant_id> in Phase 3 templates. The L3 VRF RD uses the L3VNI directly."
+
 # ---------------------------------------------------------------------------
 # Step 2 - Tags
 # ---------------------------------------------------------------------------
@@ -143,17 +148,47 @@ vrfs:
   - name: TENANT-1
     rd: auto
     tenant: Lab Operations
-    description: "Tenant VRF (symmetric IRB)"
+    description: "Tenant VRF (symmetric IRB). L3 VRF; the matching L2 MAC-VRF is modeled as an L2VPN object below sharing the same RT."
     custom_fields:
       l3vni: 5000
+      tenant_id: 1
       anycast_mac: "00:00:5e:00:01:01"
     import_targets: ["65000:5000"]
     export_targets: ["65000:5000"]
 
+# Route target scheme (Option C - tenant-id encoding):
+#   - One extended community per tenant: target:<overlay_asn>:<L3VNI>
+#   - L3VNIs allocated from the 5000-5999 range, one per tenant
+#   - Tenant 1 = L3VNI 5000 = community target:65000:5000
+#   - Both the L3 VRF and the L2 MAC-VRF for the same tenant share the
+#     same RT. They are different routing instance types in Junos but
+#     they belong to the same logical tenant.
+#
+# Route distinguisher scheme:
+#   - L3 VRF: <router_id>:<L3VNI>             (e.g. 10.1.0.3:5000)
+#   - L2 MAC-VRF: <router_id>:<tenant_id>     (e.g. 10.1.0.3:1)
+#     Junos rejects duplicate RDs across instances on one device, so
+#     L2 uses the small tenant_id namespace and L3 uses the L3VNI.
 route_targets:
-  - { name: "65000:5000",  description: "TENANT-1 L3VNI import/export" }
-  - { name: "65000:10010", description: "VLAN 10 L2VNI" }
-  - { name: "65000:10020", description: "VLAN 20 L2VNI" }
+  - { name: "65000:5000", description: "TENANT-1 (L3VNI 5000) - shared by L3 VRF and L2 MAC-VRF" }
+
+# ---------------------------------------------------------------------------
+# Step 8b - L2VPN (EVPN MAC-VRF instance)
+# ---------------------------------------------------------------------------
+# NetBox L2VPN object models the EVPN MAC-VRF. One L2VPN per tenant carries
+# all of that tenant's L2 VNIs (vlan-aware service-type). Phase 3 Nornir
+# templates render this into a routing-instances <name> { instance-type
+# mac-vrf } block on each leaf, with the import/export RTs and per-VLAN
+# vxlan VNI bindings.
+l2vpns:
+  - name: EVPN-VXLAN-TENANT-1
+    slug: evpn-vxlan-tenant-1
+    type: evpn
+    identifier: 5000           # convention: same numeric ID as the L3VNI for cross-reference
+    tenant: Lab Operations
+    description: "L2 MAC-VRF for tenant 1, vlan-aware. Carries VNIs 10010 (VLAN10) and 10020 (VLAN20)."
+    import_targets: ["65000:5000"]
+    export_targets: ["65000:5000"]
 
 roles:
   - { name: Loopback,       slug: loopback,   description: "Router-ID and VTEP loopbacks" }

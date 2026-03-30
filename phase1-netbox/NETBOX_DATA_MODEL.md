@@ -228,21 +228,63 @@ Role config context contains: `"overlay_asn": 65000`
 
 ---
 
-## Step 8 - VRFs, Route Targets, Prefix/VLAN Roles
+## Step 8 - VRFs, Route Targets, L2VPNs, Prefix/VLAN Roles
+
+### Tenant route-target / route-distinguisher scheme
+
+The fabric uses a deterministic, NetBox-driven RT scheme so that Phase 3 Nornir templates can compute every value mechanically from a single tenant identifier.
+
+**Naming convention**
+
+| Object | Field | Encoding |
+|---|---|---|
+| Tenant | `tenant_id` (NetBox custom field) | Sequential integer: T1=1, T2=2, ... |
+| Tenant | `l3vni` (NetBox custom field) | `5000 + (tenant_id - 1)` (T1 → 5000, T2 → 5001, ...) |
+| L3 VRF | RD | `<router_id>:<L3VNI>` (e.g. `10.1.0.3:5000`) |
+| L3 VRF | RT | `target:<overlay_asn>:<L3VNI>` (e.g. `target:65000:5000`) |
+| L2 MAC-VRF | RD | `<router_id>:<tenant_id>` (e.g. `10.1.0.3:1`) |
+| L2 MAC-VRF | RT | `target:<overlay_asn>:<L3VNI>` — **same as L3 VRF** for the same tenant |
+
+L2 and L3 share the same RT for the same tenant: a tenant's MAC routes and IP-prefix routes import together. For multi-tenant separation later, the L2 RT can be split off with an offset (e.g. `target:65000:25000` = "L2 layer of L3VNI 5000").
+
+The L2 RD uses `tenant_id` rather than the L3VNI because Junos rejects duplicate RDs across instances on the same device. The L3 VRF already owns `<lo>:<L3VNI>`.
+
+**Template inputs (what Nornir reads from NetBox)**
+
+```python
+vrf = nb.ipam.vrfs.get(name="TENANT-1")
+tenant_id = vrf.custom_fields["tenant_id"]    # 1
+l3vni     = vrf.custom_fields["l3vni"]        # 5000
+overlay_asn = 65000                           # from device-role config_context
+
+l3_rd = f"{router_id}:{l3vni}"                # 10.1.0.3:5000
+l2_rd = f"{router_id}:{tenant_id}"            # 10.1.0.3:1
+rt    = f"target:{overlay_asn}:{l3vni}"       # target:65000:5000
+```
+
+**Wildcard / range community for fabric-wide ops**
+
+Junos extended-community wildcards use POSIX `.` for any single character. The community `target:65000:5...` matches the entire 5000-5999 L3VNI range, so a single regex community can be used for fabric-wide policies that apply to "any tenant in this fabric." It's defined in the configs as `FABRIC-TENANT-RT-RANGE` for this purpose. NetBox does not currently model this — it lives only in the policy-options stanza.
 
 ### VRFs
 
 | Name | RD | Description | Custom Fields |
 |------|-----|-------------|---------------|
-| TENANT-1 | auto | Tenant VRF (symmetric IRB) | l3vni=5000, anycast_mac=00:00:5e:00:01:01 |
+| TENANT-1 | auto (overridden by Nornir templates per the scheme above) | Tenant VRF (symmetric IRB) | tenant_id=1, l3vni=5000, anycast_mac=00:00:5e:00:01:01 |
+
+### L2VPNs (EVPN MAC-VRF instances)
+
+NetBox L2VPN object models the L2 MAC-VRF half of each tenant. Phase 3 templates render this into a `routing-instances <name> instance-type mac-vrf service-type vlan-aware` block on each leaf.
+
+| Name | Type | Identifier | Tenant | Import RTs | Export RTs | Description |
+|------|------|------------|--------|-----------|-----------|-------------|
+| EVPN-VXLAN-TENANT-1 | evpn | 5000 | Lab Operations | 65000:5000 | 65000:5000 | L2 MAC-VRF for tenant 1, vlan-aware, carries VNIs 10010 (VLAN10) + 10020 (VLAN20) |
 
 ### Route Targets
 
 | Name | Description |
 |------|-------------|
-| 65000:5000 | TENANT-1 L3VNI import/export |
-| 65000:10010 | VLAN 10 L2VNI |
-| 65000:10020 | VLAN 20 L2VNI |
+| 65000:5000 | TENANT-1 (L3VNI 5000) - shared by L3 VRF and L2 MAC-VRF |
 
 ### Prefix & VLAN Roles
 
@@ -600,8 +642,8 @@ Spine routing instances:
 - **Idempotency:** Population script must use `get_or_create` pattern.
 - **Step ordering:** Create objects in step order (dependencies).
 - **ASN modeling:** Native ASN objects as registry + `local_context_data.bgp_asn` on each device for template access. NetBox ASN objects are site-level only (no device relationship), so local context bridges the gap.
-- **Routing instances:** Follows Juniper ERB model. Underlay + overlay BGP in default instance. L2 overlay in `virtual-switch` instance. L3 tenant routing in `vrf` instance. OOB management in `mgmt_junos`.
-- **Derived values:** Route distinguisher derived from loopback IP at config render time. VTEP source is `lo0.1` on all leaves (in config context).
+- **Routing instances:** Follows Juniper ERB model. Underlay + overlay BGP in default instance. L2 overlay in `mac-vrf` instance with `service-type vlan-aware`. L3 tenant routing in `vrf` instance. OOB management in `mgmt_junos`.
+- **Derived values:** Route distinguishers and route targets are derived from NetBox `tenant_id` and `l3vni` custom fields per the scheme in Step 8 above. Phase 3 templates compute them at render time. VTEP source is `lo0.1` on all leaves (in config context).
 - **vjunos-switch platform notes** (validated on 23.2R1.14):
   - Uses `mac-vrf` with `service-type vlan-aware`, `vlans` with `l3-interface`
   - `vtep-source-interface` inside the routing instance (not global `switch-options`)
@@ -609,6 +651,8 @@ Spine routing instances:
   - IRB uses `virtual-gateway-address` + `virtual-gateway-v4-mac` + `virtual-gateway-accept-data`
   - IRB ARP replies work via EVPN ARP suppression (default-on); leave `no-arp-suppression` UNSET on VLANs - setting it disables the snoop-and-reply path and forces a host-side workaround for no real benefit
   - MTU max 9192
+  - `proxy-macip-advertisement` is NOT a valid knob at `routing-instances <mac-vrf> protocols evpn` on this platform (syntax error). Don't render it. It's a CRB construct anyway, not needed in ERB.
+  - C-style multi-line comments (`/* ... */`) DO survive a containerlab cold-boot through `startup-config`. Containerlab loads the file in hierarchical format, and Junos accepts `/* */` at the policy-options and routing-instances hierarchy. Verified 2026-04-06 on 23.2R1.14. Phase 3 templates can therefore include design-intent comments without losing them on commit.
   - See `phase2-fabric/configs/dc1-leaf1.conf` for validated reference config
 - **Prefix roles:** Tenant subnets have role "Server". The anycast nature is on the IP address (role=`anycast`), not the prefix.
 - **DC2 (Arista):** Added in project Phase 10 - new site, cEOS device types, EOS platform.

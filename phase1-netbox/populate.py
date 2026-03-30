@@ -291,6 +291,27 @@ def main():
         }
         get_or_create(nb.ipam.vrfs, ["name"], data, vrf["name"])
 
+    # Step 8b - L2VPN (EVPN MAC-VRF) instances
+    # Models the L2 side of each tenant. NetBox L2VPN object holds the
+    # identifier (used as the L2VNI base / cross-reference number), the
+    # type (evpn), and the import/export RTs. Phase 3 templates render
+    # this into a `routing-instances <name> instance-type mac-vrf` block.
+    for l2vpn in config.get("l2vpns", []):
+        import_rts = [nb.ipam.route_targets.get(name=rt) for rt in l2vpn.get("import_targets", [])]
+        export_rts = [nb.ipam.route_targets.get(name=rt) for rt in l2vpn.get("export_targets", [])]
+        tenant = nb.tenancy.tenants.get(name=l2vpn["tenant"]) if l2vpn.get("tenant") else None
+        data = {
+            "name": l2vpn["name"],
+            "slug": l2vpn["slug"],
+            "type": l2vpn.get("type", "evpn"),
+            "identifier": l2vpn.get("identifier"),
+            "description": l2vpn.get("description", ""),
+            "tenant": tenant.id if tenant else None,
+            "import_targets": [rt.id for rt in import_rts if rt],
+            "export_targets": [rt.id for rt in export_rts if rt],
+        }
+        get_or_create(nb.ipam.l2vpns, ["name"], data, l2vpn["name"])
+
     # Step 9 - Aggregates, Prefixes
     print("\n=== Step 9: Aggregates, Prefixes ===")
     for agg in config["aggregates"]:
