@@ -5,7 +5,18 @@
 # Tests cover: control plane, data plane, failover, operational checks.
 # Exit code: 0 = all pass, 1 = failures detected.
 
+# Shell hygiene:
+#  -u  error on unset variables (catches typos in var names)
+#  -o pipefail  propagate failures from any command in a pipe (catches
+#               the masked-pipe-failure class: e.g. junos_cmd ... | grep ...
+#               silently producing "" when SSH fails)
+# `set -e` is intentionally NOT enabled. This script is a test aggregator,
+# not a deploy script - the design is "collect failures, report at the end".
+# `set -e` would abort on the first failed assertion and we would never
+# see whether the other 75 checks pass. The fail() counter is the
+# stop-condition, not the shell.
 set -u
+set -o pipefail
 
 LAB_NAME="${1:-dc1}"
 GW_MAC="00:00:5e:00:01:01"
