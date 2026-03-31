@@ -183,7 +183,7 @@ route_targets:
 l2vpns:
   - name: EVPN-VXLAN-TENANT-1
     slug: evpn-vxlan-tenant-1
-    type: evpn
+    type: vxlan-evpn          # NetBox 4.x value for EVPN-VXLAN MAC-VRF
     identifier: 5000           # convention: same numeric ID as the L3VNI for cross-reference
     tenant: Lab Operations
     description: "L2 MAC-VRF for tenant 1, vlan-aware. Carries VNIs 10010 (VLAN10) and 10020 (VLAN20)."

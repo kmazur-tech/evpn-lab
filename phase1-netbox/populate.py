@@ -303,14 +303,14 @@ def main():
         data = {
             "name": l2vpn["name"],
             "slug": l2vpn["slug"],
-            "type": l2vpn.get("type", "evpn"),
+            "type": l2vpn.get("type", "vxlan-evpn"),
             "identifier": l2vpn.get("identifier"),
             "description": l2vpn.get("description", ""),
             "tenant": tenant.id if tenant else None,
             "import_targets": [rt.id for rt in import_rts if rt],
             "export_targets": [rt.id for rt in export_rts if rt],
         }
-        get_or_create(nb.ipam.l2vpns, ["name"], data, l2vpn["name"])
+        get_or_create(nb.vpn.l2vpns, ["name"], data, l2vpn["name"])
 
     # Step 9 - Aggregates, Prefixes
     print("\n=== Step 9: Aggregates, Prefixes ===")
