@@ -176,7 +176,95 @@ default-on is the JVD ERB recommendation.
 
 ---
 
-## 5. Explicit `network-isolation` profile with hard link-down action
+## 5. Tenant RT/RD scheme (Option C - tenant-id encoding) + explicit Type-5 policies
+
+**Decision:** Use a deterministic, NetBox-driven scheme that derives every
+RT and RD from a single `tenant_id` (and the corresponding L3VNI) custom
+field. Use explicit `vrf-import` / `vrf-export` policies (not `vrf-target`)
+so the import/export decision is visible in policy-options. Use explicit
+Type-5 export and import allowlist policies in the tenant VRF so the
+advertised prefix set is a deliberate decision, not a side-effect of
+`advertise direct-nexthop`.
+
+**RT/RD encoding:**
+| Object | Field | Encoding |
+|---|---|---|
+| Tenant identifier | NetBox `vrf.custom_fields.tenant_id` | Sequential int: T1=1, T2=2, ... |
+| L3VNI | NetBox `vrf.custom_fields.l3vni` | `5000 + (tenant_id - 1)` (T1 -> 5000) |
+| L3 VRF RD | derived | `<router_id>:<L3VNI>` (e.g. `10.1.0.3:5000`) |
+| L3 VRF RT | derived | `target:<overlay_asn>:<L3VNI>` (e.g. `target:65000:5000`) |
+| L2 MAC-VRF RD | derived | `<router_id>:<tenant_id>` (e.g. `10.1.0.3:1`) |
+| L2 MAC-VRF RT | derived | `target:<overlay_asn>:<L3VNI>` (same as L3 VRF) |
+
+L2 and L3 share the same RT for the same tenant: a tenant's MAC routes
+and IP-prefix routes import together. The L2 RD uses `tenant_id` rather
+than `L3VNI` because Junos rejects duplicate RDs across instances on the
+same device, and the L3 VRF already owns `<lo>:<L3VNI>`. For multi-tenant
+separation later, the L2 RT can be split off with an offset (e.g.
+`target:65000:25000` = "L2 layer of L3VNI 5000").
+
+**`FABRIC-TENANT-RT-RANGE` community:** A regex extended community
+`target:65000:5...` (Junos POSIX-style: `.` matches any single character,
+so this matches the entire 5000-5999 L3VNI range). Defined in
+`policy-options` for use by future fabric-wide ops policies and as
+design documentation. Not currently referenced by an active term.
+
+**Type-5 export filter (`TENANT-1-T5-EXPORT`):**
+Without this, `advertise direct-nexthop` would export EVERY direct
+route in `TENANT-1.inet.0` - including future IRB subnets, the per-VRF
+`lo0.2`, or any accidentally-leaked Direct route. The whitelist makes
+the intent explicit and forces a policy edit before any new tenant
+subnet starts being advertised. The lab whitelist is exactly the two
+configured subnets:
+
+```
+policy-statement TENANT-1-T5-EXPORT {
+    term tenant-subnets {
+        from {
+            route-filter 10.10.10.0/24 exact;
+            route-filter 10.10.20.0/24 exact;
+        }
+        then accept;
+    }
+    term reject { then reject; }
+}
+```
+
+**Type-5 import filter (`TENANT-1-T5-IMPORT`):** Symmetric. Even with a
+single tenant in the lab, the explicit allowlist hardens against stray
+Type-5 imports if a misconfigured neighbor ever tags a wrong RT.
+
+**Why the RT/RD scheme is a separate decision from the policy:**
+The encoding tells you HOW to compute an RT for a given tenant (Phase 3
+Nornir templates use it). The policy tells you WHAT to do with routes
+that carry that RT (current Phase 2 configs use it). Both layers exist
+because either alone is insufficient.
+
+**What would change in production:**
+- The whitelist would be NetBox-templated per tenant (`{% for prefix in
+  vrf.prefixes %}route-filter {{ prefix }} exact;{% endfor %}`) so adding
+  a subnet in NetBox automatically updates the whitelist on the next
+  Nornir push.
+- For multi-tenant separation, the L2 RT can be split off with an
+  offset (`target:65000:25000` = "L2 layer of L3VNI 5000"), or move to
+  per-policy import/export with multiple RT communities per tenant.
+
+**Knobs that implement it:**
+- `policy-options community TENANT-1-RT members target:65000:5000`
+- `policy-options community FABRIC-TENANT-RT-RANGE members "target:65000:5..."`
+- `policy-options policy-statement EVPN-IMPORT-TENANT-1` / `EVPN-EXPORT-TENANT-1`
+- `policy-options policy-statement TENANT-1-T5-EXPORT` / `TENANT-1-T5-IMPORT`
+- `routing-instances EVPN-VXLAN { vrf-import EVPN-IMPORT-TENANT-1; vrf-export EVPN-EXPORT-TENANT-1; route-distinguisher <lo>:<tenant_id>; }`
+- `routing-instances TENANT-1 { vrf-import EVPN-IMPORT-TENANT-1; vrf-export EVPN-EXPORT-TENANT-1; route-distinguisher <lo>:<L3VNI>; protocols evpn ip-prefix-routes { advertise direct-nexthop; export TENANT-1-T5-EXPORT; import TENANT-1-T5-IMPORT; } }`
+
+**See also:** The full encoding table and the Python expressions that
+Phase 3 templates will use are in
+[`../phase1-netbox/NETBOX_DATA_MODEL.md`](../phase1-netbox/NETBOX_DATA_MODEL.md)
+Step 8.
+
+---
+
+## 6. Explicit `network-isolation` profile with hard link-down action
 
 **Decision:** Each leaf carries an explicit `protocols network-isolation
 group EVPN-CORE` block that hard-shuts ESI-LAG access interfaces when
