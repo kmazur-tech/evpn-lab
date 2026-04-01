@@ -2,7 +2,14 @@
 
 A fully operational EVPN-VXLAN leaf-spine fabric running on containerlab with Juniper vJunos-switch (EX9214).
 
-**Status:** Complete. All smoke tests pass (~70 checks across control plane, data plane, failover, and EVPN deep validation). Full from-scratch deploy in ~8 minutes.
+**Status:** Complete. 76-check smoke suite passes (~2 min run). Full from-scratch deploy + setup + smoke cycle in ~6m20s on the lab server.
+
+> This README describes WHAT was built and how to run it.
+> For WHY each design choice was made, see [DESIGN.md](DESIGN.md).
+> For the production-class features that are intentionally NOT in
+> this lab (because vJunos cannot run them, not because they were
+> forgotten), see the "Production-only features (NOT testable on
+> vJunos-switch)" block in [../PROJECT_PLAN.md](../PROJECT_PLAN.md).
 
 ## Architecture
 
@@ -11,7 +18,7 @@ Juniper ERB (Edge-Routed Bridging):
 | Routing Instance | Type | Scope | Purpose |
 |-----------------|------|-------|---------|
 | default (master) | - | All devices | Underlay eBGP + overlay iBGP (family evpn signaling) |
-| EVPN-VXLAN | virtual-switch | Leaves | L2 bridge domains, VLANs, VNIs, VXLAN encapsulation |
+| EVPN-VXLAN | mac-vrf (vlan-aware) | Leaves | L2 VLANs, VLAN-to-VNI mapping, VXLAN encapsulation |
 | TENANT-1 | vrf | Leaves | L3 inter-VLAN routing via IRB, L3VNI 5000, Type-5 routes |
 | mgmt_junos | built-in | All devices | OOB management (fxp0) |
 
