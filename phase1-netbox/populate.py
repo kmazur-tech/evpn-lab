@@ -186,15 +186,23 @@ def main():
     for site in config["sites"]:
         region = nb.dcim.regions.get(name=site["region"])
         tenant = nb.tenancy.tenants.get(name=site["tenant"])
-        get_or_create(
-            nb.dcim.sites, ["slug"],
-            {"name": site["name"], "slug": site["slug"],
-             "region": region.id if region else None,
-             "tenant": tenant.id if tenant else None,
-             "status": site["status"],
-             "description": site.get("description", "")},
-            site["name"],
-        )
+        data = {"name": site["name"], "slug": site["slug"],
+                "region": region.id if region else None,
+                "tenant": tenant.id if tenant else None,
+                "status": site["status"],
+                "description": site.get("description", "")}
+        if site.get("custom_fields"):
+            data["custom_fields"] = site["custom_fields"]
+        site_obj, _ = get_or_create(nb.dcim.sites, ["slug"], data, site["name"])
+        # Update custom_fields if site already existed and values differ.
+        # get_or_create skips updates, so handle the drift case explicitly.
+        if site_obj and site.get("custom_fields") and not CHECK_MODE:
+            current = site_obj.custom_fields or {}
+            desired = site["custom_fields"]
+            if any(current.get(k) != v for k, v in desired.items()):
+                site_obj.custom_fields = {**current, **desired}
+                site_obj.save()
+                print(f"    UPDATED custom_fields: {site['name']}")
 
     # Step 5 - Manufacturers, Platforms, Device Roles
     print("\n=== Step 5: Manufacturers, Platforms, Device Roles ===")
@@ -578,6 +586,204 @@ def main():
             print(f"  CREATED: {cable['label']}")
         except pynetbox.RequestError as e:
             print(f"  ERROR {cable['label']}: {e}")
+
+    # Step 14 - LAGs, IRBs, anycast gateways, L2VPN terminations
+    print("\n=== Step 14: LAGs, Access VLANs, IRBs, Anycast GWs, L2VPN terminations ===")
+
+    # 14a - LAG parent interfaces (ae0/ae1) and bind physical members
+    for lag in config.get("lag_interfaces", []):
+        device = nb.dcim.devices.get(name=lag["device"])
+        if not device:
+            print(f"  MISSING DEVICE: {lag['device']}")
+            missing_count += 1
+            continue
+        lag_iface = nb.dcim.interfaces.get(device_id=device.id, name=lag["name"])
+        if lag_iface:
+            print(f"  EXISTS: LAG {lag['device']}:{lag['name']}")
+        else:
+            if CHECK_MODE:
+                print(f"  MISSING: LAG {lag['device']}:{lag['name']}")
+                missing_count += 1
+                continue
+            lag_iface = nb.dcim.interfaces.create({
+                "device": device.id,
+                "name": lag["name"],
+                "type": "lag",
+                "description": lag.get("description", ""),
+            })
+            print(f"  CREATED: LAG {lag['device']}:{lag['name']}")
+
+        # untagged_vlan on the LAG (NetBox VLAN must already exist)
+        if lag.get("untagged_vlan"):
+            vlan_match = list(nb.ipam.vlans.filter(vid=lag["untagged_vlan"]))
+            if vlan_match:
+                vlan_obj = vlan_match[0]
+                current_vlan_id = lag_iface.untagged_vlan.id if lag_iface.untagged_vlan else None
+                if current_vlan_id != vlan_obj.id and not CHECK_MODE:
+                    lag_iface.mode = "access"
+                    lag_iface.untagged_vlan = vlan_obj.id
+                    lag_iface.save()
+                    print(f"    VLAN {lag['untagged_vlan']} -> {lag['name']}")
+
+        # Bind member physical interfaces to the LAG
+        for member_name in lag.get("members", []):
+            member = nb.dcim.interfaces.get(device_id=device.id, name=member_name)
+            if not member:
+                print(f"    MISSING MEMBER: {member_name}")
+                missing_count += 1
+                continue
+            current_lag_id = member.lag.id if member.lag else None
+            if current_lag_id == lag_iface.id:
+                print(f"    MEMBER OK: {member_name} -> {lag['name']}")
+                continue
+            if not CHECK_MODE:
+                member.lag = lag_iface.id
+                member.save()
+                print(f"    MEMBER BOUND: {member_name} -> {lag['name']}")
+
+    # 14b - Access interfaces: untagged_vlan on single-homed host ports
+    for ac in config.get("access_interfaces", []):
+        device = nb.dcim.devices.get(name=ac["device"])
+        if not device:
+            continue
+        iface = nb.dcim.interfaces.get(device_id=device.id, name=ac["interface"])
+        if not iface:
+            print(f"  MISSING INTERFACE: {ac['device']}:{ac['interface']}")
+            missing_count += 1
+            continue
+        vlan_match = list(nb.ipam.vlans.filter(vid=ac["untagged_vlan"]))
+        if not vlan_match:
+            print(f"  MISSING VLAN: {ac['untagged_vlan']}")
+            missing_count += 1
+            continue
+        vlan_obj = vlan_match[0]
+        current_vlan_id = iface.untagged_vlan.id if iface.untagged_vlan else None
+        if current_vlan_id == vlan_obj.id:
+            print(f"  EXISTS: {ac['device']}:{ac['interface']} VLAN {ac['untagged_vlan']}")
+        else:
+            if CHECK_MODE:
+                print(f"  MISSING: {ac['device']}:{ac['interface']} VLAN {ac['untagged_vlan']}")
+                missing_count += 1
+                continue
+            iface.mode = "access"
+            iface.untagged_vlan = vlan_obj.id
+            iface.save()
+            print(f"  SET: {ac['device']}:{ac['interface']} VLAN {ac['untagged_vlan']}")
+
+    # 14c - IRB virtual interfaces with leaf-local /24 IPs in tenant VRF
+    for irb in config.get("irb_interfaces", []):
+        device = nb.dcim.devices.get(name=irb["device"])
+        if not device:
+            continue
+        iface = nb.dcim.interfaces.get(device_id=device.id, name=irb["name"])
+        if iface:
+            print(f"  EXISTS: IRB {irb['device']}:{irb['name']}")
+        else:
+            if CHECK_MODE:
+                print(f"  MISSING: IRB {irb['device']}:{irb['name']}")
+                missing_count += 1
+                continue
+            iface = nb.dcim.interfaces.create({
+                "device": device.id,
+                "name": irb["name"],
+                "type": "virtual",
+                "description": irb.get("description", ""),
+            })
+            print(f"  CREATED: IRB {irb['device']}:{irb['name']}")
+
+        vrf_obj = nb.ipam.vrfs.get(name=irb["vrf"]) if irb.get("vrf") else None
+        existing_ip = list(nb.ipam.ip_addresses.filter(
+            address=irb["ip"],
+            interface_id=iface.id,
+        ))
+        if existing_ip:
+            print(f"    IP EXISTS: {irb['ip']}")
+        else:
+            if CHECK_MODE:
+                print(f"    MISSING IP: {irb['ip']}")
+                missing_count += 1
+                continue
+            nb.ipam.ip_addresses.create({
+                "address": irb["ip"],
+                "vrf": vrf_obj.id if vrf_obj else None,
+                "assigned_object_type": "dcim.interface",
+                "assigned_object_id": iface.id,
+                "description": irb.get("description", ""),
+            })
+            print(f"    IP CREATED: {irb['ip']}")
+
+    # 14d - Anycast gateway IPs (one IPAddress row per leaf, role=anycast).
+    # Same address on both leaves = the shared virtual-gateway-address.
+    # Templates query NetBox for the prefix's role=anycast IP and render it
+    # as `virtual-gateway-address` on the IRB. Reserves .1 in IPAM so nobody
+    # else can grab it for a host.
+    for gw in config.get("anycast_gateways", []):
+        vrf_obj = nb.ipam.vrfs.get(name=gw["vrf"]) if gw.get("vrf") else None
+        for leaf_name in gw["leaves"]:
+            device = nb.dcim.devices.get(name=leaf_name)
+            if not device:
+                continue
+            iface = nb.dcim.interfaces.get(device_id=device.id, name=gw["interface"])
+            if not iface:
+                print(f"  MISSING IRB: {leaf_name}:{gw['interface']}")
+                missing_count += 1
+                continue
+            existing = list(nb.ipam.ip_addresses.filter(
+                address=gw["address"],
+                interface_id=iface.id,
+            ))
+            if existing:
+                print(f"  EXISTS: anycast {gw['address']} on {leaf_name}:{gw['interface']}")
+                continue
+            if CHECK_MODE:
+                print(f"  MISSING: anycast {gw['address']} on {leaf_name}:{gw['interface']}")
+                missing_count += 1
+                continue
+            nb.ipam.ip_addresses.create({
+                "address": gw["address"],
+                "vrf": vrf_obj.id if vrf_obj else None,
+                "role": "anycast",
+                "assigned_object_type": "dcim.interface",
+                "assigned_object_id": iface.id,
+                "description": f"Anycast gateway VLAN{gw['vlan']}",
+            })
+            print(f"  CREATED: anycast {gw['address']} on {leaf_name}:{gw['interface']}")
+
+    # 14e - L2VPN VLAN terminations: bind tenant VLANs into the EVPN MAC-VRF
+    for term in config.get("l2vpn_terminations", []):
+        l2vpn = nb.vpn.l2vpns.get(name=term["l2vpn"])
+        if not l2vpn:
+            print(f"  MISSING L2VPN: {term['l2vpn']}")
+            missing_count += 1
+            continue
+        group = nb.ipam.vlan_groups.get(name=term["vlan_group"])
+        vlan_match = list(nb.ipam.vlans.filter(
+            vid=term["vlan"],
+            group_id=group.id if group else None,
+        ))
+        if not vlan_match:
+            print(f"  MISSING VLAN: {term['vlan']}")
+            missing_count += 1
+            continue
+        vlan = vlan_match[0]
+        existing = list(nb.vpn.l2vpn_terminations.filter(
+            l2vpn_id=l2vpn.id,
+            assigned_object_type="ipam.vlan",
+            assigned_object_id=vlan.id,
+        ))
+        if existing:
+            print(f"  EXISTS: termination VLAN {term['vlan']} -> {term['l2vpn']}")
+            continue
+        if CHECK_MODE:
+            print(f"  MISSING: termination VLAN {term['vlan']} -> {term['l2vpn']}")
+            missing_count += 1
+            continue
+        nb.vpn.l2vpn_terminations.create({
+            "l2vpn": l2vpn.id,
+            "assigned_object_type": "ipam.vlan",
+            "assigned_object_id": vlan.id,
+        })
+        print(f"  CREATED: termination VLAN {term['vlan']} -> {term['l2vpn']}")
 
     if CHECK_MODE:
         print(f"\n=== CHECK COMPLETE: {missing_count} missing object(s) ===")

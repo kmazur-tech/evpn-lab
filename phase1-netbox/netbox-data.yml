@@ -32,6 +32,16 @@ custom_fields:
     type: integer
     description: "Sequential tenant identifier (1, 2, ...). Used to encode the L2 MAC-VRF route-distinguisher as <router_id>:<tenant_id> in Phase 3 templates. The L3 VRF RD uses the L3VNI directly."
 
+  - name: mgmt_gw_v4
+    content_types: ["dcim.site"]
+    type: text
+    description: "Site OOB management default gateway (IPv4). Used by Phase 3 templates to render mgmt_junos static route 0.0.0.0/0."
+
+  - name: mgmt_gw_v6
+    content_types: ["dcim.site"]
+    type: text
+    description: "Site OOB management default gateway (IPv6). Used by Phase 3 templates to render mgmt_junos static route ::/0."
+
 # ---------------------------------------------------------------------------
 # Step 2 - Tags
 # ---------------------------------------------------------------------------
@@ -75,6 +85,9 @@ sites:
     status: active
     tenant: Lab Operations
     description: "Primary DC - Juniper fabric"
+    custom_fields:
+      mgmt_gw_v4: "10.0.0.2"
+      mgmt_gw_v6: "2001:db8::1"
 
 # ---------------------------------------------------------------------------
 # Step 5 - Manufacturers, Platforms, Device Roles
@@ -370,6 +383,44 @@ p2p_links:
     z_device: dc1-leaf2
     z_interface: ge-0/0/1
     z_ip: "10.1.4.7/31"
+
+# ---------------------------------------------------------------------------
+# Step 14 - LAG interfaces, access VLAN assignments, IRBs, anycast gateways,
+#           L2VPN VLAN terminations
+#
+# Phase 3 modeling additions. Closes the gap between NetBox SoT and the
+# Phase 2 hand-built configs:
+#   - ae0 / ae1 LAG parents on each leaf with their physical members
+#   - untagged_vlan on host-facing ports (so VLAN membership is in NetBox)
+#   - irb.10 / irb.20 virtual interfaces with leaf-local /24 IPs in TENANT-1
+#   - Anycast virtual-gateway IPs as IPAddress objects with role=anycast,
+#     assigned to BOTH leaves' IRBs (one IPAddress row per leaf, identical
+#     address). Reserves the .1 in IPAM so nothing else can take it.
+#   - L2VPN VLAN terminations: bind VLAN10/VLAN20 to EVPN-VXLAN-TENANT-1
+# ---------------------------------------------------------------------------
+lag_interfaces:
+  - { device: dc1-leaf1, name: ae0, members: [ge-0/0/3], untagged_vlan: 20, description: "ESI-LAG to dc1-host3" }
+  - { device: dc1-leaf1, name: ae1, members: [ge-0/0/4], untagged_vlan: 20, description: "ESI-LAG to dc1-host4" }
+  - { device: dc1-leaf2, name: ae0, members: [ge-0/0/3], untagged_vlan: 20, description: "ESI-LAG to dc1-host3" }
+  - { device: dc1-leaf2, name: ae1, members: [ge-0/0/4], untagged_vlan: 20, description: "ESI-LAG to dc1-host4" }
+
+access_interfaces:
+  - { device: dc1-leaf1, interface: "ge-0/0/2", untagged_vlan: 10 }
+  - { device: dc1-leaf2, interface: "ge-0/0/2", untagged_vlan: 10 }
+
+irb_interfaces:
+  - { device: dc1-leaf1, name: irb.10, ip: "10.10.10.3/24", vrf: TENANT-1, vlan: 10, description: "IRB VLAN10 (leaf-local)" }
+  - { device: dc1-leaf1, name: irb.20, ip: "10.10.20.3/24", vrf: TENANT-1, vlan: 20, description: "IRB VLAN20 (leaf-local)" }
+  - { device: dc1-leaf2, name: irb.10, ip: "10.10.10.4/24", vrf: TENANT-1, vlan: 10, description: "IRB VLAN10 (leaf-local)" }
+  - { device: dc1-leaf2, name: irb.20, ip: "10.10.20.4/24", vrf: TENANT-1, vlan: 20, description: "IRB VLAN20 (leaf-local)" }
+
+anycast_gateways:
+  - { vlan: 10, address: "10.10.10.1/24", vrf: TENANT-1, leaves: [dc1-leaf1, dc1-leaf2], interface: irb.10 }
+  - { vlan: 20, address: "10.10.20.1/24", vrf: TENANT-1, leaves: [dc1-leaf1, dc1-leaf2], interface: irb.20 }
+
+l2vpn_terminations:
+  - { l2vpn: EVPN-VXLAN-TENANT-1, vlan: 10, vlan_group: DC1-VLANs }
+  - { l2vpn: EVPN-VXLAN-TENANT-1, vlan: 20, vlan_group: DC1-VLANs }
 
 # ---------------------------------------------------------------------------
 # Step 13 - Cables
