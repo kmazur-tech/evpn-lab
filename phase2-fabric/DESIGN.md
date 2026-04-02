@@ -332,3 +332,83 @@ These are decisions that exist purely because this is a lab on vJunos:
   vJunos). Underlay ECMP works via the LOAD-BALANCE policy; the
   overlay-ecmp knob is for VXLAN-to-VXLAN routing scale and is
   irrelevant in this lab.
+- **No operational view of `forwarding-options storm-control-profiles`**
+  on vJunos-switch (`show forwarding-options storm-control-profiles`
+  and `show ethernet-switching storm-control` both return "syntax
+  error"). The profile config and the per-interface binding both
+  commit cleanly, so they are kept as design intent for the day this
+  fabric is rendered onto real hardware. Runtime enforcement on vJunos
+  cannot be verified.
+
+---
+
+## Appendix - review responses (decisions deliberately NOT taken)
+
+This section captures items that have come up in code reviews but were
+intentionally rejected, so future reviewers do not re-raise them. Each
+item links the proposal to the reasoning behind the rejection.
+
+### `vpn-apply-export` on the spine OVERLAY group - rejected
+
+**Proposal:** Re-add `vpn-apply-export` to `protocols bgp group OVERLAY`
+on both spines so the spine RR applies an export policy to reflected
+EVPN routes (vs blindly reflecting everything).
+
+**Why rejected:** `vpn-apply-export` is an L3VPN-era knob that is a
+no-op on `family evpn signaling` *on a route reflector*. The spine has
+no routing-instances and no `vrf-export` policy to "apply" - it
+reflects routes at the `bgp.evpn.0` table level, which is the normal
+behavior of an iBGP RR and what JVD recommends for small/medium
+fabrics. Leaf-side `vrf-import` policies (the existing
+`EVPN-IMPORT-TENANT-1`) drop unwanted RTs at import time.
+
+The legitimate underlying concern (the RR sending traffic that the
+recipient will discard) is real at multi-tenant scale. The correct
+mechanism is **BGP Route Target Constrain (RFC 4684 / Junos `family
+route-target`)**, where each leaf signals which RTs it wants and the
+spine sends only matching routes. RTC is the production answer when
+the spine fan-out × the tenant count starts producing measurable
+wasted reflection. For 2 leaves and 1 tenant it is overkill and
+adds an extra address family that the smoke suite would have to
+validate.
+
+If the lab grows past 4 tenants on 4+ leaves, revisit and add
+`family route-target` to the OVERLAY group on both spines and
+leaves. Until then, leave the spine RR as-is.
+
+### Static `fxp0` address `10.0.0.15/24` on every device - leave as-is
+
+**Observation:** Every device's startup-config carries the same
+literal `interfaces fxp0 unit 0 family inet address 10.0.0.15/24`.
+This is the vJunos-switch placeholder address.
+
+**Why kept:** Containerlab overrides the actual management IP at
+runtime via the `mgmt-ipv4` field in `dc1.clab.yml`. The literal in
+the startup-config is never the live address. Junos requires
+`family inet` to have *some* address before the config commits, so
+removing the line risks breaking the cold-boot flow. Cost of
+removal is real, benefit is purely cosmetic. Documented here so
+the next reviewer does not flag it.
+
+### Phase 8 hardening backlog (deliberately deferred)
+
+Items raised in Phase 2 reviews that belong to the Phase 8 hardening
+scope, kept on the backlog instead of bolted onto Phase 2:
+
+- **BGP authentication** (MD5 or TCP-AO) on UNDERLAY and OVERLAY
+  groups. CIS / PCI-DSS control. Plain text BGP is fine for a lab,
+  not fine for prod.
+- **Storm control rate thresholds** on the `sc-default` profile
+  (currently the profile is bound to host-facing interfaces but only
+  declares `all;` with no `bandwidth-percentage`). Bind exists,
+  threshold does not - effectively a placeholder until Phase 8 sets
+  the real percentage.
+- **`commit synchronize`** / **`commit confirmed`** workflow knobs.
+- **`protect-re` firewall filter** on `lo0` (full CoPP).
+- **SSH hardening** (deny root, specific ciphers, rate-limit).
+- **Custom login classes** with idle-timeout, deny-commands.
+
+All of these are tracked in `PROJECT_PLAN.md` Phase 8 ("CIS/PCI-DSS
+Hardening"). Adding them in Phase 2 would muddy the architecture
+work and force the smoke suite to grow assertions for things that
+have nothing to do with EVPN-VXLAN behavior.

@@ -263,6 +263,18 @@ ping_test dc1-host1 10.10.10.12 "L2: host1 (leaf1) -> host2 (leaf2) VLAN 10"
 # L3 inter-VLAN same leaf
 ping_test dc1-host1 10.10.20.13 "L3: host1 (VLAN10) -> host3 (VLAN20) inter-VLAN"
 
+# L3 inter-VLAN TTL check: a routed packet should arrive with ttl=63
+# (default 64, decremented once by the IRB hop). Catches the case where
+# a misconfiguration somehow delivers the packet via L2-only forwarding,
+# which would show ttl=64 and pass the plain ping test silently.
+TTL_PID=$(docker inspect -f '{{.State.Pid}}' clab-${LAB_NAME}-dc1-host1)
+TTL=$(nsenter -t $TTL_PID -n ping -c 1 -W 2 10.10.20.13 2>/dev/null | grep -oE 'ttl=[0-9]+' | head -1 | cut -d= -f2)
+if [ "$TTL" = "63" ]; then
+  pass "L3 inter-VLAN TTL: 63 (routed through IRB)"
+else
+  fail "L3 inter-VLAN TTL: $TTL (expected 63 - bridged instead of routed?)"
+fi
+
 # L3 cross-VLAN cross-leaf
 ping_test dc1-host2 10.10.20.14 "L3: host2 (leaf2 VLAN10) -> host4 (leaf1+2 VLAN20)"
 
