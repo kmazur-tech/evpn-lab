@@ -1,0 +1,44 @@
+---
+# Platform / hardware constants for Junos vJunos-switch (EX9214 emulation).
+# These are NOT tenant intent and don't belong in NetBox - they're facts
+# about the platform we're targeting and fabric-wide policy decisions
+# already validated in Phase 2. See phase2-fabric/DESIGN.md for rationale.
+
+chassis:
+  aggregated_devices_count: 48
+  fpc0_pic0_ports: 56
+
+fabric:
+  mtu: 9192       # vJunos-switch caps at 9192, not 9216
+  irb_mtu: 9000
+
+bgp:
+  overlay_asn: 65000
+  hold_time: 30
+  bfd_min_interval: 1000
+  bfd_multiplier: 3
+  multihop_ttl: 2
+  signaling_loops: 2
+
+policies:
+  load_balance_name: LOAD-BALANCE
+  export_loopback_name: EXPORT-LOOPBACK
+
+storm_control:
+  profile_name: sc-default
+
+network_isolation:
+  group_name: EVPN-CORE
+  hold_time_up: 60
+
+evpn:
+  duplicate_mac_detection_threshold: 5
+  duplicate_mac_detection_window: 180
+  duplicate_mac_auto_recovery: 5
+  multicast_mode: ingress-replication
+
+# RT scheme (Option C - tenant_id encoding). See NETBOX_DATA_MODEL.md.
+rt_scheme:
+  l3_rd_format: "{router_id}:{l3vni}"      # e.g. 10.1.0.3:5000
+  l2_rd_format: "{router_id}:{tenant_id}"  # e.g. 10.1.0.3:1
+  rt_format:    "target:{overlay_asn}:{l3vni}"

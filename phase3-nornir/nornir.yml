@@ -1,0 +1,18 @@
+---
+# inventory.options is set entirely in deploy.py - Nornir's config merge
+# replaces inventory.options wholesale (not deep-merged), so secrets and
+# filter_parameters must travel together. Keeping it in one place avoids
+# the trap where YAML options silently get clobbered.
+inventory:
+  plugin: NetBoxInventory2
+
+runner:
+  plugin: threaded
+  options:
+    num_workers: 4
+
+logging:
+  enabled: true
+  level: INFO
+  log_file: build/nornir.log
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

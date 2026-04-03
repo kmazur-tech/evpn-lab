@@ -10,6 +10,9 @@ __pycache__/
 .venv/
 venv/
 
+# Phase 3 Nornir build output (rendered configs)
+phase3-nornir/build/
+
 # IDE
 .vscode/
 .idea/

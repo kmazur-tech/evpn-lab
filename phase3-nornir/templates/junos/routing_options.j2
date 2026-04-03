@@ -1,0 +1,12 @@
+routing-options {
+    router-id {{ host['router_id'] }};
+    graceful-restart;
+    forwarding-table {
+        export LOAD-BALANCE;
+        chained-composite-next-hop {
+            ingress {
+                evpn;
+            }
+        }
+    }
+}

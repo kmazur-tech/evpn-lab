@@ -9,7 +9,8 @@ Environment-specific values (NetBox URL, token, management IPs) are passed as en
 Objects are split into two groups:
 
 - **Phase 1 scope** (Steps 1-13) - core infrastructure model: custom fields, tags, regions, sites, device types, devices, interfaces, IPs, cables. Populated now.
-- **Pre-staged for later phases** (Steps 14-17) - overlay, L2VPN, IRB, config contexts. Defined here for completeness but populated when the corresponding project phase begins.
+- **Phase 3 prep** (Steps 14-15) - LAG interfaces, IRBs, anycast gateways, L2VPN VLAN terminations, site mgmt-gateway custom fields. Populated by `populate.py` Step 14, used by Phase 3 Nornir templates.
+- **Pre-staged for later phases** (Step 16) - config contexts. Defined here for completeness but populated when the corresponding project phase begins.
 
 ## Lab Topology
 
@@ -442,64 +443,87 @@ Full mesh: each spine connects to each leaf.
 
 The following objects are defined here for design completeness. They will be populated when the corresponding project phase begins.
 
-## Step 14 - Host & Leaf LAG Interfaces (project Phase 2)
+## Step 14 - LAG Interfaces, Access VLANs, IRBs, Anycast Gateways, L2VPN Terminations
 
-### Host Interfaces (dual-homed only - host3, host4)
+This step closes the modeling gap between NetBox and the Phase 2 hand-built configs so Phase 3 templates can render byte-exact configs from NetBox alone. Implemented in `populate.py` Step 14 (subsections 14a-14e). All sub-steps are idempotent.
 
-| Device | Interface | Type | Parent LAG | Connected to |
-|--------|-----------|------|------------|-------------|
-| dc1-host3 | eth0 | 1000BASE-T | bond0 | dc1-leaf1 ge-0/0/3 |
-| dc1-host3 | eth1 | 1000BASE-T | bond0 | dc1-leaf2 ge-0/0/3 |
-| dc1-host3 | bond0 | LAG | - | - |
-| dc1-host4 | eth0 | 1000BASE-T | bond0 | dc1-leaf1 ge-0/0/4 |
-| dc1-host4 | eth1 | 1000BASE-T | bond0 | dc1-leaf2 ge-0/0/4 |
-| dc1-host4 | bond0 | LAG | - | - |
+### 14a - Leaf ESI-LAG parent interfaces
 
-> host1 and host2 are single-homed (eth0 only, no LAG).
+ae0 / ae1 are NetBox `lag` interfaces on each leaf. The physical members are bound via the standard NetBox `lag` field on the child interface. Access VLAN is set with `untagged_vlan` + `mode=access`. The Junos `esi auto-derive lacp-pe-system-id-and-admin-key`, the LACP `system-id`, and `admin-key` are NOT stored in NetBox - templates derive them deterministically from the ae index (`admin-key = N+1`, `system-id = 00:00:00:00:0(N+3):00`).
 
-### Leaf ESI-LAG Interfaces
+| Device | LAG | Members | Mode | Untagged VLAN | Description |
+|--------|-----|---------|------|---------------|-------------|
+| dc1-leaf1 | ae0 | ge-0/0/3 | access | SERVER-20 | ESI-LAG to dc1-host3 |
+| dc1-leaf1 | ae1 | ge-0/0/4 | access | SERVER-20 | ESI-LAG to dc1-host4 |
+| dc1-leaf2 | ae0 | ge-0/0/3 | access | SERVER-20 | ESI-LAG to dc1-host3 |
+| dc1-leaf2 | ae1 | ge-0/0/4 | access | SERVER-20 | ESI-LAG to dc1-host4 |
 
-| Device | Interface | Type | ESI | Members | Description |
-|--------|-----------|------|-----|---------|-------------|
-| dc1-leaf1 | ae0 | LAG | 00:11:11:11:11:11:11:11:11:01 | ge-0/0/3 | ESI-LAG to host3 |
-| dc1-leaf2 | ae0 | LAG | 00:11:11:11:11:11:11:11:11:01 | ge-0/0/3 | ESI-LAG to host3 |
-| dc1-leaf1 | ae1 | LAG | 00:11:11:11:11:11:11:11:11:02 | ge-0/0/4 | ESI-LAG to host4 |
-| dc1-leaf2 | ae1 | LAG | 00:11:11:11:11:11:11:11:11:02 | ge-0/0/4 | ESI-LAG to host4 |
+> Same `ae` index on both leaves connecting to the same host = EVPN multihoming active-active. Templates infer "this LAG is part of an ESI-LAG group" by finding the same LAG name on the peer leaf.
 
-> Same ESI on both leaves = EVPN multihoming active-active.
+### 14b - Single-homed access ports
+
+| Device | Interface | Mode | Untagged VLAN |
+|--------|-----------|------|---------------|
+| dc1-leaf1 | ge-0/0/2 | access | SERVER-10 |
+| dc1-leaf2 | ge-0/0/2 | access | SERVER-10 |
+
+### 14c - IRB interfaces with leaf-local /24 IPs in tenant VRF
+
+`irb.<vlan>` virtual interfaces hold the leaf-local address. The shared anycast virtual-gateway address is modeled separately in 14d.
+
+| Device | Interface | Type | VRF | Leaf-local IP | Description |
+|--------|-----------|------|-----|---------------|-------------|
+| dc1-leaf1 | irb.10 | virtual | TENANT-1 | 10.10.10.3/24 | IRB VLAN10 (leaf-local) |
+| dc1-leaf1 | irb.20 | virtual | TENANT-1 | 10.10.20.3/24 | IRB VLAN20 (leaf-local) |
+| dc1-leaf2 | irb.10 | virtual | TENANT-1 | 10.10.10.4/24 | IRB VLAN10 (leaf-local) |
+| dc1-leaf2 | irb.20 | virtual | TENANT-1 | 10.10.20.4/24 | IRB VLAN20 (leaf-local) |
+
+> `lo0.2` (VRF loopback for EVPN Type-5) is created in Step 12.
+
+### 14d - Anycast gateway IPs (virtual-gateway-address)
+
+**Modeling rule:** every tenant L2 prefix MUST have exactly one IP per leaf with `role=anycast`, all assigned to that leaf's IRB for the corresponding VLAN. NetBox stores N rows per gateway (one per leaf) with the same address; both rows have `role=anycast`. The pair (or set) of identical-address IPAddress objects IS the model of "this is the shared virtual-gateway-address".
+
+| Address | VRF | Role | Assigned to | Purpose |
+|---------|-----|------|-------------|---------|
+| 10.10.10.1/24 | TENANT-1 | anycast | dc1-leaf1:irb.10 | Anycast gateway VLAN10 |
+| 10.10.10.1/24 | TENANT-1 | anycast | dc1-leaf2:irb.10 | Anycast gateway VLAN10 |
+| 10.10.20.1/24 | TENANT-1 | anycast | dc1-leaf1:irb.20 | Anycast gateway VLAN20 |
+| 10.10.20.1/24 | TENANT-1 | anycast | dc1-leaf2:irb.20 | Anycast gateway VLAN20 |
+
+> **Why model it this way:** Storing the gateway as a real IPAddress object (not a convention or custom field) reserves the .1 in IPAM so nothing else can claim it, makes the gateway visible in the prefix's "available IPs" view, and gives templates a single, explicit query to find it. The anycast MAC (`virtual-gateway-v4-mac`) lives in the VRF's `anycast_mac` custom field.
+>
+> **Template lookup:** Phase 3 templates render `virtual-gateway-address` by querying NetBox for IPs in the VRF with `role=anycast` assigned to the local leaf's IRB:
+> ```python
+> nb.ipam.ip_addresses.filter(
+>     interface_id=irb_iface.id,
+>     role="anycast",
+> )
+> ```
+> If a future tenant ever needs a non-`.1` gateway, just create the IPAddress with `role=anycast` at the desired host - no template change required.
+
+### 14e - L2VPN VLAN terminations
+
+The tenant L2VPN object `EVPN-VXLAN-TENANT-1` (created in Step 8b) is bound to the tenant's VLANs via NetBox L2VPN terminations. Phase 3 templates iterate the L2VPN's terminations to render `extended-vni-list` and the per-VLAN `vxlan { vni N }` blocks.
+
+| L2VPN | VLAN |
+|-------|------|
+| EVPN-VXLAN-TENANT-1 | SERVER-10 (vid 10, vni 10010) |
+| EVPN-VXLAN-TENANT-1 | SERVER-20 (vid 20, vni 10020) |
 
 ---
 
-## Step 15 - IRB Interfaces and VRF Loopback (project Phase 2)
+## Step 15 - Site custom fields (mgmt gateway)
 
-The VRF TENANT-1 routing instance contains IRB interfaces and `lo0.2`. These are part of Phase 2 (full L2+L3 fabric) not Phase 7.
+Site-level custom fields hold the OOB management default gateways used by `mgmt_junos`:
 
-| Device | Interface | Type | VRF | IP | Description |
-|--------|-----------|------|-----|-----|-------------|
-| dc1-leaf1 | lo0.2 | Virtual | TENANT-1 | 10.1.1.3/32 | VRF loopback (Type-5) |
-| dc1-leaf2 | lo0.2 | Virtual | TENANT-1 | 10.1.1.4/32 | VRF loopback (Type-5) |
-| dc1-leaf1 | irb.10 | Virtual | TENANT-1 | 10.10.10.1/24 (anycast) | VLAN 10 GW |
-| dc1-leaf1 | irb.20 | Virtual | TENANT-1 | 10.10.20.1/24 (anycast) | VLAN 20 GW |
-| dc1-leaf2 | irb.10 | Virtual | TENANT-1 | 10.10.10.1/24 (anycast) | VLAN 10 GW |
-| dc1-leaf2 | irb.20 | Virtual | TENANT-1 | 10.10.20.1/24 (anycast) | VLAN 20 GW |
-
-> `lo0.2` is required in each VRF for EVPN Type-5 IP prefix route advertisement.
-> IRB IPs: same IP on both leaves, NetBox IP role=`anycast`. Anycast MAC in VRF custom field.
+| Site | mgmt_gw_v4 | mgmt_gw_v6 |
+|------|------------|------------|
+| DC1  | 10.0.0.2   | 2001:db8::1 |
 
 ---
 
-## Step 16 - L2VPN (project Phase 2)
-
-| Name | Slug | Type | Identifier (VNI) | Import Targets | Export Targets |
-|------|------|------|-------------------|---------------|----------------|
-| VLAN10-VXLAN | `vlan10-vxlan` | VXLAN-EVPN | 10010 | 65000:10010 | 65000:10010 |
-| VLAN20-VXLAN | `vlan20-vxlan` | VXLAN-EVPN | 10020 | 65000:10020 | 65000:10020 |
-
-**Terminations:** Each L2VPN terminates on the corresponding VLAN.
-
----
-
-## Step 17 - Config Contexts (project Phases 2, 8)
+## Step 16 - Config Contexts (project Phases 2, 8)
 
 Config contexts encode the Juniper ERB (Edge-Routed Bridging) routing instance model:
 
@@ -626,13 +650,22 @@ Spine routing instances:
 | Cables | 10 |
 | **Phase 1 total** | **~80 objects** |
 
-### Pre-staged for later (Steps 14-17)
+### Phase 3 prep (Steps 14-15)
 
 | Object Type | Phase | Count |
 |-------------|-------|-------|
-| LAG Interfaces | 2 | ~10 |
-| IRB Interfaces + VRF loopback + IPs | 2 | ~8 |
-| L2VPN Instances | 2 | 2 |
+| LAG Interfaces (ae0/ae1 on each leaf) | 3 | 4 |
+| Access port VLAN assignments | 3 | 6 (2 single-homed + 4 ae) |
+| IRB virtual interfaces | 3 | 4 |
+| IRB leaf-local IPs | 3 | 4 |
+| Anycast gateway IPs (role=anycast) | 3 | 4 |
+| L2VPN VLAN terminations | 3 | 2 |
+| Site mgmt gateway custom fields | 3 | 2 |
+
+### Pre-staged for later (Step 16)
+
+| Object Type | Phase | Count |
+|-------------|-------|-------|
 | Config Contexts | 2, 8 | 3 |
 
 ---
