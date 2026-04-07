@@ -1,0 +1,12 @@
+chassis {
+    aggregated-devices {
+        ethernet {
+            device-count {{ defaults.chassis.aggregated_devices_count }};
+        }
+    }
+    fpc 0 {
+        pic 0 {
+            number-of-ports {{ defaults.chassis.fpc0_pic0_ports }};
+        }
+    }
+}

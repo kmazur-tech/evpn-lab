@@ -494,6 +494,7 @@ def main():
                 print(f"  ERROR: Interface {lo['interface']} not found on {lo['device']}")
                 continue
 
+        vrf_obj = nb.ipam.vrfs.get(name=lo["vrf"]) if lo.get("vrf") else None
         existing = list(nb.ipam.ip_addresses.filter(address=lo["ip"]))
         if not existing:
             if CHECK_MODE:
@@ -502,6 +503,7 @@ def main():
                 continue
             ip_obj = nb.ipam.ip_addresses.create({
                 "address": lo["ip"],
+                "vrf": vrf_obj.id if vrf_obj else None,
                 "assigned_object_type": "dcim.interface",
                 "assigned_object_id": iface.id,
                 "description": lo.get("description", ""),
@@ -509,7 +511,17 @@ def main():
             print(f"  CREATED: {lo['ip']} -> {lo['device']}:{lo['interface']}")
         else:
             ip_obj = existing[0]
-            print(f"  EXISTS: {lo['ip']}")
+            # Update VRF if drift exists. The yaml is the source of truth and
+            # we cannot rely on get_or_create to fix older imports that
+            # predated VRF assignment on lo0.2.
+            current_vrf_id = ip_obj.vrf.id if ip_obj.vrf else None
+            desired_vrf_id = vrf_obj.id if vrf_obj else None
+            if current_vrf_id != desired_vrf_id and not CHECK_MODE:
+                ip_obj.vrf = desired_vrf_id
+                ip_obj.save()
+                print(f"  UPDATED VRF: {lo['ip']} -> {lo.get('vrf')}")
+            else:
+                print(f"  EXISTS: {lo['ip']}")
 
         # Set loopback as primary_ip4 if flagged
         if lo.get("primary"):

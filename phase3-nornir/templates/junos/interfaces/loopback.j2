@@ -1,0 +1,10 @@
+    lo0 {
+{% for u in host['loopbacks'] %}
+        unit {{ u.unit }} {
+            description "{{ u.description }}";
+            family inet {
+                address {{ u.address }};
+            }
+        }
+{% endfor %}
+    }
