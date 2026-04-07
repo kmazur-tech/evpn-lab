@@ -1,0 +1,24 @@
+system {
+    host-name {{ host.name }};
+    root-authentication {
+        encrypted-password "{{ junos_root_hash }}";
+    }
+    login {
+        user admin {
+            uid 2000;
+            class super-user;
+            authentication {
+                encrypted-password "{{ junos_admin_hash }}";
+            }
+        }
+    }
+    services {
+        ssh {
+            root-login allow;
+        }
+        netconf {
+            ssh;
+        }
+    }
+    management-instance;
+}

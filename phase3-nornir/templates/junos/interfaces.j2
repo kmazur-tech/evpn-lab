@@ -1,0 +1,99 @@
+interfaces {
+{% for link in host['fabric_links'] %}
+    {{ link.name }} {
+        description "{{ link.description }}";
+        mtu {{ defaults.fabric.mtu }};
+        unit 0 {
+            family inet {
+                address {{ link.address }};
+            }
+        }
+    }
+{% endfor %}
+{% for ap in host['access_ports'] %}
+    {{ ap.name }} {
+        mtu {{ defaults.fabric.mtu }};
+        unit 0 {
+            family ethernet-switching {
+                interface-mode access;
+                vlan {
+                    members {{ ap.vlan_name }};
+                }
+                storm-control {{ defaults.storm_control.profile_name }};
+            }
+        }
+    }
+{% endfor %}
+{% for m in host['lag_members'] %}
+    {{ m.name }} {
+        ether-options {
+            802.3ad {{ m.lag_name }};
+        }
+    }
+{% endfor %}
+{% for lag in host['lags'] %}
+    {{ lag.name }} {
+        mtu {{ defaults.fabric.mtu }};
+        esi {
+            auto-derive {
+                lacp-pe-system-id-and-admin-key;
+            }
+            all-active;
+        }
+        aggregated-ether-options {
+            lacp {
+                active;
+                periodic fast;
+                system-id {{ lag.system_id }};
+                admin-key {{ lag.admin_key }};
+            }
+        }
+        unit 0 {
+            family ethernet-switching {
+                interface-mode access;
+                vlan {
+                    members {{ lag.vlan_name }};
+                }
+                storm-control {{ defaults.storm_control.profile_name }};
+            }
+        }
+    }
+{% endfor %}
+    fxp0 {
+        unit 0 {
+            family inet {
+                address {{ defaults.fxp0.ipv4 }};
+            }
+            family inet6 {
+                address {{ defaults.fxp0.ipv6 }};
+            }
+        }
+    }
+{% if host['irbs'] %}
+    irb {
+{% for irb in host['irbs'] %}
+        unit {{ irb.unit }} {
+            virtual-gateway-accept-data;
+            family inet {
+                mtu {{ defaults.fabric.irb_mtu }};
+                no-redirects;
+                address {{ irb.leaf_ip }} {
+                    virtual-gateway-address {{ irb.gateway_ip }};
+                }
+            }
+            virtual-gateway-v4-mac {{ irb.anycast_mac }};
+        }
+{% endfor %}
+    }
+{% endif %}
+    lo0 {
+{% for u in host['loopbacks'] %}
+        unit {{ u.unit }} {
+            description "{{ u.description }}";
+            family inet {
+                address {{ u.address }};
+            }
+        }
+{% endfor %}
+    }
+}

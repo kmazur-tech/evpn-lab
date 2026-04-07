@@ -255,8 +255,10 @@ vlan_groups:
     description: "DC1 VLAN namespace"
 
 vlans:
-  - { vid: 10, name: SERVER-10, group: DC1-VLANs, status: active, role: VXLAN, custom_fields: { vni: 10010 }, description: "Server subnet 1" }
-  - { vid: 20, name: SERVER-20, group: DC1-VLANs, status: active, role: VXLAN, custom_fields: { vni: 10020 }, description: "Server subnet 2" }
+  # VLAN names match the Junos config artifact (VLAN<vid>), not a
+  # descriptive label. The description field carries the human meaning.
+  - { vid: 10, name: VLAN10, group: DC1-VLANs, status: active, role: VXLAN, custom_fields: { vni: 10010 }, description: "Server subnet 1" }
+  - { vid: 20, name: VLAN20, group: DC1-VLANs, status: active, role: VXLAN, custom_fields: { vni: 10020 }, description: "Server subnet 2" }
 
 # ---------------------------------------------------------------------------
 # Step 11 - Devices

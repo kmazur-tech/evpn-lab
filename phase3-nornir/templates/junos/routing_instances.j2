@@ -1,0 +1,79 @@
+routing-instances {
+{% if host['role_slug'] == 'leaf' %}
+    EVPN-VXLAN {
+        instance-type mac-vrf;
+        protocols {
+            evpn {
+                encapsulation vxlan;
+                default-gateway no-gateway-community;
+                duplicate-mac-detection {
+                    detection-threshold {{ defaults.evpn.duplicate_mac_detection_threshold }};
+                    detection-window {{ defaults.evpn.duplicate_mac_detection_window }};
+                    auto-recovery-time {{ defaults.evpn.duplicate_mac_auto_recovery }};
+                }
+                extended-vni-list [ {{ host['extended_vni_list'] | join(' ') }} ];
+                multicast-mode {{ defaults.evpn.multicast_mode }};
+            }
+        }
+        vtep-source-interface lo0.1;
+        service-type vlan-aware;
+{% for iface in host['mac_vrf_interfaces'] %}
+        interface {{ iface }};
+{% endfor %}
+        route-distinguisher {{ host['router_id'] }}:{{ host['tenants'][0].tenant_id }};
+        vrf-import EVPN-IMPORT-{{ host['tenants'][0].name }};
+        vrf-export EVPN-EXPORT-{{ host['tenants'][0].name }};
+        vlans {
+{% for v in host['vlans_in_mac_vrf'] %}
+            {{ v.name }} {
+                vlan-id {{ v.vid }};
+                l3-interface {{ v.l3_interface }};
+                vxlan {
+                    vni {{ v.vni }};
+                }
+            }
+{% endfor %}
+        }
+    }
+{% for t in host['tenants'] %}
+    {{ t.name }} {
+        instance-type vrf;
+        routing-options {
+            multipath;
+            auto-export;
+        }
+        protocols {
+            evpn {
+                ip-prefix-routes {
+                    advertise direct-nexthop;
+                    encapsulation vxlan;
+                    vni {{ t.l3vni }};
+                    export {{ t.name }}-T5-EXPORT;
+                    import {{ t.name }}-T5-IMPORT;
+                }
+            }
+        }
+{% for v in host['vlans_in_mac_vrf'] %}
+        interface {{ v.l3_interface }};
+{% endfor %}
+        interface lo0.2;
+        route-distinguisher {{ host['router_id'] }}:{{ t.l3vni }};
+        vrf-import EVPN-IMPORT-{{ t.name }};
+        vrf-export EVPN-EXPORT-{{ t.name }};
+        vrf-table-label;
+    }
+{% endfor %}
+{% endif %}
+    mgmt_junos {
+        routing-options {
+            rib mgmt_junos.inet6.0 {
+                static {
+                    route ::/0 next-hop {{ host['mgmt_gw_v6'] }};
+                }
+            }
+            static {
+                route 0.0.0.0/0 next-hop {{ host['mgmt_gw_v4'] }};
+            }
+        }
+    }
+}

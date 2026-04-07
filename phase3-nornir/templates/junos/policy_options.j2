@@ -1,0 +1,82 @@
+policy-options {
+{% if host['role_slug'] == 'spine' %}
+    policy-statement EXPORT-LOOPBACK {
+        term local-loopback {
+            from interface lo0.1;
+            then accept;
+        }
+        term bgp-loopbacks {
+            from {
+                protocol bgp;
+                route-filter 10.1.0.0/24 prefix-length-range /32-/32;
+            }
+            then accept;
+        }
+        term reject {
+            then reject;
+        }
+    }
+{% else %}
+    policy-statement EXPORT-LOOPBACK {
+        term 1 {
+            from interface lo0.1;
+            then accept;
+        }
+        term 2 {
+            then reject;
+        }
+    }
+{% endif %}
+    policy-statement LOAD-BALANCE {
+        then {
+            load-balance per-packet;
+        }
+    }
+{% for t in host['tenants'] %}
+    community {{ t.name }}-RT members {{ t.rt }};
+    community FABRIC-TENANT-RT-RANGE members "target:65000:5...";
+    policy-statement EVPN-IMPORT-{{ t.name }} {
+        term tenant-1 {
+            from community {{ t.name }}-RT;
+            then accept;
+        }
+        term reject {
+            then reject;
+        }
+    }
+    policy-statement EVPN-EXPORT-{{ t.name }} {
+        term tag-and-accept {
+            then {
+                community add {{ t.name }}-RT;
+                accept;
+            }
+        }
+    }
+    policy-statement {{ t.name }}-T5-EXPORT {
+        term tenant-subnets {
+            from {
+{% for p in t.t5_prefixes %}
+                route-filter {{ p }} exact;
+{% endfor %}
+            }
+            then accept;
+        }
+        term reject {
+            then reject;
+        }
+    }
+    policy-statement {{ t.name }}-T5-IMPORT {
+        term tenant-subnets {
+            from {
+{% for p in t.t5_prefixes %}
+                route-filter {{ p }} exact;
+{% endfor %}
+            }
+            then accept;
+        }
+        term reject {
+            then reject;
+        }
+    }
+{% endfor %}
+}

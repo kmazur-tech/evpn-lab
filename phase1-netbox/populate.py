@@ -403,7 +403,14 @@ def main():
         # field equality which doesn't support foreign key filters like group_id.
         existing = list(nb.ipam.vlans.filter(vid=vlan["vid"], group_id=group.id if group else None))
         if existing:
-            print(f"  EXISTS: VLAN {vlan['vid']}")
+            v = existing[0]
+            # Update name if drift exists. yaml is the source of truth.
+            if v.name != vlan["name"] and not CHECK_MODE:
+                v.name = vlan["name"]
+                v.save()
+                print(f"  RENAMED: VLAN {vlan['vid']} -> {vlan['name']}")
+            else:
+                print(f"  EXISTS: VLAN {vlan['vid']}")
         else:
             if CHECK_MODE:
                 print(f"  MISSING: VLAN {vlan['vid']}")

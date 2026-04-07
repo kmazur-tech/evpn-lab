@@ -12,6 +12,15 @@ fabric:
   mtu: 9192       # vJunos-switch caps at 9192, not 9216
   irb_mtu: 9000
 
+# fxp0 lab quirk: vJunos hardcodes 10.0.0.15/24 + 2001:db8::2/64 in its
+# bootstrap and containerlab overrides the runtime mgmt interface at the
+# docker layer. The CONFIG file still shows the vJunos defaults - that's
+# what we render to byte-match the Phase 2 baselines. For real hardware,
+# fxp0.ipv4 should come from the device's NetBox OOB IP instead.
+fxp0:
+  ipv4: "10.0.0.15/24"
+  ipv6: "2001:db8::2/64"
+
 bgp:
   overlay_asn: 65000
   hold_time: 30

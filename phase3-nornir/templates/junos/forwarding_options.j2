@@ -1,0 +1,7 @@
+{% if host['role_slug'] == 'leaf' %}
+forwarding-options {
+    storm-control-profiles {{ defaults.storm_control.profile_name }} {
+        all;
+    }
+}
+{% endif %}

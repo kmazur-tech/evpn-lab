@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 import yaml
+from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from nornir import InitNornir
 from nornir_jinja2.plugins.tasks import template_file
 
@@ -32,10 +33,34 @@ DEFAULTS_FILE = Path(__file__).resolve().parent / "vars" / "junos_defaults.yml"
 # stanza in the baseline (e.g. lo0 lives at 4-space indent inside
 # `interfaces { ... }`).
 STANZAS = [
-    ("routing_options.j2", "routing-options", "routing-options", ""),
-    ("chassis.j2",         "chassis",         "chassis",         ""),
-    ("interfaces/loopback.j2", "lo0",         "lo0",             "    "),
+    ("system.j2",            "system",            "system",            ""),
+    ("routing_options.j2",   "routing-options",   "routing-options",   ""),
+    ("chassis.j2",           "chassis",           "chassis",           ""),
+    ("interfaces.j2",        "interfaces",        "interfaces",        ""),
+    ("forwarding_options.j2","forwarding-options","forwarding-options",""),
+    ("policy_options.j2",    "policy-options",    "policy-options",    ""),
+    ("routing_instances.j2", "routing-instances", "routing-instances", ""),
+    ("protocols.j2",         "protocols",         "protocols",         ""),
 ]
+
+
+# Diff normalization. The Phase 2 baselines contain artifacts that are
+# either device-emitted (`## Last changed`, `version`) or salted on each
+# generation (`encrypted-password`). Templates can't reproduce them
+# byte-for-byte, but the surrounding STRUCTURE must still match. Apply
+# the same regexes to both sides before comparing - byte-exact compare
+# of structure, content of these fields ignored.
+NORMALIZE_RULES = [
+    (re.compile(r'^## Last changed:.*\n', re.MULTILINE), ''),
+    (re.compile(r'^version [^;]+;\n', re.MULTILINE), ''),
+    (re.compile(r'encrypted-password "[^"]*"'), 'encrypted-password "<HASH>"'),
+]
+
+
+def normalize(text: str) -> str:
+    for pattern, repl in NORMALIZE_RULES:
+        text = pattern.sub(repl, text)
+    return text
 
 
 def extract_stanza(text: str, name: str, indent: str = "") -> str:
@@ -64,7 +89,7 @@ def extract_stanza(text: str, name: str, indent: str = "") -> str:
     return ""
 
 
-def render_and_diff(task, defaults):
+def render_and_diff(task, defaults, junos_root_hash, junos_admin_hash, jinja_env):
     """Render every landed template and diff against its baseline stanza.
 
     Returns a multi-line string with one OK/DIFF row per stanza.
@@ -79,7 +104,10 @@ def render_and_diff(task, defaults):
             task=template_file,
             template=tmpl,
             path=str(TEMPLATE_DIR),
+            jinja_env=jinja_env,
             defaults=defaults,
+            junos_root_hash=junos_root_hash,
+            junos_admin_hash=junos_admin_hash,
         )
         rendered = result.result
 
@@ -89,14 +117,17 @@ def render_and_diff(task, defaults):
 
         baseline_stanza = extract_stanza(baseline_text, stanza_name, indent)
 
-        if rendered.strip() == baseline_stanza.strip():
+        rendered_norm = normalize(rendered).strip()
+        baseline_norm = normalize(baseline_stanza).strip()
+
+        if rendered_norm == baseline_norm:
             rows.append(f"  OK    {label}")
             continue
 
         any_diff = True
         diff = "".join(difflib.unified_diff(
-            baseline_stanza.splitlines(keepends=True),
-            rendered.splitlines(keepends=True),
+            baseline_norm.splitlines(keepends=True),
+            rendered_norm.splitlines(keepends=True),
             fromfile=f"baseline/{task.host.name}/{label}",
             tofile=f"rendered/{task.host.name}/{label}",
         ))
@@ -106,14 +137,71 @@ def render_and_diff(task, defaults):
     return header + "\n" + "\n".join(rows)
 
 
+def render_full_and_diff(task, defaults, junos_root_hash, junos_admin_hash, jinja_env):
+    """Render main.j2 (full config) and diff vs the entire baseline file."""
+    result = task.run(
+        task=template_file,
+        template="main.j2",
+        path=str(TEMPLATE_DIR),
+        jinja_env=jinja_env,
+        defaults=defaults,
+        junos_root_hash=junos_root_hash,
+        junos_admin_hash=junos_admin_hash,
+    )
+    rendered = result.result
+
+    out_path = BUILD_DIR / f"{task.host.name}.conf"
+    out_path.write_text(rendered, encoding="utf-8", newline="\n")
+
+    baseline_path = PHASE2_CONFIGS / f"{task.host.name}.conf"
+    baseline_text = baseline_path.read_text(encoding="utf-8")
+
+    rendered_norm = normalize(rendered).strip()
+    baseline_norm = normalize(baseline_text).strip()
+
+    if rendered_norm == baseline_norm:
+        return f"{task.host.name} PASS  full config byte-exact"
+
+    diff = "".join(difflib.unified_diff(
+        baseline_norm.splitlines(keepends=True),
+        rendered_norm.splitlines(keepends=True),
+        fromfile=f"baseline/{task.host.name}",
+        tofile=f"rendered/{task.host.name}",
+    ))
+    return f"{task.host.name} FAIL\n{diff}"
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true",
-                        help="Render + diff vs baseline. Currently the only mode.")
-    parser.parse_args()
+                        help="Render each stanza + per-stanza diff vs baseline.")
+    parser.add_argument("--full", action="store_true",
+                        help="Render the full main.j2 config and diff against the whole baseline file.")
+    args = parser.parse_args()
+    if not (args.check or args.full):
+        args.check = True
 
     BUILD_DIR.mkdir(exist_ok=True)
     defaults = yaml.safe_load(DEFAULTS_FILE.read_text(encoding="utf-8"))
+
+    # Build Jinja env with keep_trailing_newline=True so {% include %}
+    # blocks in main.j2 don't lose the closing newline of each partial
+    # (nornir-jinja2's default Environment omits this flag, gluing
+    # consecutive stanzas together).
+    jinja_env = Environment(
+        loader=FileSystemLoader(str(TEMPLATE_DIR)),
+        undefined=StrictUndefined,
+        trim_blocks=True,
+        keep_trailing_newline=True,
+    )
+
+    # Junos password hashes are salted SHA-512: same plaintext yields a
+    # different ciphertext on every regeneration. They cannot be derived
+    # deterministically. Templates render whatever env supplies (real
+    # deploys), or a placeholder for --check (the diff normalizer
+    # replaces both sides with <HASH> so structure still has to match).
+    junos_root_hash = os.environ.get("JUNOS_ROOT_HASH", "$6$PLACEHOLDER$render-time-only")
+    junos_admin_hash = os.environ.get("JUNOS_ADMIN_HASH", "$6$PLACEHOLDER$render-time-only")
 
     # Nornir's config merge REPLACES inventory.options wholesale rather than
     # deep-merging, so secrets and filter_parameters must travel together in
@@ -143,7 +231,14 @@ def main():
     print()
 
     failed = False
-    render_result = nr.run(task=render_and_diff, defaults=defaults)
+    task_fn = render_full_and_diff if args.full else render_and_diff
+    render_result = nr.run(
+        task=task_fn,
+        defaults=defaults,
+        junos_root_hash=junos_root_hash,
+        junos_admin_hash=junos_admin_hash,
+        jinja_env=jinja_env,
+    )
     for host in sorted(render_result):
         msg = render_result[host][0].result
         print(msg)
