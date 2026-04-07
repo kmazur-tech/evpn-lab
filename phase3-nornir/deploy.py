@@ -20,6 +20,7 @@ from nornir import InitNornir
 from nornir_jinja2.plugins.tasks import template_file
 
 from tasks.enrich import enrich_from_netbox
+from tasks.deploy import napalm_deploy
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PHASE2_CONFIGS = REPO_ROOT / "phase2-fabric" / "configs"
@@ -176,9 +177,13 @@ def main():
     parser.add_argument("--check", action="store_true",
                         help="Render each stanza + per-stanza diff vs baseline.")
     parser.add_argument("--full", action="store_true",
-                        help="Render the full main.j2 config and diff against the whole baseline file.")
+                        help="Render full main.j2 and diff against the whole baseline file.")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Render full + NAPALM compare_config against the live device. No commit.")
+    parser.add_argument("--commit", action="store_true",
+                        help="Render full + NAPALM load_replace_candidate + commit. Requires --full to pass first.")
     args = parser.parse_args()
-    if not (args.check or args.full):
+    if not (args.check or args.full or args.dry_run or args.commit):
         args.check = True
 
     BUILD_DIR.mkdir(exist_ok=True)
@@ -224,6 +229,23 @@ def main():
         },
     )
 
+    # NetBoxInventory2 sets host.hostname to primary_ip4 (the loopback,
+    # unreachable from outside the fabric) and host.platform to the
+    # NetBox platform name ("Junos") rather than the NAPALM driver
+    # ("junos"). Both need overriding before NAPALM tasks run. The OOB
+    # mgmt IP per device lives in env vars MGMT_<name with - as _>.
+    for host in nr.inventory.hosts.values():
+        env_key = f"MGMT_{host.name.replace('-', '_')}"
+        mgmt = os.environ.get(env_key, "")
+        # MGMT_* values are stored CIDR (e.g. 172.16.18.160/24); strip mask.
+        if "/" in mgmt:
+            mgmt = mgmt.split("/", 1)[0]
+        if mgmt:
+            host.hostname = mgmt
+        host.platform = "junos"
+        host.username = os.environ.get("JUNOS_SSH_USER")
+        host.password = os.environ.get("JUNOS_SSH_PASSWORD")
+
     enrich_result = nr.run(task=enrich_from_netbox)
     for host, multi in enrich_result.items():
         print(f"  enrich {host}: {multi[0].result}")
@@ -231,7 +253,9 @@ def main():
     print()
 
     failed = False
-    task_fn = render_full_and_diff if args.full else render_and_diff
+    # For dry-run/commit we need the full config on disk first.
+    use_full = args.full or args.dry_run or args.commit
+    task_fn = render_full_and_diff if use_full else render_and_diff
     render_result = nr.run(
         task=task_fn,
         defaults=defaults,
@@ -244,6 +268,30 @@ def main():
         print(msg)
         if "FAIL" in msg.split("\n", 1)[0]:
             failed = True
+
+    if failed and (args.dry_run or args.commit):
+        print("\nABORT: regression diff vs Phase 2 baseline failed; refusing to deploy.")
+        sys.exit(2)
+
+    if args.dry_run or args.commit:
+        if not (os.environ.get("JUNOS_SSH_USER") and os.environ.get("JUNOS_SSH_PASSWORD")):
+            print("\nABORT: JUNOS_SSH_USER and JUNOS_SSH_PASSWORD must be set in env.")
+            sys.exit(2)
+        print()
+        print(f"=== NAPALM {'COMMIT' if args.commit else 'DRY-RUN'} ===")
+        deploy_result = nr.run(
+            task=napalm_deploy,
+            build_dir=BUILD_DIR,
+            commit=args.commit,
+        )
+        for host in sorted(deploy_result):
+            multi = deploy_result[host]
+            head = multi[0]
+            if head.failed:
+                failed = True
+                print(f"{host} FAILED: {head.exception}")
+            else:
+                print(f"{host} {head.result}")
 
     sys.exit(1 if failed else 0)
 
