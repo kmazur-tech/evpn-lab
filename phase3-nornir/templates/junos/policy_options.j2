@@ -1,4 +1,28 @@
+{# Junos canonical order: all policy-statement blocks sorted
+   alphabetically, then all community statements (also sorted).
+   The hand-written Phase 2 baselines had a different order; the
+   live devices canonicalize to alphabetical on display. Match
+   the canonical order so rendered == live. #}
 policy-options {
+{% for t in host['tenants'] %}
+    policy-statement EVPN-EXPORT-{{ t.name }} {
+        term tag-and-accept {
+            then {
+                community add {{ t.name }}-RT;
+                accept;
+            }
+        }
+    }
+    policy-statement EVPN-IMPORT-{{ t.name }} {
+        term tenant-1 {
+            from community {{ t.name }}-RT;
+            then accept;
+        }
+        term reject {
+            then reject;
+        }
+    }
+{% endfor %}
 {% if host['role_slug'] == 'spine' %}
     policy-statement EXPORT-LOOPBACK {
         term local-loopback {
@@ -33,25 +57,6 @@ policy-options {
         }
     }
 {% for t in host['tenants'] %}
-    community {{ t.name }}-RT members {{ t.rt }};
-    community FABRIC-TENANT-RT-RANGE members "target:65000:5...";
-    policy-statement EVPN-IMPORT-{{ t.name }} {
-        term tenant-1 {
-            from community {{ t.name }}-RT;
-            then accept;
-        }
-        term reject {
-            then reject;
-        }
-    }
-    policy-statement EVPN-EXPORT-{{ t.name }} {
-        term tag-and-accept {
-            then {
-                community add {{ t.name }}-RT;
-                accept;
-            }
-        }
-    }
     policy-statement {{ t.name }}-T5-EXPORT {
         term tenant-subnets {
             from {
@@ -79,4 +84,10 @@ policy-options {
         }
     }
 {% endfor %}
+{% if host['tenants'] %}
+    community FABRIC-TENANT-RT-RANGE members target:65000:5...;
+{% for t in host['tenants'] %}
+    community {{ t.name }}-RT members {{ t.rt }};
+{% endfor %}
+{% endif %}
 }

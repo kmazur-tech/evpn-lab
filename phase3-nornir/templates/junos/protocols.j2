@@ -2,11 +2,11 @@ protocols {
     bgp {
         group UNDERLAY {
             type external;
+            hold-time {{ defaults.bgp.hold_time }};
             family inet {
                 unicast;
             }
             export EXPORT-LOOPBACK;
-            hold-time {{ defaults.bgp.hold_time }};
             local-as {{ host['asn'] }};
             multipath {
                 multiple-as;
@@ -29,6 +29,7 @@ protocols {
                 no-nexthop-change;
             }
             local-address {{ host['router_id'] }};
+            hold-time {{ defaults.bgp.hold_time }};
             family evpn {
                 signaling {
                     loops {{ defaults.bgp.signaling_loops }};
@@ -37,7 +38,6 @@ protocols {
 {% if host['role_slug'] == 'spine' %}
             cluster {{ host['router_id'] }};
 {% endif %}
-            hold-time {{ defaults.bgp.hold_time }};
             local-as {{ defaults.bgp.overlay_asn }};
             bfd-liveness-detection {
                 minimum-interval {{ defaults.bgp.bfd_min_interval }};

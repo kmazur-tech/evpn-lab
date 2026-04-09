@@ -89,7 +89,11 @@ interfaces {
     lo0 {
 {% for u in host['loopbacks'] %}
         unit {{ u.unit }} {
+{% if ' ' in u.description %}
             description "{{ u.description }}";
+{% else %}
+            description {{ u.description }};
+{% endif %}
             family inet {
                 address {{ u.address }};
             }

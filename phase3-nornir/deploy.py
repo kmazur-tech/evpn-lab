@@ -23,7 +23,16 @@ from tasks.enrich import enrich_from_netbox, derive_login_hash
 from tasks.deploy import napalm_deploy
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-PHASE2_CONFIGS = REPO_ROOT / "phase2-fabric" / "configs"
+# Phase 3 golden-file regression baselines. These are maintained as
+# "the last known-good rendered output" - when a template change lands,
+# re-run `deploy.py --update-expected` (or copy build/ -> expected/
+# manually) and commit both template + expected in the same PR.
+#
+# NOTE: phase2-fabric/configs/*.conf are separately maintained as the
+# clab startup configs (Phase 2 hand-written). They do NOT need to
+# match this directory - clab boots devices with the Phase 2 configs,
+# then Phase 3 --commit overwrites with canonical rendered output.
+EXPECTED_DIR = Path(__file__).resolve().parent / "expected"
 BUILD_DIR = Path(__file__).resolve().parent / "build"
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates" / "junos"
 DEFAULTS_FILE = Path(__file__).resolve().parent / "vars" / "junos_defaults.yml"
@@ -157,7 +166,7 @@ def render_and_diff(task, defaults, junos_root_hash, junos_admin_hash, jinja_env
 
     Returns a multi-line string with one OK/DIFF row per stanza.
     """
-    baseline_path = PHASE2_CONFIGS / f"{task.host.name}.conf"
+    baseline_path = EXPECTED_DIR / f"{task.host.name}.conf"
     baseline_text = baseline_path.read_text(encoding="utf-8")
 
     rows = []
@@ -216,7 +225,7 @@ def render_full_and_diff(task, defaults, junos_root_hash, junos_admin_hash, jinj
     out_path = BUILD_DIR / f"{task.host.name}.conf"
     out_path.write_text(rendered, encoding="utf-8", newline="\n")
 
-    baseline_path = PHASE2_CONFIGS / f"{task.host.name}.conf"
+    baseline_path = EXPECTED_DIR / f"{task.host.name}.conf"
     baseline_text = baseline_path.read_text(encoding="utf-8")
 
     rendered_norm = normalize(rendered).strip()

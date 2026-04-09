@@ -48,8 +48,8 @@ routing-instances {
                     advertise direct-nexthop;
                     encapsulation vxlan;
                     vni {{ t.l3vni }};
-                    export {{ t.name }}-T5-EXPORT;
                     import {{ t.name }}-T5-IMPORT;
+                    export {{ t.name }}-T5-EXPORT;
                 }
             }
         }
