@@ -17,10 +17,21 @@ from pathlib import Path
 import yaml
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from nornir import InitNornir
+from nornir.core.plugins.inventory import TransformFunctionRegister
 from nornir_jinja2.plugins.tasks import template_file
 
+from tasks.transform import fabric_inventory_transform
+
+# Register the transform function with Nornir's plugin system before
+# InitNornir runs. Nornir 3.x looks up transform_function via the
+# registry, not by dotted-path import.
+TransformFunctionRegister.register("fabric_inventory_transform", fabric_inventory_transform)
+
+from nornir_napalm.plugins.tasks import napalm_confirm_commit
+
 from tasks.enrich import enrich_from_netbox, derive_login_hash
-from tasks.deploy import napalm_deploy
+from tasks.deploy import napalm_deploy, liveness_check
+from tasks.backup import pre_commit_backup
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 # Phase 3 golden-file regression baselines. These are maintained as
@@ -300,7 +311,7 @@ def main():
                 "nb_url": os.environ["NETBOX_URL"],
                 "nb_token": os.environ["NETBOX_TOKEN"],
                 "ssl_verify": False,
-                "flatten_custom_fields": False,
+                "flatten_custom_fields": True,
                 "filter_parameters": {
                     "site": "dc1",
                     "status": "active",
@@ -309,23 +320,9 @@ def main():
             },
         },
     )
-
-    # NetBoxInventory2 sets host.hostname to primary_ip4 (the loopback,
-    # unreachable from outside the fabric) and host.platform to the
-    # NetBox platform name ("Junos") rather than the NAPALM driver
-    # ("junos"). Both need overriding before NAPALM tasks run. The OOB
-    # mgmt IP per device lives in env vars MGMT_<name with - as _>.
-    for host in nr.inventory.hosts.values():
-        env_key = f"MGMT_{host.name.replace('-', '_')}"
-        mgmt = os.environ.get(env_key, "")
-        # MGMT_* values are stored CIDR (e.g. 172.16.18.160/24); strip mask.
-        if "/" in mgmt:
-            mgmt = mgmt.split("/", 1)[0]
-        if mgmt:
-            host.hostname = mgmt
-        host.platform = "junos"
-        host.username = os.environ.get("JUNOS_SSH_USER")
-        host.password = os.environ.get("JUNOS_SSH_PASSWORD")
+    # Inventory mutation (mgmt IP override, NAPALM driver, SSH creds) is
+    # done by the transform_function wired in nornir.yml ->
+    # tasks.transform.fabric_inventory_transform. Idiomatic Nornir.
 
     enrich_result = nr.run(task=enrich_from_netbox)
     for host, multi in enrich_result.items():
@@ -378,15 +375,33 @@ def main():
             print("\nABORT: pre-deploy guard rejected at least one rendered config.")
             sys.exit(2)
 
+        # Optional phased rollout: commit to one host at a time.
+        deploy_runner = nr.filter(name=args.target) if args.target else nr
+        if args.target:
+            print(f"\nTARGET: {args.target} (phased rollout)")
+
+        # Pre-change snapshot. Cheap insurance: if a deploy breaks
+        # something AND the auto-rollback also fails, this is the
+        # known-good config to manually restore.
+        print()
+        print("=== Pre-change backup ===")
+        backup_result = deploy_runner.run(task=pre_commit_backup, build_dir=BUILD_DIR)
+        for host in sorted(backup_result):
+            head = backup_result[host][0]
+            if head.failed:
+                print(f"  {host} FAILED: {head.exception}")
+                failed = True
+            else:
+                print(f"  {host} {head.result}")
+        if failed:
+            print("\nABORT: pre-change backup failed; refusing to deploy.")
+            sys.exit(2)
+
         print()
         print(f"=== NAPALM {'COMMIT' if args.commit else 'DRY-RUN'} ===")
         print("NOTE: Junos `compare_config` MASKS SECRET-DATA fields. A")
         print("'no diff' result here means 'no diff in non-secret fields'.")
         print("Trust the on-disk guard above for secret-field validation.")
-        # Optional phased rollout: commit to one host at a time.
-        deploy_runner = nr.filter(name=args.target) if args.target else nr
-        if args.target:
-            print(f"TARGET: {args.target} (phased rollout)")
         deploy_result = deploy_runner.run(
             task=napalm_deploy,
             build_dir=BUILD_DIR,
@@ -400,6 +415,39 @@ def main():
                 print(f"{host} FAILED: {head.exception}")
             else:
                 print(f"{host} {head.result}")
+
+        # Stage 2 of commit-confirmed: liveness check + confirm.
+        # Only runs in --commit mode (not --dry-run, which doesn't
+        # leave a pending commit on the device).
+        if args.commit and not failed:
+            print()
+            print("=== Stage 2: liveness check ===")
+            live_result = deploy_runner.run(task=liveness_check)
+            live_failed = []
+            for host in sorted(live_result):
+                head = live_result[host][0]
+                if head.failed:
+                    print(f"  {host} FAILED: {head.exception}")
+                    live_failed.append(host)
+                else:
+                    print(f"  {host} {head.result}")
+            if live_failed:
+                print()
+                print(f"LIVENESS FAILED on: {', '.join(live_failed)}")
+                print("NOT confirming commit - Junos will auto-rollback at "
+                      "the revert_in deadline (default 300s).")
+                failed = True
+            else:
+                print()
+                print("=== Stage 2: confirm commit (clear rollback timer) ===")
+                confirm_result = deploy_runner.run(task=napalm_confirm_commit)
+                for host in sorted(confirm_result):
+                    head = confirm_result[host][0]
+                    if head.failed:
+                        failed = True
+                        print(f"  {host} CONFIRM FAILED: {head.exception}")
+                    else:
+                        print(f"  {host} confirmed")
 
     sys.exit(1 if failed else 0)
 

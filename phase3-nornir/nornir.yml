@@ -5,6 +5,10 @@
 # the trap where YAML options silently get clobbered.
 inventory:
   plugin: NetBoxInventory2
+  # Registered programmatically in deploy.py main() before InitNornir
+  # via TransformFunctionRegister.register(). Nornir 3.x's plugin
+  # system requires this rather than dotted-path import.
+  transform_function: fabric_inventory_transform
 
 runner:
   plugin: threaded
