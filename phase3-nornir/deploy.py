@@ -19,7 +19,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from nornir import InitNornir
 from nornir_jinja2.plugins.tasks import template_file
 
-from tasks.enrich import enrich_from_netbox
+from tasks.enrich import enrich_from_netbox, derive_login_hash
 from tasks.deploy import napalm_deploy
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -45,12 +45,31 @@ STANZAS = [
 ]
 
 
-# Diff normalization. The Phase 2 baselines contain artifacts that are
-# either device-emitted (`## Last changed`, `version`) or salted on each
-# generation (`encrypted-password`). Templates can't reproduce them
-# byte-for-byte, but the surrounding STRUCTURE must still match. Apply
-# the same regexes to both sides before comparing - byte-exact compare
-# of structure, content of these fields ignored.
+# Diff normalization. Strips fields that are either device-emitted
+# artifacts the templates can't reproduce (`## Last changed`, `version`)
+# or salt-randomized opaque blobs (`encrypted-password`).
+#
+# The regression gate's job is "templates produce structurally identical
+# output to baselines". The text content of a SHA-512 crypt blob is
+# noise (different salts of the same plaintext yield different bytes),
+# not structure. Comparing encrypted-password text adds zero signal -
+# any drift there is expected and uninformative.
+#
+# CRITICAL: This normalization is for the REGRESSION DIFF only. It does
+# NOT touch what gets written to disk. The deploy path independently
+# scans the rendered file with assert_safe_to_deploy() before any
+# NAPALM call to verify every encrypted-password line is a real,
+# valid $6$ crypt hash and contains no placeholder/sentinel strings.
+# That on-disk guard is the actual safety net for SECRET-DATA fields.
+#
+# History: an earlier version had this normalization but NO on-disk
+# guard. A bug rendered placeholder hashes to disk, the regression
+# gate masked them on both sides and reported PASS, NAPALM
+# `compare_config` masked SECRET-DATA fields and reported "no diff",
+# and --commit then loaded the placeholder onto all 4 devices,
+# causing a lab-wide credential lockout. The two-layer design here
+# (normalize the gate + grep the file independently) prevents recurrence.
+# See feedback_never_normalize_secrets_into_deploy.md.
 NORMALIZE_RULES = [
     (re.compile(r'^## Last changed:.*\n', re.MULTILINE), ''),
     (re.compile(r'^version [^;]+;\n', re.MULTILINE), ''),
@@ -62,6 +81,49 @@ def normalize(text: str) -> str:
     for pattern, repl in NORMALIZE_RULES:
         text = pattern.sub(repl, text)
     return text
+
+
+# Sentinel strings the deploy guard refuses to push to a device. Any
+# rendered config containing one of these is rejected before any NAPALM
+# call. The list grows as new templates are added; treat it as the
+# "things that mean someone forgot to set an env var" inventory.
+DEPLOY_SENTINELS = [
+    "PLACEHOLDER",
+    "render-time-only",
+    "TODO",
+    "REPLACE_ME",
+    "<HASH>",
+]
+
+# Every encrypted-password line MUST match this shape. SHA-512 crypt
+# format: $6$<salt>$<86-char-hash>. Anything else (placeholder, plain
+# text, malformed) is rejected.
+HASH_SHAPE_RE = re.compile(r'encrypted-password "(\$6\$[^$]+\$[A-Za-z0-9./]{86})"')
+
+
+def assert_safe_to_deploy(rendered: str, host_name: str) -> None:
+    """Independent grep guard. Runs BEFORE any NAPALM call.
+
+    Junos `compare_config` masks SECRET-DATA fields (encrypted-password,
+    keys, certs) so a placeholder hash will NOT show up in NAPALM diff
+    output. The only reliable check is to scan the on-disk rendered
+    file ourselves before handing it to NAPALM.
+    """
+    for sentinel in DEPLOY_SENTINELS:
+        if sentinel in rendered:
+            raise RuntimeError(
+                f"{host_name}: rendered config contains sentinel "
+                f"'{sentinel}' - refusing to deploy."
+            )
+    for line in rendered.splitlines():
+        if "encrypted-password" not in line:
+            continue
+        if not HASH_SHAPE_RE.search(line):
+            raise RuntimeError(
+                f"{host_name}: encrypted-password line does not match "
+                f"valid SHA-512 crypt shape - refusing to deploy.\n"
+                f"  line: {line.strip()}"
+            )
 
 
 def extract_stanza(text: str, name: str, indent: str = "") -> str:
@@ -182,10 +244,20 @@ def main():
                         help="Render full + NAPALM compare_config against the live device. No commit.")
     parser.add_argument("--commit", action="store_true",
                         help="Render full + NAPALM load_replace_candidate + commit. Requires --full to pass first.")
+    parser.add_argument("--target",
+                        help="Restrict deploy to a single host (phased rollout).")
     args = parser.parse_args()
     if not (args.check or args.full or args.dry_run or args.commit):
         args.check = True
 
+    # Clear any stale renders from previous runs. Stale files in
+    # build/ can carry obsolete content (e.g. an old PLACEHOLDER hash
+    # from a buggy template version) and mislead the deploy guard
+    # if it scans the wrong file. Nuke and recreate every run.
+    if BUILD_DIR.exists():
+        for old in BUILD_DIR.iterdir():
+            if old.is_file():
+                old.unlink()
     BUILD_DIR.mkdir(exist_ok=True)
     defaults = yaml.safe_load(DEFAULTS_FILE.read_text(encoding="utf-8"))
 
@@ -200,13 +272,13 @@ def main():
         keep_trailing_newline=True,
     )
 
-    # Junos password hashes are salted SHA-512: same plaintext yields a
-    # different ciphertext on every regeneration. They cannot be derived
-    # deterministically. Templates render whatever env supplies (real
-    # deploys), or a placeholder for --check (the diff normalizer
-    # replaces both sides with <HASH> so structure still has to match).
-    junos_root_hash = os.environ.get("JUNOS_ROOT_HASH", "$6$PLACEHOLDER$render-time-only")
-    junos_admin_hash = os.environ.get("JUNOS_ADMIN_HASH", "$6$PLACEHOLDER$render-time-only")
+    # Real, deterministic hash from env plaintext + fixed salt. Hard
+    # fails if env is missing (no placeholder fallback - that bug cost
+    # us a credential lockout in commit c2c0b42). Both root and admin
+    # use the same lab plaintext.
+    login_hash = derive_login_hash()
+    junos_root_hash = login_hash
+    junos_admin_hash = login_hash
 
     # Nornir's config merge REPLACES inventory.options wholesale rather than
     # deep-merging, so secrets and filter_parameters must travel together in
@@ -277,9 +349,36 @@ def main():
         if not (os.environ.get("JUNOS_SSH_USER") and os.environ.get("JUNOS_SSH_PASSWORD")):
             print("\nABORT: JUNOS_SSH_USER and JUNOS_SSH_PASSWORD must be set in env.")
             sys.exit(2)
+
+        # Independent on-disk guard. Junos `compare_config` masks
+        # SECRET-DATA fields (encrypted-password etc.), so a placeholder
+        # hash silently passes NAPALM dry-run. The only safe check is
+        # to grep the rendered file ourselves before any NAPALM call.
+        print()
+        print("=== Pre-deploy on-disk guard ===")
+        guard_failed = False
+        for h in sorted(nr.inventory.hosts):
+            cfg_path = BUILD_DIR / f"{h}.conf"
+            try:
+                assert_safe_to_deploy(cfg_path.read_text(encoding="utf-8"), h)
+                print(f"  {h} OK")
+            except RuntimeError as e:
+                print(f"  {e}")
+                guard_failed = True
+        if guard_failed:
+            print("\nABORT: pre-deploy guard rejected at least one rendered config.")
+            sys.exit(2)
+
         print()
         print(f"=== NAPALM {'COMMIT' if args.commit else 'DRY-RUN'} ===")
-        deploy_result = nr.run(
+        print("NOTE: Junos `compare_config` MASKS SECRET-DATA fields. A")
+        print("'no diff' result here means 'no diff in non-secret fields'.")
+        print("Trust the on-disk guard above for secret-field validation.")
+        # Optional phased rollout: commit to one host at a time.
+        deploy_runner = nr.filter(name=args.target) if args.target else nr
+        if args.target:
+            print(f"TARGET: {args.target} (phased rollout)")
+        deploy_result = deploy_runner.run(
             task=napalm_deploy,
             build_dir=BUILD_DIR,
             commit=args.commit,

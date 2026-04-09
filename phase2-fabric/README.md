@@ -108,11 +108,29 @@ show lldp neighbors
 
 ## Smoke Tests
 
-All tests automated in `smoke-tests.sh`. Run after `setup-hosts.sh`:
+All tests automated in `smoke-tests.sh`. Run **on the containerlab host** (clab-host.lab.local) after `setup-hosts.sh`:
 
 ```bash
 bash smoke-tests.sh
 ```
+
+### Where to run smoke (and why)
+
+`smoke-tests.sh` has two classes of checks with different location requirements:
+
+1. **Control-plane (~58 checks)** talk to Junos via `sshpass admin@<device-mgmt-ip>`. These run from anywhere with TCP/22 reach to the fabric mgmt IPs and `sshpass`+`jq` installed.
+
+2. **Data-plane / failover (~18 checks)** use `ping_test()` → `docker inspect -f '{{.State.Pid}}' clab-dc1-<host>` → `nsenter -t $PID -n ping ...`. Both `docker inspect` and `nsenter` require the Docker daemon AND the target containers to be on the **local** machine. They silently fail (every ping reports FAIL) from any host that isn't the containerlab host.
+
+**Running from elsewhere wraps it via SSH** — never try to replicate Docker into your dev box. From a Phase 3 / Phase 6 orchestrator:
+
+```bash
+ssh -i <key> root@clab-host.lab.local 'cd /opt/evpn-lab && bash smoke-tests.sh'
+```
+
+Phase 6 CI/CD will run smoke from a self-hosted runner **on** the lab server for the same reason: tests run where the system under test runs.
+
+**Symptom of running from the wrong place:** ~18 FAILs clustered in L2/L3/ESI-LAG/gateway/failover/withdrawal sections; control-plane (BGP/EVPN/BFD/LACP/ESI/DF) all PASS. The split IS the diagnostic.
 
 ### 1. Control plane
 

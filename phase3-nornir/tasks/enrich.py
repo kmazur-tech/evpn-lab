@@ -8,12 +8,30 @@ Each new template stanza adds the fields it needs here. Keep field
 names short and stable - templates depend on them.
 """
 
+import crypt
 import os
 import ipaddress
 import re
 
 import pynetbox
 from nornir.core.task import Result, Task
+
+
+def derive_login_hash() -> str:
+    """Compute the deterministic SHA-512 crypt hash from env-supplied
+    plaintext + fixed salt. Used for both root-authentication and the
+    admin user (same lab plaintext). Hard-fail if either env var is
+    missing - never silently substitute a placeholder.
+    """
+    plaintext = os.environ.get("JUNOS_LOGIN_PASSWORD")
+    salt = os.environ.get("JUNOS_LOGIN_SALT")
+    if not plaintext or not salt:
+        raise RuntimeError(
+            "JUNOS_LOGIN_PASSWORD and JUNOS_LOGIN_SALT must be set "
+            "(see evpn-lab-env/env.sh). Refusing to render system "
+            "stanza without real credential material."
+        )
+    return crypt.crypt(plaintext, salt)
 
 
 def _lo0_unit_from_iface_name(name: str):
