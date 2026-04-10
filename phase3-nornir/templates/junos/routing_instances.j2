@@ -1,3 +1,22 @@
+{# PHASE 3 SCOPE LIMITATION - single-tenant MAC-VRF assumption.
+
+   The Phase 3 lab has exactly one tenant (TENANT-1) and renders a
+   single MAC-VRF instance (`EVPN-VXLAN`) carrying that tenant's L2
+   VNIs in vlan-aware mode. The template indexes `host.tenants[0]`
+   for the route-distinguisher tenant_id and the vrf-import/export
+   policy names because there is only ever one tenant in the list.
+
+   For Phase 7 (multi-tenant), this needs to become either:
+     (a) one mac-vrf instance per tenant (loop over host.tenants and
+         emit one EVPN-VXLAN-<TENANT> block per entry), or
+     (b) a single mac-vrf instance carrying all tenants' VNIs and
+         importing/exporting all tenant route-targets (the singleton
+         instance pattern but generalized).
+
+   Either way, `host.tenants[0]` must be replaced with explicit
+   iteration. The pydantic HostData.tenants list shape already
+   supports both - the limitation is in this template only.
+#}
 routing-instances {
 {% if host['role_slug'] == 'leaf' %}
     EVPN-VXLAN {

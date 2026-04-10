@@ -21,10 +21,14 @@ import pynetbox
 from .models import AccessPort, FabricLink, Irb, Lag, LagMember
 
 
-# Devices we treat as fabric peers (have an underlay ASN, are part of
-# the EVPN fabric). Anything else cabled to a ge- port is treated as
-# a host (handled via untagged_vlan -> AccessPort).
-FABRIC_PEER_PREFIXES = ("dc1-spine", "dc1-leaf")
+# Device roles we treat as fabric peers (have an underlay ASN, are
+# part of the EVPN fabric). Anything else cabled to a ge- port is
+# treated as a host (handled via untagged_vlan -> AccessPort).
+#
+# Role-based instead of name-prefix matching so Phase 10 (multi-DC,
+# Arista cEOS in DC2) just works without code change - cEOS devices
+# get role=spine/leaf in NetBox the same way Junos devices do.
+FABRIC_PEER_ROLES = ("spine", "leaf")
 
 
 def collect_interfaces(nb: pynetbox.api, device) -> Dict[str, List]:
@@ -95,7 +99,13 @@ def collect_interfaces(nb: pynetbox.api, device) -> Dict[str, List]:
 
 def _try_fabric_link(nb, device, iface):
     """If iface is cabled to another fabric device AND has an IP,
-    return a FabricLink with peer IP/ASN derived. Else None."""
+    return a FabricLink with peer IP/ASN derived. Else None.
+
+    Fabric membership is determined by the peer device's NetBox role
+    (spine/leaf), NOT by name prefix. Phase 10 (Arista cEOS in DC2)
+    will add cEOS devices with role=spine/leaf and they'll be picked
+    up automatically.
+    """
     if not iface.cable:
         return None
     ip_objs = list(nb.ipam.ip_addresses.filter(interface_id=iface.id))
@@ -110,7 +120,14 @@ def _try_fabric_link(nb, device, iface):
             peer_dev_name = obj.device.name
             break
 
-    if peer_dev_name is None or not peer_dev_name.startswith(FABRIC_PEER_PREFIXES):
+    if peer_dev_name is None:
+        return None
+
+    peer_dev = nb.dcim.devices.get(name=peer_dev_name)
+    if peer_dev is None:
+        return None
+    peer_role = peer_dev.role.slug if peer_dev.role else None
+    if peer_role not in FABRIC_PEER_ROLES:
         return None
 
     local_addr = ip_objs[0].address
@@ -123,8 +140,7 @@ def _try_fabric_link(nb, device, iface):
     peer_ips = [h for h in hosts if h != local_ip]
     peer_ip = peer_ips[0] if peer_ips else None
 
-    peer_dev = nb.dcim.devices.get(name=peer_dev_name)
-    peer_asn = (peer_dev.local_context_data or {}).get("bgp_asn") if peer_dev else None
+    peer_asn = (peer_dev.local_context_data or {}).get("bgp_asn")
 
     return FabricLink(
         name=iface.name,
@@ -141,7 +157,14 @@ def _build_lag(iface) -> Lag:
 
     The ae index drives both system-id and admin-key per the Phase 2
     convention (admin-key = ae_index + 1; system-id encodes ae_index
-    in the second-to-last octet). See phase2-fabric/DESIGN.md.
+    in the second-to-last octet, hex-formatted). See phase2-fabric/
+    DESIGN.md.
+
+    Hex formatting matters: an earlier `f"00:00:00:00:0{ae_index + 3}:00"`
+    produced `00:00:00:00:010:00` for ae7 (invalid 3-char octet). The
+    `:02x` format gives `0a` for ae7, `ff` for ae252. Output is
+    byte-identical to the old formula for ae0..ae6 (the only LAGs in
+    Phase 2 are ae0/ae1, which render as 03/04 either way).
     """
     ae_index = int(re.fullmatch(r"ae(\d+)", iface.name).group(1))
     return Lag(
@@ -149,7 +172,7 @@ def _build_lag(iface) -> Lag:
         ae_index=ae_index,
         vlan_name=iface.untagged_vlan.name if iface.untagged_vlan else None,
         admin_key=ae_index + 1,
-        system_id=f"00:00:00:00:0{ae_index + 3}:00",
+        system_id=f"00:00:00:00:{(ae_index + 3):02x}:00",
     )
 
 

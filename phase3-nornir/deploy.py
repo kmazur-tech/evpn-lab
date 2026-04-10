@@ -1,10 +1,24 @@
 #!/usr/bin/env python3
-"""Phase 3 entry point: NetBox -> Nornir -> render -> diff -> (deploy).
+"""Phase 3 entry point: NetBox -> Nornir -> render -> guard -> deploy.
 
-Current scope: --check mode only. Renders each Phase 3 template stanza
-that has landed so far for every fabric device and diffs against the
-matching stanza in phase2-fabric/configs/<host>.conf. Templates are
-added incrementally; each new partial gets a row in STANZAS below.
+Modes (mutually compatible flags):
+  --check     Per-stanza render + byte-diff vs phase3-nornir/expected/.
+              No device contact. Fast feedback loop during template work.
+  --full      Render full main.j2 + byte-diff the whole config vs
+              phase3-nornir/expected/<host>.conf.
+  --dry-run   Implies --full + on-disk deploy guard + NAPALM
+              compare_config against the live device. No commit.
+  --commit    Implies --full + on-disk guard + NAPALM
+              load_replace_candidate + `commit confirmed 5min` (Stage 1),
+              then a liveness check + napalm_confirm_commit to clear
+              the rollback timer (Stage 2). If liveness fails on any
+              host, that host's confirm is skipped and Junos
+              auto-rolls back at the deadline.
+
+Per-stanza checks (--check) are driven by the STANZAS table below;
+adding a template = one row. The regression baselines live in
+phase3-nornir/expected/, NOT phase2-fabric/configs/ (those are the
+clab startup configs - see README "What about phase2-fabric/configs?").
 """
 
 import argparse
@@ -296,6 +310,15 @@ def main():
     # fails if env is missing (no placeholder fallback - that bug cost
     # us a credential lockout in commit c2c0b42). Both root and admin
     # use the same lab plaintext.
+    #
+    # TODO Phase 8 (CIS/PCI-DSS hardening): split into separate
+    # JUNOS_ROOT_PASSWORD / JUNOS_ADMIN_PASSWORD env vars and derive
+    # two distinct hashes. CIS Junos benchmark requires unique
+    # credentials per account; this single-hash shortcut is a Phase 3
+    # lab simplification. The system.j2 template already takes
+    # `junos_root_hash` and `junos_admin_hash` as separate variables,
+    # so the only change needed is to wire two `derive_login_hash`
+    # calls (one per env var) here in deploy.py.
     login_hash = derive_login_hash()
     junos_root_hash = login_hash
     junos_admin_hash = login_hash
@@ -348,7 +371,7 @@ def main():
             failed = True
 
     if failed and (args.dry_run or args.commit):
-        print("\nABORT: regression diff vs Phase 2 baseline failed; refusing to deploy.")
+        print("\nABORT: regression diff vs phase3-nornir/expected/ failed; refusing to deploy.")
         sys.exit(2)
 
     if args.dry_run or args.commit:

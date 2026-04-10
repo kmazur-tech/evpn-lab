@@ -10,8 +10,10 @@ jinja2>=3.1
 pyyaml>=6.0
 # passlib replaces stdlib `crypt` (deprecated in Python 3.13, removed
 # in 3.14) for the deterministic SHA-512 login hash derivation in
-# tasks/enrich.py. Drop-in: passlib.hash.sha512_crypt with rounds=5000
-# produces byte-identical output to glibc crypt() for $6$ prefixes.
+# tasks/enrich/auth.py. Drop-in: passlib.hash.sha512_crypt with
+# rounds=5000 produces byte-identical output to glibc crypt() for $6$
+# prefixes. Forced to the pure-Python `builtin` backend so passlib
+# does not import stdlib crypt at runtime.
 passlib>=1.7
 # pydantic v2 validates the enriched host data shapes (tasks/enrich/
 # models.py). Catches NetBox schema drift and collector bugs at

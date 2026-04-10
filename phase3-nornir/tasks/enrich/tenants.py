@@ -20,14 +20,14 @@ import pynetbox
 from .models import AccessPort, Lag, Tenant, VlanInMacVrf
 
 
-# Overlay ASN for the route-target. Matches vars/junos_defaults.yml
-# bgp.overlay_asn. Hardcoded here because the RT scheme is a fabric-
-# wide convention, not per-host data.
-OVERLAY_ASN = 65000
+def collect_tenants(nb: pynetbox.api, overlay_asn: int) -> List[Tenant]:
+    """Build Tenant models from NetBox VRFs that have l3vni+tenant_id.
 
-
-def collect_tenants(nb: pynetbox.api) -> List[Tenant]:
-    """Build Tenant models from NetBox VRFs that have l3vni+tenant_id."""
+    `overlay_asn` is loaded by main.py from vars/junos_defaults.yml
+    (the single source of truth for fabric-wide BGP constants) and
+    passed in. Avoids having two copies of the value drift apart -
+    the same yaml is also read by protocols.j2 for `local-as`.
+    """
     tenants: List[Tenant] = []
     for vrf in nb.ipam.vrfs.all():
         cf = vrf.custom_fields or {}
@@ -44,7 +44,7 @@ def collect_tenants(nb: pynetbox.api) -> List[Tenant]:
             tenant_id=tenant_id,
             l3vni=l3vni,
             anycast_mac=anycast_mac,
-            rt=f"target:{OVERLAY_ASN}:{l3vni}",
+            rt=f"target:{overlay_asn}:{l3vni}",
             t5_prefixes=t5_prefixes,
         ))
     return tenants

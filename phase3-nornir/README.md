@@ -7,10 +7,11 @@ NetBox-driven Junos configuration rendering and deployment for the DC1 EVPN-VXLA
 ```
 NetBox (SoT)
     -> Nornir NetBoxInventory2 (hosts, platform, primary_ip)
-    -> tasks/enrich.py (pynetbox: VLANs, VNIs, VRFs, anycast GW, cables, interfaces)
+    -> tasks/enrich/ package (pynetbox: VLANs, VNIs, VRFs, anycast GW, cables,
+                              interfaces; pydantic-validated HostData)
     -> Jinja2 templates (templates/junos/)
     -> build/<host>.conf
-    -> diff vs phase2-fabric/configs/<host>.conf  (regression gate)
+    -> diff vs phase3-nornir/expected/<host>.conf  (regression gate)
     -> on-disk deploy guard (independent grep, see Safety section)
     -> NAPALM load_replace_candidate + commit
     -> phase2-fabric/smoke-tests.sh  (run separately, wired into CI in Phase 6)
@@ -112,7 +113,7 @@ The lab reads four credential-related env vars from `../../evpn-lab-env/env.sh` 
 | `JUNOS_LOGIN_PASSWORD` | Plaintext password rendered into the device login config |
 | `JUNOS_LOGIN_SALT` | Fixed crypt(3) salt for deterministic SHA-512 hash derivation |
 
-`JUNOS_LOGIN_PASSWORD` and `JUNOS_LOGIN_SALT` are fed to `crypt.crypt()` at render time to produce a stable `$6$<salt>$<86char>` hash. The hash is deterministic - re-rendering produces the same bytes - so deploys are idempotent.
+`JUNOS_LOGIN_PASSWORD` and `JUNOS_LOGIN_SALT` are fed to `passlib.hash.sha512_crypt` (pure-Python `builtin` backend, `rounds=5000`) at render time to produce a stable `$6$<salt>$<86char>` hash. The hash is deterministic - re-rendering produces the same bytes - so deploys are idempotent. Verified byte-identical to glibc `crypt()` for the lab's existing committed hashes; passlib replaced stdlib `crypt` because the latter is deprecated in Python 3.13 and removed in 3.14.
 
 The salt is NOT cryptographically secret (it appears in clear inside the rendered hash), but it IS environment-specific. Different deployments of this lab pick different salts and store them as part of their credential bundle.
 
@@ -120,7 +121,7 @@ The salt is NOT cryptographically secret (it appears in clear inside the rendere
 
 For lab use we keep `evpn-lab-env/env.sh` outside the repo and source it manually. **For production this is NOT acceptable.** Replace the env-file approach with:
 
-- **HashiCorp Vault**: `vault kv get -format=json secret/junos/login` -> shell exports, or use the `hvac` Python client directly inside `deploy.py` and `tasks/enrich.py` to fetch values at task time.
+- **HashiCorp Vault**: `vault kv get -format=json secret/junos/login` -> shell exports, or use the `hvac` Python client directly inside `deploy.py` and `tasks/enrich/auth.py` to fetch values at task time.
 - **AWS Secrets Manager / GCP Secret Manager / Azure Key Vault**: same pattern via the corresponding cloud SDK.
 - **sops + age/PGP** or **git-crypt**: encrypted secrets in the repo, decrypted on demand.
 
@@ -143,7 +144,7 @@ The repo never sees the values; `deploy.py` never reads files; rotation is a vau
 
 | Layer | What it checks | Purpose |
 |-------|----------------|---------|
-| **Regression gate** (`render_full_and_diff`) | Rendered config == Phase 2 baseline (with normalized noise: salted hashes, version line, timestamps) | "Templates produce structurally identical output to the hand-built reference" |
+| **Regression gate** (`render_full_and_diff`) | Rendered config == `phase3-nornir/expected/<host>.conf` golden file (with normalized noise: salted hashes, version line, timestamps) | "Templates produce structurally identical output to the last known-good render" |
 | **On-disk deploy guard** (`assert_safe_to_deploy`) | `build/<host>.conf` contains no sentinel strings (`PLACEHOLDER`, `render-time-only`, `<HASH>`, etc.) AND every `encrypted-password` line matches `^encrypted-password "\$6\$[^$]+\$[A-Za-z0-9./]{86}"$` | "The bytes that will be loaded onto the device contain real, valid credential material" |
 
 Both must pass before NAPALM is called. The regression gate normalizes salted-hash text because the content is opaque noise, not structure - but the deploy guard scans the unmodified rendered file independently.
@@ -160,7 +161,7 @@ cd phase3-nornir
 ~/.venvs/evpn-lab/bin/python -m pytest
 ```
 
-Coverage as of Phase 3 close (60 tests, ~2 sec):
+Coverage as of Phase 3 close (73 tests, ~1.7 sec):
 
 | File | What it pins | Why it matters |
 |------|--------------|----------------|
@@ -169,6 +170,7 @@ Coverage as of Phase 3 close (60 tests, ~2 sec):
 | `test_normalize.py` | Diff normalizer rules + idempotence + non-secret-fields-untouched | Pins the boundary between "regression-diff noise" and "deploy-critical content". Any change to this function MUST come with deploy guard tests proving placeholder hashes still get caught. |
 | `test_enrich_helpers.py` | `_lo0_unit_from_iface_name()`, `_loopback_description()`, `derive_login_hash()` (deterministic, hard-fail on missing env) | Pure mappers easy to break on refactor; the hash derivation is the postmortem fix verified to fail-fast. |
 | `test_transform.py` | `fabric_inventory_transform()` mgmt-IP/platform/credential mutation | Idiomatic Nornir contract; broken transform = unreachable deploy. |
+| `test_lag_system_id.py` | LAG system-id and admin-key formulas (`f"00:00:00:00:{(ae_index + 3):02x}:00"`) parametrized over ae0/1/6/7/12/13/252 with valid 6-octet MAC regex check; explicit "Phase 2 baselines unchanged" guard | The old formula `f"00:00:00:00:0{ae_index + 3}:00"` produced an invalid 3-char octet for ae7+. Fix verified byte-identical for ae0/1 (the only LAGs in Phase 2) so no expected/ regen needed. |
 
 What's intentionally NOT tested at Phase 3:
 - Full template rendering (would need a complete `host.data` fixture; Phase 6 scope)
@@ -186,3 +188,54 @@ single.run(task=napalm_deploy, ...)
 ```
 
 Smoke + manual SSH check between rollout steps. Only after the first device is confirmed do you fan out to the rest.
+
+## Known limitations (Phase 3 scope)
+
+These are deliberate Phase 3 simplifications, not bugs. Each is scoped to a specific later phase where it gets generalized with a real second case driving the design (premature abstraction without a second case is worse than a documented limitation).
+
+### Single-tenant MAC-VRF assumption
+
+`templates/junos/routing_instances.j2` renders a single `EVPN-VXLAN` MAC-VRF instance and indexes `host.tenants[0]` for the route-distinguisher's `tenant_id` and for the `vrf-import` / `vrf-export` policy names. This works because the Phase 3 lab has exactly one tenant (TENANT-1).
+
+The pydantic `HostData.tenants` list shape already supports multiple tenants — the limitation is **in this template only**. Phase 7 (multi-tenant) will replace `host.tenants[0]` with explicit iteration in one of two ways:
+
+- **(a)** one `mac-vrf` instance per tenant (`EVPN-VXLAN-<TENANT>` blocks)
+- **(b)** a single `mac-vrf` instance carrying all tenants' VNIs and importing/exporting every tenant route-target
+
+Both options keep the enrich layer untouched. The choice between (a) and (b) is a fabric-design call best made when a real second tenant exists.
+
+### Single-fabric data derivation
+
+`tasks/enrich/interfaces.py` filters fabric peers via the hardcoded prefix tuple `("dc1-spine", "dc1-leaf")`. Phase 10 (multi-DC) will replace this with a NetBox-driven device-role lookup so DC2's Arista cEOS devices are picked up automatically.
+
+### Phase 2 hand-built configs as clab startup state
+
+`phase2-fabric/configs/*.conf` are loaded into vJunos at clab boot. Phase 3 `--commit` overwrites the running config with the canonical-order rendered output. The two intentionally diverge in ordering and password hash. Long-term (Phase 6 CI), the clab boot config could be replaced with a "Phase 3 render at boot" hook so the lab starts in canonical state, but that's outside Phase 3 scope.
+
+### Lab-scope env-file secrets (not vault-backed)
+
+Documented above in the "Secrets and credential material" section. The vault-backed wrapper pattern is described and ready to drop in; the env file is the deliberate lab-scope choice.
+
+### Same hash for root and admin accounts
+
+`deploy.py` calls `derive_login_hash()` once and assigns the same value to both `junos_root_hash` and `junos_admin_hash`. Both accounts therefore use the same plaintext password (`TestLabPass1` in the lab). The CIS Junos benchmark requires unique credentials per account, so Phase 8 (CIS/PCI-DSS hardening) will split this into `JUNOS_ROOT_PASSWORD` and `JUNOS_ADMIN_PASSWORD` env vars and derive two distinct hashes. The `system.j2` template already takes the two hashes as separate variables — the change is one-line in `deploy.py`.
+
+### N+1 NetBox API queries during enrich
+
+`tasks/enrich/` makes per-object pynetbox REST calls in several loops: per-interface IP fetches, per-cable termination lookups, per-VRF prefix fetches, etc. For 4 fabric devices this is ~50 calls per host, ~2 sec total. For Phase 10 (8 devices, +DC2) it's still acceptable. Beyond that it becomes a bottleneck.
+
+The Phase 10 plan documents the GraphQL refactor (one query per device, ~10x faster) as the structured fix. Until then, the per-host enrich time scales linearly and may add seconds in CI runs against larger fabrics.
+
+### No retry/timeout on pynetbox calls
+
+If NetBox is briefly unreachable during an enrich run, the entire Nornir task fails immediately. No retry loop, no configurable timeout. Acceptable for the lab where NetBox is on a local VM. **Phase 6 (CI) will need this** — flaky CI runs against a remote NetBox would be hard to debug. The fix is a `requests.Session` with an `HTTPAdapter` retry policy mounted onto `nb.http_session`. ~10 line change, defer to Phase 6 alongside vcrpy cassettes.
+
+### No template integration test (Jinja semantics)
+
+The `tests/` suite covers helpers, normalizer, stanza extraction, deploy guard, transform, and the LAG system-id formula — but does NOT render full templates against fixture data. Right now templates are validated only by the golden-file byte-diff against `expected/`, which catches structural drift but not semantic bugs (e.g. a template that emits valid Junos syntax but the wrong route-target).
+
+**Phase 4 (Batfish)** is the structured semantic-validation layer. As a cheap intermediate step, **Phase 6** could add one fixture-based test per top-level template that asserts a few key stanzas appear in the rendered output — that would catch the "wrong RT for a new tenant" class of bug without needing NetBox or Batfish.
+
+### `vpn-apply-export` on the spine OVERLAY group is intentionally absent
+
+External reviewers occasionally flag this as missing. It's not a bug — see [phase2-fabric/DESIGN.md "vpn-apply-export on the spine OVERLAY group - rejected"](../phase2-fabric/DESIGN.md). Short version: `vpn-apply-export` is an L3VPN-era knob that is a no-op on `family evpn signaling` on a route reflector (the spine has no routing-instances and no `vrf-export` policy to apply). The legitimate underlying concern (RR sending traffic the recipient discards) is real at multi-tenant scale; the correct mechanism is BGP Route Target Constrain (RFC 4684 / Junos `family route-target`), which is overkill for 1 tenant on 2 leaves and adds an address family the smoke suite would have to validate. Revisit when the lab grows past 4 tenants on 4+ leaves.

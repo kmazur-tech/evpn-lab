@@ -8,9 +8,11 @@ render. Templates see plain dicts via .model_dump().
 """
 
 import os
+from pathlib import Path
 from typing import List
 
 import pynetbox
+import yaml
 from nornir.core.task import Result, Task
 
 from .bgp import collect_overlay_neighbors, collect_underlay_neighbors
@@ -18,6 +20,14 @@ from .interfaces import collect_interfaces
 from .loopbacks import collect_loopbacks
 from .models import HostData
 from .tenants import collect_mac_vrf, collect_tenants
+
+
+# vars/junos_defaults.yml is the single source of truth for fabric-
+# wide constants (BGP timers, overlay ASN, MTU caps, etc). Loaded
+# once at module import. Both Python collectors AND Jinja templates
+# read from this file - no value lives in two places.
+_DEFAULTS_PATH = Path(__file__).resolve().parents[2] / "vars" / "junos_defaults.yml"
+_DEFAULTS = yaml.safe_load(_DEFAULTS_PATH.read_text(encoding="utf-8"))
 
 
 def enrich_from_netbox(task: Task) -> Result:
@@ -59,7 +69,8 @@ def enrich_from_netbox(task: Task) -> Result:
     overlay_neighbors = collect_overlay_neighbors(nb, device, role_slug)
 
     # Tenants + MAC-VRF data: leaves only. Spines have neither.
-    tenants = collect_tenants(nb) if role_slug == "leaf" else []
+    overlay_asn = _DEFAULTS["bgp"]["overlay_asn"]
+    tenants = collect_tenants(nb, overlay_asn) if role_slug == "leaf" else []
     mac_vrf = (collect_mac_vrf(nb, access_ports, lags)
                if role_slug == "leaf"
                else {"mac_vrf_interfaces": [], "vlans_in_mac_vrf": [],
