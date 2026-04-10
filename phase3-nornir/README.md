@@ -16,9 +16,28 @@ NetBox (SoT)
     -> phase2-fabric/smoke-tests.sh  (run separately, wired into CI in Phase 6)
 ```
 
-## Success criterion
+## Success criterion - the regression gate authority
 
-Rendered configs match `../phase2-fabric/configs/*.conf` byte-for-byte (ignoring `version`, `## Last changed`, and salted `encrypted-password` text). Any diff is either a template bug or a NetBox modeling gap and must be resolved before deploy.
+Rendered configs match **`phase3-nornir/expected/*.conf`** byte-for-byte (ignoring `version`, `## Last changed`, and salted `encrypted-password` text). Any diff is either a template bug or a NetBox modeling gap and must be resolved before deploy.
+
+`phase3-nornir/expected/` is the **renderer's contract with itself**: a snapshot of the last known-good output of `main.j2` for each device, committed to git. When a template changes, the workflow is:
+
+```
+python deploy.py --full       # render into build/
+cp build/*.conf expected/     # refresh golden files
+git add expected/ templates/  # commit template + baseline together
+```
+
+This is the **golden-file testing pattern** ([Nautobot Golden Config](https://docs.nautobot.com/projects/golden-config/en/latest/) uses the same idea). It catches accidental template changes between commits without coupling Phase 3 to any specific historic config.
+
+### What about `phase2-fabric/configs/*.conf`?
+
+`phase2-fabric/configs/*.conf` are the **clab startup configs** Phase 2 hand-wrote. They are loaded into vJunos at boot when `containerlab deploy` runs, then `python deploy.py --commit` overwrites the running config with the canonical-order rendered output. They are **not** the Phase 3 regression authority and do NOT need to match `expected/`. The two diverge intentionally:
+
+- Phase 2 baselines have hand-written ordering and per-device random-salt password hashes (one-shot Junos-generated)
+- Phase 3 expected/ has Junos canonical ordering and the deterministic `$6$evpnlab1$` hash from env
+
+**Semantic validation** of intent (does this BGP session converge? are these prefixes reachable? do these ACLs block control plane?) is NOT done by the byte-diff regression gate — that's **Phase 4 (Batfish)** territory. The byte-diff catches structural template drift; Batfish will catch semantic intent drift.
 
 ## Layout
 
@@ -29,8 +48,25 @@ phase3-nornir/
                              BGP timers, fxp0 lab quirk). NEVER any auth-adjacent
                              material - that lives in env (see Secrets section).
   tasks/
-    enrich.py                pynetbox -> host.data hydration; derives the
-                             deterministic SHA-512 login hash from env
+    enrich/                  Per-domain NetBox enrichment, package layout:
+      __init__.py              Re-exports public API (enrich_from_netbox,
+                               derive_login_hash, helpers used by tests)
+      models.py                Pydantic models for HostData and every
+                               sub-shape (FabricLink, Lag, Irb, Tenant,
+                               LoopbackUnit, BgpUnderlayNeighbor, ...).
+                               Single validation point catches NetBox
+                               schema drift before templates render.
+      helpers.py               Pure helpers (lo0 unit parser, lo0
+                               description mapper)
+      auth.py                  derive_login_hash (env -> $6$ via passlib)
+      interfaces.py            Fabric P2P + access + LAG members + ESI-LAG
+                               parents + IRB collection
+      loopbacks.py             lo0.* unit collection
+      bgp.py                   Underlay + overlay neighbor derivation
+      tenants.py               Tenant VRFs + MAC-VRF VLAN bindings
+      main.py                  Nornir task entry point - calls each
+                               collector, validates HostData, dumps to
+                               task.host as plain dicts
     deploy.py                NAPALM napalm_configure (load_replace_candidate)
   templates/junos/
     main.j2                  Top-level: includes all partials in Junos order

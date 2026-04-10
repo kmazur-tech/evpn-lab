@@ -13,3 +13,8 @@ pyyaml>=6.0
 # tasks/enrich.py. Drop-in: passlib.hash.sha512_crypt with rounds=5000
 # produces byte-identical output to glibc crypt() for $6$ prefixes.
 passlib>=1.7
+# pydantic v2 validates the enriched host data shapes (tasks/enrich/
+# models.py). Catches NetBox schema drift and collector bugs at
+# enrich time with a clear ValidationError, before templates render
+# or worse - before a malformed config reaches a device.
+pydantic>=2.0
