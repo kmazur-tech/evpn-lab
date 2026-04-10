@@ -8,3 +8,8 @@ napalm>=5.0
 junos-eznc>=2.7
 jinja2>=3.1
 pyyaml>=6.0
+# passlib replaces stdlib `crypt` (deprecated in Python 3.13, removed
+# in 3.14) for the deterministic SHA-512 login hash derivation in
+# tasks/enrich.py. Drop-in: passlib.hash.sha512_crypt with rounds=5000
+# produces byte-identical output to glibc crypt() for $6$ prefixes.
+passlib>=1.7

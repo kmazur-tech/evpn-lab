@@ -158,25 +158,44 @@ Result: automated drift detection between NetBox intent and live fabric state, p
 
 ---
 
-## Phase 6 - GitHub Actions CI/CD Pipeline
+## Phase 6 - GitHub Actions CI/CD Pipeline + Test Framework Build-out
 
-Connecting all components into an automated pipeline triggered on every PUSH/PR.
+Connecting all components into an automated pipeline triggered on every PUSH/PR, and extending the Phase 3 unit test foundation into a full integration test suite.
 
-Scope:
+### Test framework scope (extends Phase 3 unit tests)
+
+Phase 3 landed `phase3-nornir/tests/` (60 pure-function unit tests, ~2 sec, no external dependencies). Phase 6 extends this with the integration tests that need either mocked external systems or a running lab:
+
+- **Full template rendering tests**: golden-file tests that render `main.j2` against a complete fixture `host.data` for each device role (spine, leaf) and assert byte-equality with checked-in expected output. Catches template regressions without needing NetBox or devices.
+- **`enrich_from_netbox()` integration tests**: use `vcrpy` (or `pytest-recording`) to record one real pynetbox session against a known-good NetBox snapshot, then replay it in CI. Catches NetBox schema/model drift and pynetbox query bugs without needing a running NetBox in CI.
+- **NAPALM task tests**: mock the NAPALM Junos driver (`napalm.base.test.double.MockDevice` or pure `unittest.mock`) so `napalm_deploy`, `napalm_get`, `liveness_check`, and the two-stage commit-confirmed flow can be exercised without devices. Pin the `revert_in=300` contract and the confirm-after-liveness ordering as tests.
+- **`pytest-nornir` runner**: wire Nornir runs as pytest fixtures so each device becomes a parametrized test case in CI output (per-device PASS/FAIL row in the GitHub Actions summary).
+- **Coverage reporting**: `pytest --cov=phase3-nornir --cov-report=html --cov-fail-under=80` as a CI gate. The Phase 3 unit tests are at ~roughly that level for the safety-critical surfaces; the integration tests bring it up across the whole module.
+
+### CI/CD pipeline scope
+
 - Workflow `.github/workflows/fabric-ci.yml`
 - Pipeline stages:
-  1. **Lint** - yamllint, flake8/ruff on Python, Jinja2 template validation
-  2. **Render** - Nornir fetches intent from NetBox -> generates configurations
-  3. **Batfish Validate** - offline analysis of generated configs + differential analysis
-  4. **Batfish Results -> PR Comment** - bot posts to PR what will change (new BGP sessions, modified ACLs, affected prefixes)
-  5. **Deploy** - containerlab up + Nornir deploy (optional, `workflow_dispatch` on self-hosted runner)
-  6. **Smoke gate** - run `phase2-fabric/smoke-tests.sh` (~2 min). Hard fail = block merge.
-  7. **Suzieq drift check** - NetBox-vs-state diff (Phase 5 Python harness). Soft fail = warn.
-  8. **Teardown** - containerlab destroy
-- Stages 5-7 may live in a separate workflow (spinning up the lab in CI is resource-intensive)
+  1. **Lint** - yamllint, ruff on Python, Jinja2 template validation
+  2. **Unit tests** - `pytest phase3-nornir/tests/` (the 60 pure-function tests from Phase 3 + the Phase 6 mocked-integration ones). Hard fail = block merge.
+  3. **Render** - Nornir fetches intent from NetBox -> generates configurations
+  4. **Regression diff** - `deploy.py --check` against `phase3-nornir/expected/`. Hard fail = block merge.
+  5. **On-disk deploy guard** - `assert_safe_to_deploy()` on every rendered config. Hard fail = block merge.
+  6. **Batfish Validate** - offline analysis of generated configs + differential analysis
+  7. **Batfish Results -> PR Comment** - bot posts to PR what will change (new BGP sessions, modified ACLs, affected prefixes)
+  8. **Deploy** - containerlab up + Nornir `--commit` (optional, `workflow_dispatch` on **self-hosted runner ON the lab server** - smoke needs Docker local, see [reference_smoke_runs_on_lab_server](../../.claude/projects/c--Users-tasior-Projects-evpn-lab/memory/reference_smoke_runs_on_lab_server.md))
+  9. **Smoke gate** - run `phase2-fabric/smoke-tests.sh` from the same self-hosted runner (~2 min). Hard fail = block merge.
+  10. **Commit-confirm second stage** - if smoke passes, the workflow ALSO calls `napalm_confirm_commit` to clear the rollback timer; if smoke fails or the stage doesn't run, Junos auto-rolls back at the `revert_in` deadline. This is the architectural fail-safe that complements the pre-deploy gates.
+  11. **Suzieq drift check** - NetBox-vs-state diff (Phase 5 Python harness). Soft fail = warn.
+  12. **Teardown** - containerlab destroy (only if the workflow stood it up; do not destroy a long-running dev lab)
+- Stages 8-12 live in a separate `fabric-deploy.yml` workflow (spinning up the lab in CI is resource-intensive; PRs run lint/unit/render/diff/guard/Batfish only)
 - Pipeline status badge in README
 
-Result: every change to NetBox/templates is automatically validated. PRs include an impact analysis report.
+### Secret material in CI
+
+Phase 3 reads `JUNOS_LOGIN_PASSWORD`, `JUNOS_LOGIN_SALT`, `JUNOS_SSH_USER`, `JUNOS_SSH_PASSWORD`, `NETBOX_TOKEN` from a shell env file outside the repo. CI must inject the same env vars from GitHub Actions encrypted secrets (or, for production, a vault-backed entry script — see `phase3-nornir/README.md` "Secrets and credential material" section for the vault wrapper pattern). Never commit secrets to the repo, never pass them as workflow inputs.
+
+Result: every change to NetBox/templates/code is automatically validated through unit -> render -> diff -> guard -> Batfish -> (optional) deploy + smoke. PRs include an impact analysis report. Failed deploys self-correct via commit-confirmed auto-rollback. The Phase 3 test foundation extends into a full integration suite mocked against vcrpy/double drivers so CI runs in seconds without external dependencies.
 
 ---
 
@@ -266,7 +285,16 @@ Scope:
 - Tests: L2 stretched traffic between DCs, L3 inter-DC traffic, border leaf failover
 - DC2 hardening - same controls from Phase 8, different templates (EOS)
 
-Result: multi-vendor, multi-DC EVPN-VXLAN with NetBox as single source of truth, full CI/CD pipeline, and end-to-end validation.
+### Scale-driven refactors (deferred from Phase 3 to here, where they actually matter)
+
+Phase 3's `enrich_from_netbox()` makes ~50 separate `pynetbox` REST calls per host. Fine for 4 devices (~2-3 sec/host), painful at 8+ devices and unsustainable at 40+. Phase 10 doubles the device count with DC2 and is the natural point to refactor:
+
+- **Switch enrich data fetching from per-object pynetbox REST to a single GraphQL query per host** (Nautobot Golden Config does this; NetBox 4.x has a GraphQL API). One round-trip per device instead of N+M. Drops enrich time by ~10x and makes per-VLAN/per-prefix iterations cheap.
+- **Per-vendor enrich helpers**: `tasks/enrich_junos.py` and `tasks/enrich_eos.py` for vendor-specific data shaping (e.g. ESI auto-derive vs ESI explicit, VXLAN VNI binding syntax differences). Shared `tasks/enrich_common.py` for platform-neutral data.
+- **Per-vendor template trees**: `templates/junos/` (already exists) + `templates/eos/`. The `STANZAS` table and rendering loop become role+vendor parametrized.
+- **Per-vendor expected/ baselines**: `phase3-nornir/expected/junos/` + `phase3-nornir/expected/eos/`.
+
+Result: multi-vendor, multi-DC EVPN-VXLAN with NetBox as single source of truth, full CI/CD pipeline, end-to-end validation, and an enrich path that scales to dozens of devices without becoming a per-host bottleneck.
 
 ---
 
