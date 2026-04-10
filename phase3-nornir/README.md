@@ -114,6 +114,32 @@ Both must pass before NAPALM is called. The regression gate normalizes salted-ha
 
 If you add a new template that emits a secret field, you MUST extend the guard's shape regex (or sentinel list) to validate it. Trusting `compare_config` alone for secret fields is the same trap that locked us out before. See [feedback_never_normalize_secrets_into_deploy](../../../.claude/projects/c--Users-tasior-Projects-evpn-lab/memory/feedback_never_normalize_secrets_into_deploy.md) for the incident postmortem.
 
+## Tests
+
+Pure-function unit tests under `tests/`. No NetBox, no devices, no env vars (each test that needs env uses `monkeypatch`). Run from WSL2:
+
+```
+cd phase3-nornir
+~/.venvs/evpn-lab/bin/pip install -r requirements-dev.txt   # one-time
+~/.venvs/evpn-lab/bin/python -m pytest
+```
+
+Coverage as of Phase 3 close (60 tests, ~2 sec):
+
+| File | What it pins | Why it matters |
+|------|--------------|----------------|
+| `test_deploy_guard.py` | `assert_safe_to_deploy()` rejects every sentinel + every malformed hash shape (placeholder, truncated, cleartext, MD5, empty); accepts a clean config | This is the layer whose absence caused the credential lockout. Every regression here is a deploy that could lock out the lab. |
+| `test_extract_stanza.py` | Brace-balanced Junos stanza extraction: top-level, nested, indented, missing, substring-no-match, first-match | Used by the regression gate for every per-stanza diff. Bugs here = false PASS or false FAIL. Documents the known limitation of `}` inside string literals. |
+| `test_normalize.py` | Diff normalizer rules + idempotence + non-secret-fields-untouched | Pins the boundary between "regression-diff noise" and "deploy-critical content". Any change to this function MUST come with deploy guard tests proving placeholder hashes still get caught. |
+| `test_enrich_helpers.py` | `_lo0_unit_from_iface_name()`, `_loopback_description()`, `derive_login_hash()` (deterministic, hard-fail on missing env) | Pure mappers easy to break on refactor; the hash derivation is the postmortem fix verified to fail-fast. |
+| `test_transform.py` | `fabric_inventory_transform()` mgmt-IP/platform/credential mutation | Idiomatic Nornir contract; broken transform = unreachable deploy. |
+
+What's intentionally NOT tested at Phase 3:
+- Full template rendering (would need a complete `host.data` fixture; Phase 6 scope)
+- `enrich_from_netbox()` end-to-end (needs NetBox or vcrpy cassettes; Phase 6)
+- NAPALM tasks (needs devices or mocked NAPALM; Phase 6)
+- Live deploy / smoke (the existing manual deploy + lab-server smoke covers this)
+
 ## Phased rollout
 
 For a first commit on a fresh template (or after a recovery), commit one device at a time and verify health between each. The Nornir `nr.filter()` API supports this:
