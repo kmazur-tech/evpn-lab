@@ -64,14 +64,15 @@ An automated EVPN-VXLAN data center fabric built with Infrastructure as Code pri
 |-------|-------------|--------|
 | 1 | [NetBox as Source of Truth](phase1-netbox/) | Done |
 | 2 | [EVPN+VXLAN+ESI-LAG Fabric](phase2-fabric/) | Done |
-| 3 | Nornir IaC Framework | Planned |
+| 3 | [Nornir IaC Framework](phase3-nornir/) | Done |
 | 4 | Batfish Pre-Deployment Validation | Planned |
 | 5 | Suzieq Post-Deployment Validation | Planned |
 | 6 | GitHub Actions CI/CD Pipeline | Planned |
-| 7 | ECMP + Anycast Gateway | Planned |
+| 7 | Forwarding Scale + Convergence Tuning | Planned |
 | 8 | CIS/PCI-DSS Hardening | Planned |
 | 9 | gNMI Streaming Telemetry | Planned |
 | 10 | Multi-DC DCI (Arista cEOS) | Planned |
+| 11 | Controlled Lifecycle Operations | Planned |
 
 See [PROJECT_PLAN.md](PROJECT_PLAN.md) for detailed scope of each phase.
 
@@ -97,7 +98,7 @@ python phase1-netbox/populate.py
 ```
 evpn-lab/
 +-- README.md                 # This file
-+-- PROJECT_PLAN.md            # 10-phase roadmap
++-- PROJECT_PLAN.md            # 11-phase roadmap
 +-- .env.example               # Environment variable template
 +-- phase1-netbox/
     +-- README.md              # Phase 1 design decisions and docs

@@ -298,6 +298,105 @@ Result: multi-vendor, multi-DC EVPN-VXLAN with NetBox as single source of truth,
 
 ---
 
+## Phase 11 - Controlled Lifecycle Operations
+
+Closing the operational gap between Phase 3 ("from zero to production") and a real day-2 lifecycle. Phase 3 demonstrated NetBox-as-SoT for **adding** infrastructure; Phase 11 adds **explicitly limited, safe** patterns for **modifying** and **removing** it.
+
+### Why this is deliberately limited
+
+A full desired-state reconciler (yaml + computed CREATE/UPDATE/DELETE plan against every object class in NetBox, with full dependency ordering, opt-in destructive flags, journal integration, rollback, etc.) is a real engineering investment. Production network orchestrators do this; for a showcase lab it would be a 10x scope explosion that brings 10x the test surface, edge cases, and rollback complexity.
+
+Phase 11 takes a different bet: **three explicit tiers of action, narrow allowlists, and never any blind cleanup.** The lab demonstrates safe day-2 operations without pretending to be a full reconciler. The honest framing (controlled, limited, predictable) is better showcase material than the dishonest framing (looks like full CRUD but breaks under edge cases).
+
+### Three tiers of operation
+
+#### Tier 1: Add / update (non-destructive)
+
+The Phase 3 `populate.py` path, **explicitly named** as the non-destructive mode. No new entry point — `python populate.py` continues to work as today — but the README and the script's banner make it explicit that this mode never deletes anything and only updates the small set of fields where Phase 1 + Phase 3 already added per-field patches (site custom_fields, VLAN names, lo0 IP VRF assignment).
+
+If you need to update a field outside that allowlist, you have two documented paths:
+- Edit in NetBox UI (faster, auditable via NetBox journal)
+- Add the field to the populate.py update allowlist via PR (slower, version-controlled, applies on every run)
+
+This tier is explicit and bounded. No surprises.
+
+#### Tier 2: Prune selected
+
+A new entry point: `python phase11-lifecycle/prune.py <class>`. Removes objects from a **small enumerated allowlist of managed object classes** that the project explicitly owns. Anything outside the allowlist is rejected with a clear "not supported" error.
+
+| Allowlisted class | Why safe to prune | Example use case |
+|---|---|---|
+| Host-facing access port `untagged_vlan` | Reverses Phase 3 prep step 14b | Unbind a VLAN from a port without removing the interface |
+| LAG member binding (`interface.lag` field) | Reverses Phase 3 prep step 14a | Re-home a port from one ae to another |
+| IRB unit (`irb.<vid>` virtual interface) | Reverses Phase 3 prep step 14c | Retire a VLAN's L3 gateway |
+| BGP neighbor (when modeled as NetBox object) | Reverses Phase 3 enrich derivation | Drop a stale peer from a fabric link |
+| L2VPN VLAN termination | Reverses Phase 3 prep step 14e | Remove a VLAN from a tenant's MAC-VRF |
+
+Anything NOT in this list — devices, cables, prefixes, VRFs, sites, custom fields, anycast gateway IPs, lo0 interfaces — is **explicitly out of scope for prune** and requires Tier 3 or manual NetBox UI action.
+
+How prune works:
+- **Diff-driven**: takes a yaml stanza (or explicit object IDs) and computes "objects in NetBox of this class that are not in yaml"
+- **`--plan` mandatory by default**: prints the objects it would remove, prints the dependent objects that would be affected, and exits
+- **`--apply` requires interactive confirmation OR `--yes`**
+- **Each prune action writes a NetBox journal entry** for audit
+- **Hard-fail if any to-be-pruned object has a dependency the prune doesn't know about** (e.g. an IRB still has IPs assigned, or an L2VPN termination is the last termination on a non-empty L2VPN)
+- **Never combined with a device push in one step**: prune mutates NetBox only. The operator runs `python phase3-nornir/deploy.py --commit` separately as the explicit second step. The two-step model means you always have a chance to review the rendered config diff after the NetBox change before anything reaches a device.
+
+#### Tier 3: Decommission workflow
+
+A separate path for removing a **whole device** or a **whole fabric link** (cable + the two interface assignments). Not run from `populate.py` or `prune.py`. New script: `phase11-lifecycle/decommission.py`.
+
+Steps for device decommission:
+1. **Dependency scan**: walk every NetBox object that references the target device — interfaces, IPs, cables, BGP sessions on peer devices, L2VPN terminations, journal entries. Produce a structured tree.
+2. **Impact preview**: show which Phase 3 templates and which Phase 2 smoke checks would change/fail if this device disappears. Reuses the Phase 3 enrich path against the post-decommission yaml.
+3. **Plan output**: for every NetBox object that would be deleted, show "delete X because Y references Z". Like a Terraform destroy plan but read-only against the running fabric.
+4. **Explicit confirmation**: typed device name, not just `--yes`.
+5. **Pre-action snapshot**: one final pre-decommission backup of every affected device's running config (reuses `tasks/backup.py` from Phase 3).
+6. **Application**: device removed from NetBox; cables and interface IPs cleaned up in dependency order.
+7. **Re-run Phase 3 deploy**: rendered configs on remaining devices get the BGP-peer-gone delta; commit-confirmed two-stage flow handles the actual change.
+8. **Smoke gate**: re-run smoke from the lab server.
+
+Same shape for link decommission (cable + endpoint cleanup) with a smaller dependency scan.
+
+### Out of scope (deliberately)
+
+These are the things a full reconciler would do that Phase 11 explicitly does NOT:
+
+- **No blind mass prune** ("remove from NetBox everything Phase 3 enrich didn't see"). Every prune is allowlist-class scoped and operator-invoked.
+- **No mixed atomic actions**. Tier 2 / Tier 3 mutations to NetBox are NEVER combined with destructive push to devices in one step. Plan in NetBox first → review → apply to NetBox → run Phase 3 deploy as a separate explicit invocation.
+- **No automatic cable / link delete without dependency check**.
+- **No automatic device delete without typed-name confirmation**.
+- **No reverse-direction reconciliation** (NetBox UI edits becoming yaml PRs). Out of scope; possible Phase 12+ if it ever becomes relevant.
+- **No cleanup of historic objects** (old prefixes, old custom fields, decommissioned ASNs). These either stay forever (NetBox is fine with that) or are removed manually by an operator who can justify the action in a journal entry.
+
+### Tests
+
+`phase11-lifecycle/tests/`:
+- pytest with mocked pynetbox (mirrors Phase 3 test patterns)
+- One test per managed-class prune: empty plan, single object, dependency-blocked
+- Decommission dependency scan: golden file output for "what does removing dc1-leaf2 affect"
+- Idempotency: running `prune --plan` twice produces identical output
+- Negative tests: trying to prune a class not in the allowlist returns a clear "not supported" error, not a partial action
+- Negative tests: device decommission with typo'd confirmation name aborts, no NetBox mutation
+
+### CI integration (Phase 6 reference)
+
+Phase 6 CI gains one optional stage:
+- `lifecycle-plan` runs `prune.py --plan` and `decommission.py --plan` on PRs that touch the `phase11-lifecycle/` paths. Posts the plan as a PR comment. Never auto-applies.
+
+The Phase 6 deploy pipeline does NOT auto-trigger on lifecycle changes — they're explicit operator invocations, not part of the PR-merge-deploys-everything loop.
+
+### Result
+
+`python phase3-nornir/deploy.py` continues to mean "make the fabric match NetBox intent" for the additive case. Phase 11 adds two more verbs to the project's vocabulary:
+
+- `prune` — narrow, allowlisted, planned, never blind, never combined with device push
+- `decommission` — single device or link, dependency-scanned, typed confirmation, snapshot-then-apply
+
+Both are deliberately bounded so the showcase story is **"controlled day-2 operations"** not **"full reconciler with hidden edge cases"**. The lab demonstrates that production lifecycle work is broken into explicit, reviewable steps — not magic.
+
+---
+
 ## Repository Structure (target)
 
 ```
