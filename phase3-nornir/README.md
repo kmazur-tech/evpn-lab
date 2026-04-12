@@ -140,16 +140,18 @@ The repo never sees the values; `deploy.py` never reads files; rotation is a vau
 
 ## Safety - the two-layer guard
 
-`deploy.py` has two independent safety layers because **Junos `compare_config` masks SECRET-DATA fields** (encrypted passwords, keys, certificates). A bad value in a secret field will pass NAPALM dry-run with "no diff" - we discovered this the hard way after a placeholder hash got committed to all 4 devices and locked everyone out.
+`deploy.py` has two independent safety layers. The historical reason for the two-layer model was a credential lockout incident: a render bug produced placeholder hashes, deploy.py committed them to all 4 devices, SSH locked everyone out. The on-disk guard exists to make sure that class of bug never reaches NAPALM in the first place.
 
 | Layer | What it checks | Purpose |
 |-------|----------------|---------|
 | **Regression gate** (`render_full_and_diff`) | Rendered config == `phase3-nornir/expected/<host>.conf` golden file (with normalized noise: salted hashes, version line, timestamps) | "Templates produce structurally identical output to the last known-good render" |
-| **On-disk deploy guard** (`assert_safe_to_deploy`) | `build/<host>.conf` contains no sentinel strings (`PLACEHOLDER`, `render-time-only`, `<HASH>`, etc.) AND every `encrypted-password` line matches `^encrypted-password "\$6\$[^$]+\$[A-Za-z0-9./]{86}"$` | "The bytes that will be loaded onto the device contain real, valid credential material" |
+| **On-disk deploy guard** (`assert_safe_to_deploy`) | `build/<host>.conf` contains no sentinel strings (`PLACEHOLDER`, `render-time-only`, `<HASH>`, `TODO`, `REPLACE_ME`) AND every `encrypted-password` line matches `^encrypted-password "\$6\$[^$]+\$[A-Za-z0-9./]{86}"$` | "The bytes that will be loaded onto the device contain real, valid credential material" |
 
-Both must pass before NAPALM is called. The regression gate normalizes salted-hash text because the content is opaque noise, not structure - but the deploy guard scans the unmodified rendered file independently.
+Both must pass before NAPALM is called. The regression gate normalizes salted-hash text because the content is opaque noise; the deploy guard scans the unmodified rendered file independently.
 
-If you add a new template that emits a secret field, you MUST extend the guard's shape regex (or sentinel list) to validate it. Trusting `compare_config` alone for secret fields is the same trap that locked us out before. See [feedback_never_normalize_secrets_into_deploy](../../../.claude/projects/c--Users-tasior-Projects-evpn-lab/memory/feedback_never_normalize_secrets_into_deploy.md) for the incident postmortem.
+NAPALM `compare_config` is honest: it shows full encrypted-password changes in its diff output (verified empirically against the live fabric - both old and new hash values appear in the diff stanza for `[edit system root-authentication]`). The reason placeholder values would be dangerous is NOT that NAPALM hides them, but that NAPALM faithfully commits whatever bytes the renderer hands it. The on-disk guard's job is to make sure those bytes are valid before NAPALM ever sees them.
+
+If you add a new template that emits a secret field, you MUST extend the guard's shape regex (or sentinel list) to validate it. See [feedback_never_normalize_secrets_into_deploy](../../../.claude/projects/c--Users-tasior-Projects-evpn-lab/memory/feedback_never_normalize_secrets_into_deploy.md) for the incident postmortem and the corrected technical narrative.
 
 ## Tests
 
@@ -161,7 +163,7 @@ cd phase3-nornir
 ~/.venvs/evpn-lab/bin/python -m pytest
 ```
 
-Coverage as of Phase 3 close (73 tests, ~1.7 sec):
+Coverage as of Phase 3 close (79 tests, ~1.8 sec):
 
 | File | What it pins | Why it matters |
 |------|--------------|----------------|
@@ -171,6 +173,7 @@ Coverage as of Phase 3 close (73 tests, ~1.7 sec):
 | `test_enrich_helpers.py` | `_lo0_unit_from_iface_name()`, `_loopback_description()`, `derive_login_hash()` (deterministic, hard-fail on missing env) | Pure mappers easy to break on refactor; the hash derivation is the postmortem fix verified to fail-fast. |
 | `test_transform.py` | `fabric_inventory_transform()` mgmt-IP/platform/credential mutation | Idiomatic Nornir contract; broken transform = unreachable deploy. |
 | `test_lag_system_id.py` | LAG system-id and admin-key formulas (`f"00:00:00:00:{(ae_index + 3):02x}:00"`) parametrized over ae0/1/6/7/12/13/252 with valid 6-octet MAC regex check; explicit "Phase 2 baselines unchanged" guard | The old formula `f"00:00:00:00:0{ae_index + 3}:00"` produced an invalid 3-char octet for ae7+. Fix verified byte-identical for ae0/1 (the only LAGs in Phase 2) so no expected/ regen needed. |
+| `test_napalm_diff_contract.py` | `napalm_deploy()` correctly reads `out[0].diff` (not `.result`) from the wrapped napalm_configure call; passes `revert_in=300` only when committing; uses `replace=True`; loads config bytes from `build/<host>.conf` not memory | Pins the contract that was broken by the original `out.result or ""` bug. Empty diffs print "no diff", real diffs print the diff text. Verified to FAIL 6/6 when the bug is reintroduced. |
 
 What's intentionally NOT tested at Phase 3:
 - Full template rendering (would need a complete `host.data` fixture; Phase 6 scope)

@@ -79,31 +79,29 @@ STANZAS = [
 ]
 
 
-# Diff normalization. Strips fields that are either device-emitted
-# artifacts the templates can't reproduce (`## Last changed`, `version`)
-# or salt-randomized opaque blobs (`encrypted-password`).
+# Diff normalization. Strips device-emitted artifacts the templates
+# can't reproduce: `## Last changed` (device timestamp), `version`
+# (device-emitted), and `encrypted-password "..."` content (which uses
+# the random salt the device generated when it first hashed the
+# plaintext, vs our deterministic $6$evpnlab1$ render-time hash).
 #
-# The regression gate's job is "templates produce structurally identical
-# output to baselines". The text content of a SHA-512 crypt blob is
-# noise (different salts of the same plaintext yield different bytes),
-# not structure. Comparing encrypted-password text adds zero signal -
-# any drift there is expected and uninformative.
+# This normalization is for the REGRESSION DIFF only. It does NOT
+# touch what gets written to disk. Templates render real values; the
+# golden-file comparison just ignores the salt content because the
+# bytes are noise from a structural-equivalence perspective.
 #
-# CRITICAL: This normalization is for the REGRESSION DIFF only. It does
-# NOT touch what gets written to disk. The deploy path independently
-# scans the rendered file with assert_safe_to_deploy() before any
-# NAPALM call to verify every encrypted-password line is a real,
-# valid $6$ crypt hash and contains no placeholder/sentinel strings.
-# That on-disk guard is the actual safety net for SECRET-DATA fields.
-#
-# History: an earlier version had this normalization but NO on-disk
-# guard. A bug rendered placeholder hashes to disk, the regression
-# gate masked them on both sides and reported PASS, NAPALM
-# `compare_config` masked SECRET-DATA fields and reported "no diff",
-# and --commit then loaded the placeholder onto all 4 devices,
-# causing a lab-wide credential lockout. The two-layer design here
-# (normalize the gate + grep the file independently) prevents recurrence.
-# See feedback_never_normalize_secrets_into_deploy.md.
+# History: an earlier version of deploy.py had a bug where the
+# operator-visible "diff" output read `out.result` from the
+# napalm_configure return value, but napalm_configure returns the
+# diff in `.diff`, not `.result`. So `out.result` was always None and
+# `out.result or ""` always became empty - every commit printed "no
+# diff" regardless of what NAPALM was actually doing internally.
+# Combined with a separate render-time bug that produced placeholder
+# hashes, the lab got the placeholder committed onto all 4 devices
+# and SSH locked everyone out. The on-disk deploy guard
+# (assert_safe_to_deploy below) is the postmortem fix that prevents
+# the bad-bytes class of bug at the rendered-file layer, BEFORE any
+# NAPALM call. See feedback_never_normalize_secrets_into_deploy.md.
 NORMALIZE_RULES = [
     (re.compile(r'^## Last changed:.*\n', re.MULTILINE), ''),
     (re.compile(r'^version [^;]+;\n', re.MULTILINE), ''),
@@ -138,10 +136,14 @@ HASH_SHAPE_RE = re.compile(r'encrypted-password "(\$6\$[^$]+\$[A-Za-z0-9./]{86})
 def assert_safe_to_deploy(rendered: str, host_name: str) -> None:
     """Independent grep guard. Runs BEFORE any NAPALM call.
 
-    Junos `compare_config` masks SECRET-DATA fields (encrypted-password,
-    keys, certs) so a placeholder hash will NOT show up in NAPALM diff
-    output. The only reliable check is to scan the on-disk rendered
-    file ourselves before handing it to NAPALM.
+    Catches placeholder/sentinel strings and malformed encrypted-password
+    shapes at the rendered-file layer, before the bytes ever reach
+    NAPALM. NAPALM `compare_config` is honest about secret fields - it
+    DOES show encrypted-password changes in its diff output - but by
+    the time NAPALM sees the candidate, the bad bytes have already
+    been written to disk by the renderer. The point of this guard is
+    to fail fast at render time so a deploy never starts with bad
+    bytes in the first place. See feedback_never_normalize_secrets_into_deploy.md.
     """
     for sentinel in DEPLOY_SENTINELS:
         if sentinel in rendered:
@@ -379,10 +381,12 @@ def main():
             print("\nABORT: JUNOS_SSH_USER and JUNOS_SSH_PASSWORD must be set in env.")
             sys.exit(2)
 
-        # Independent on-disk guard. Junos `compare_config` masks
-        # SECRET-DATA fields (encrypted-password etc.), so a placeholder
-        # hash silently passes NAPALM dry-run. The only safe check is
-        # to grep the rendered file ourselves before any NAPALM call.
+        # Independent on-disk guard - catches sentinel/placeholder
+        # strings and malformed encrypted-password shapes at the
+        # rendered-file layer, before the bytes ever reach NAPALM.
+        # Defense in depth: even if a render bug ever produces a
+        # placeholder again, this layer rejects it before NAPALM is
+        # asked to compare or commit anything.
         print()
         print("=== Pre-deploy on-disk guard ===")
         guard_failed = False
@@ -422,9 +426,6 @@ def main():
 
         print()
         print(f"=== NAPALM {'COMMIT' if args.commit else 'DRY-RUN'} ===")
-        print("NOTE: Junos `compare_config` MASKS SECRET-DATA fields. A")
-        print("'no diff' result here means 'no diff in non-secret fields'.")
-        print("Trust the on-disk guard above for secret-field validation.")
         deploy_result = deploy_runner.run(
             task=napalm_deploy,
             build_dir=BUILD_DIR,

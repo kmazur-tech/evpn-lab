@@ -49,7 +49,19 @@ def napalm_deploy(task: Task, build_dir: Path, commit: bool) -> Result:
         kwargs["revert_in"] = REVERT_IN_SECONDS
 
     out = task.run(task=napalm_configure, **kwargs)
-    diff = out.result or ""
+    # napalm_configure returns the diff in the `.diff` attribute, not
+    # `.result`. An earlier version of this code read `out.result or ""`,
+    # which was always empty (because napalm_configure never sets the
+    # `.result` field), so deploy.py printed "no diff" for every commit
+    # regardless of what NAPALM was internally doing. This was the root
+    # cause of the misleading output around the credential lockout
+    # incident - NAPALM was honestly diffing and committing, our display
+    # layer just wasn't reading the right attribute.
+    #
+    # `out` is a MultiResult (task.run inside a parent task returns a
+    # MultiResult); element [0] is the napalm_configure Result object.
+    inner = out[0] if len(out) else None
+    diff = (inner.diff if inner is not None else None) or ""
     if commit:
         label = f"COMMIT-CONFIRMED ({REVERT_IN_SECONDS}s rollback timer)"
     else:
