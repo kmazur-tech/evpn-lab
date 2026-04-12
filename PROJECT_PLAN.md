@@ -99,7 +99,7 @@ Scope:
 - `deploy.py` script as entry point: fetch from NetBox -> render -> deploy -> report
 - Idempotency: re-running causes no changes if the NetBox intent hasn't changed
 
-Result: `python deploy.py` builds the full fabric from zero to production. Change in NetBox -> re-deploy -> fabric updates.
+Result: `python deploy.py` builds the full fabric from zero to production. Change in NetBox -> re-deploy -> fabric updates. Phase 3 is **add/update-oriented**: it covers the full path from yaml -> NetBox -> Nornir render -> NAPALM commit-confirmed deploy for adding new objects and updating the small allowlist of fields populate.py knows how to patch. Destructive lifecycle operations (prune of allowlisted classes, whole-device or whole-link decommission) are introduced separately in Phase 11 - Controlled Lifecycle Operations.
 
 ---
 
@@ -420,10 +420,16 @@ Both are deliberately bounded so the showcase story is **"controlled day-2 opera
 │   └── suzieq/
 │       ├── assert.py
 │       └── checks/
+├── phase11-lifecycle/             # Controlled day-2 lifecycle ops (Phase 11)
+│   ├── prune.py                   # Tier 2: allowlisted-class prune (--plan / --apply)
+│   ├── decommission.py            # Tier 3: whole device or link removal workflow
+│   ├── allowlist.yml              # Enumerated managed-class list for prune
+│   └── tests/                     # pytest with mocked pynetbox
 ├── docker-compose.yml            # Batfish, Telegraf, helper container
 ├── .github/
 │   └── workflows/
 │       ├── fabric-ci.yml         # Lint -> Render -> Batfish -> PR comment
+│       │                         # + lifecycle-plan stage on PRs touching phase11-lifecycle/
 │       └── fabric-deploy.yml     # Deploy -> Suzieq (workflow_dispatch)
 ├── docs/
 │   ├── hardening-controls.md     # CIS/PCI-DSS controls -> configuration mapping
@@ -466,3 +472,38 @@ Suzieq: continuous state monitor + NetBox drift check
     ▼ in-spec
 ✅ Fabric matches intent
 ```
+
+The diagram above is the **default add/update flow**: PR -> CI -> render -> validate -> deploy -> verify. It's PR-driven and runs on every merge.
+
+Phase 11 introduces a **separate operator-driven lifecycle workflow** for destructive operations (prune of allowlisted classes, decommission of a whole device or link). It is NOT part of the automatic deploy loop above:
+
+```
+Operator decides to remove something
+    │
+    ▼
+phase11-lifecycle/{prune,decommission}.py --plan
+    │  (NetBox read-only, no mutation, no device contact)
+    ▼
+Plan output: which NetBox objects, which dependencies, which devices affected
+    │
+    ├── REJECT -> abandon
+    │
+    ▼ APPROVE (interactive confirmation, typed device name for decommission)
+phase11-lifecycle/{prune,decommission}.py --apply
+    │  (NetBox mutation only - dependency-ordered, journal-tagged)
+    ▼
+Operator reviews `python phase3-nornir/deploy.py --check` diff
+    │
+    ├── unexpected diff -> abort, investigate, manually revert NetBox
+    │
+    ▼ expected diff
+python phase3-nornir/deploy.py --commit
+    │  (Phase 3 commit-confirmed flow takes over from here)
+    ▼
+phase2-fabric/smoke-tests.sh on lab server
+    │
+    ▼ PASS
+✅ Lifecycle change complete
+```
+
+Two-step intent: NetBox mutation and device push are NEVER combined in one command. The operator always has a chance to inspect the rendered config delta after the NetBox change, before any device sees the result.
