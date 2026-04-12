@@ -65,7 +65,7 @@ An automated EVPN-VXLAN data center fabric built with Infrastructure as Code pri
 | 1 | [NetBox as Source of Truth](phase1-netbox/) | Done |
 | 2 | [EVPN+VXLAN+ESI-LAG Fabric](phase2-fabric/) | Done |
 | 3 | [Nornir IaC Framework](phase3-nornir/) | Done |
-| 4 | Batfish Pre-Deployment Validation | Planned |
+| 4 | [Batfish Pre-Deployment Validation](phase4-batfish/) | Done |
 | 5 | Suzieq Post-Deployment Validation | Planned |
 | 6 | GitHub Actions CI/CD Pipeline | Planned |
 | 7 | Forwarding Scale + Convergence Tuning | Planned |

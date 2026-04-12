@@ -282,6 +282,10 @@ def main():
                         help="Render full + NAPALM load_replace_candidate + commit. Requires --full to pass first.")
     parser.add_argument("--target",
                         help="Restrict deploy to a single host (phased rollout).")
+    parser.add_argument("--validate", action="store_true",
+                        help="Phase 4: invoke phase4-batfish/validate.py against build/ "
+                             "after render. Requires the Batfish container running on "
+                             "netdevops-srv (see phase4-batfish/README.md). Off by default.")
     args = parser.parse_args()
     if not (args.check or args.full or args.dry_run or args.commit):
         args.check = True
@@ -375,6 +379,26 @@ def main():
     if failed and (args.dry_run or args.commit):
         print("\nABORT: regression diff vs phase3-nornir/expected/ failed; refusing to deploy.")
         sys.exit(2)
+
+    # Phase 4 Batfish validation, opt-in via --validate. Runs AFTER
+    # render (so build/ has fresh configs) and BEFORE any NAPALM
+    # contact. Aborts the deploy chain if Batfish reports any failure.
+    if args.validate and not failed:
+        print()
+        print("=== Phase 4 Batfish validation ===")
+        validate_script = REPO_ROOT / "phase4-batfish" / "validate.py"
+        if not validate_script.exists():
+            print(f"  WARN: {validate_script} not found, skipping --validate")
+        else:
+            import subprocess
+            rc = subprocess.call(
+                [sys.executable, str(validate_script), "--snapshot", str(BUILD_DIR)]
+            )
+            if rc != 0:
+                print(f"\nABORT: Batfish validation failed (exit {rc}); refusing to deploy.")
+                if args.dry_run or args.commit:
+                    sys.exit(2)
+                failed = True
 
     if args.dry_run or args.commit:
         if not (os.environ.get("JUNOS_SSH_USER") and os.environ.get("JUNOS_SSH_PASSWORD")):
