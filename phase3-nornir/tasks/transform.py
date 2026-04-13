@@ -21,7 +21,7 @@ from nornir.core.inventory import Host
 def fabric_inventory_transform(host: Host) -> None:
     """Mutate a Host in place: real mgmt IP, NAPALM driver, creds."""
     # Per-device OOB mgmt IP from MGMT_<name with - as _> env var.
-    # MGMT_* values are stored CIDR (e.g. 172.16.18.160/24); strip mask.
+    # MGMT_* values are stored CIDR (e.g. <ip>/<mask>); strip mask.
     env_key = f"MGMT_{host.name.replace('-', '_')}"
     mgmt = os.environ.get(env_key, "")
     if "/" in mgmt:

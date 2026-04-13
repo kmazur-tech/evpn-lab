@@ -36,17 +36,34 @@ See `memory/project_containerlab_state.md` for the build procedure.
 
 ## Required environment variables (containerlab deploy time)
 
-Set before `containerlab deploy -t dc1.clab.yml`:
+All device addressing and credentials live in **`evpn-lab-env/env.sh`**
+(outside the repo, sibling of the project root). Source it before
+running `containerlab deploy` or `bash smoke-tests.sh`:
 
 ```bash
-export CLAB_BRIDGE=br-clab
-export MGMT_SUBNET=172.16.18.0/24
-export MGMT_GATEWAY=clab-host.lab.local
-export CLAB_IP_dc1_spine1=172.16.18.160
-export CLAB_IP_dc1_spine2=172.16.18.161
-export CLAB_IP_dc1_leaf1=172.16.18.162
-export CLAB_IP_dc1_leaf2=172.16.18.163
+source ../../evpn-lab-env/env.sh
+containerlab deploy -t dc1.clab.yml
 ```
 
-These are referenced as `${VAR}` in `dc1.clab.yml`. See `.env.example`
-in the repo root for the full list.
+The variables `dc1.clab.yml` and `smoke-tests.sh` consume:
+
+| Variable | Used by | Purpose |
+|----------|---------|---------|
+| `CLAB_BRIDGE` | `dc1.clab.yml` mgmt | Linux bridge for mgmt network |
+| `MGMT_SUBNET` | `dc1.clab.yml` mgmt | Mgmt CIDR (example shape: `<your-mgmt-net>/24`) |
+| `MGMT_GATEWAY` | `dc1.clab.yml` mgmt | Mgmt gateway IP |
+| `CLAB_IP_dc1_spine1`..`spine2` | `dc1.clab.yml` node mgmt-ipv4 | Spine mgmt IPs |
+| `CLAB_IP_dc1_leaf1`..`leaf2` | `dc1.clab.yml` node mgmt-ipv4 | Leaf mgmt IPs |
+| `CLAB_IP_dc1_host1`..`host4` | `dc1.clab.yml` node mgmt-ipv4 | Linux host container mgmt IPs |
+| `MGMT_dc1_spine1`..`leaf2` | `smoke-tests.sh` SSH targets | Same IPs as CLAB_IP_*, but in CIDR form for pynetbox/NetBox |
+| `JUNOS_SSH_USER` / `JUNOS_SSH_PASSWORD` | `smoke-tests.sh` `junos_cmd` | Login for Junos CLI sessions |
+| `CLAB_HOST` | doc references | Lab server IP (where Docker + clab live) |
+
+`smoke-tests.sh` auto-sources `evpn-lab-env/env.sh` if `MGMT_dc1_spine1`
+isn't already set, and hard-fails with an actionable message if any
+required variable is still missing. No literal IPs or credentials live
+inside `smoke-tests.sh`, `dc1.clab.yml`, or any other repo file.
+
+A different lab deployment (different DC, different IP plan, different
+credentials) sets its own values in its own `evpn-lab-env/env.sh` and
+the repo runs unchanged.

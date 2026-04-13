@@ -18,6 +18,57 @@
 set -u
 set -o pipefail
 
+# ---------------------------------------------------------------
+# Environment - load device IPs and credentials from external env
+# file. ALL device addressing and credentials live outside the repo
+# in evpn-lab-env/env.sh, never hardcoded here.
+# ---------------------------------------------------------------
+# Auto-source env.sh if MGMT_dc1_spine1 isn't already set. Searches
+# multiple known locations to support both the workstation layout
+# (script at <repo>/phase2-fabric/, env file at sibling
+# ../evpn-lab-env/) and the lab-server flat layout (script at
+# /opt/evpn-lab/, env file at /opt/evpn-lab-env/). $EVPN_LAB_ENV_FILE
+# takes precedence over both for explicit override.
+if [ -z "${MGMT_dc1_spine1:-}" ]; then
+  SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+  CANDIDATES=(
+    "${EVPN_LAB_ENV_FILE:-}"
+    "${SCRIPT_DIR}/../../evpn-lab-env/env.sh"
+    "${SCRIPT_DIR}/../evpn-lab-env/env.sh"
+    "/opt/evpn-lab-env/env.sh"
+  )
+  for ENV_FILE in "${CANDIDATES[@]}"; do
+    if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then
+      # shellcheck disable=SC1090
+      source "$ENV_FILE"
+      break
+    fi
+  done
+fi
+
+# Hard-fail with an actionable message if any required env var is
+# still missing. Better than getting a confusing "set -u: unbound
+# variable" deep inside a test 30 seconds into the run.
+require_env() {
+  local var
+  for var in "$@"; do
+    if [ -z "${!var:-}" ]; then
+      echo "ERROR: required env var \$$var is not set." >&2
+      echo "       source ../../evpn-lab-env/env.sh first, or export the variable manually." >&2
+      exit 2
+    fi
+  done
+}
+require_env MGMT_dc1_spine1 MGMT_dc1_spine2 MGMT_dc1_leaf1 MGMT_dc1_leaf2 \
+            JUNOS_SSH_USER JUNOS_SSH_PASSWORD
+
+# MGMT_* values are stored as CIDR (e.g. $SPINE1_IP/24) for
+# pynetbox / NetBox population. The smoke tests want bare IPs.
+SPINE1_IP="${MGMT_dc1_spine1%/*}"
+SPINE2_IP="${MGMT_dc1_spine2%/*}"
+LEAF1_IP="${MGMT_dc1_leaf1%/*}"
+LEAF2_IP="${MGMT_dc1_leaf2%/*}"
+
 LAB_NAME="${1:-dc1}"
 GW_MAC="00:00:5e:00:01:01"
 FAILURES=0
@@ -56,7 +107,7 @@ ping_test() {
 
 junos_cmd() {
   local host=$1 cmd=$2
-  sshpass -p 'TestLabPass1' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 admin@$host "$cmd | no-more" 2>&1
+  sshpass -p "$JUNOS_SSH_PASSWORD" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$JUNOS_SSH_USER@$host" "$cmd | no-more" 2>&1
 }
 
 # junos_json: run a Junos CLI command and return JSON-formatted output.
@@ -67,7 +118,7 @@ junos_cmd() {
 # more robust.
 junos_json() {
   local host=$1 cmd=$2
-  sshpass -p 'TestLabPass1' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 admin@$host "$cmd | display json | no-more" 2>&1
+  sshpass -p "$JUNOS_SSH_PASSWORD" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$JUNOS_SSH_USER@$host" "$cmd | display json | no-more" 2>&1
 }
 
 # wait_until: poll a shell command until it prints the expected value, or
@@ -117,7 +168,7 @@ echo "=== Pre-flight: waiting for fabric convergence ==="
 #          interfaces around. Without this the very first ping in
 #          Section 6 can race the initial FIB push.
 
-DEVICES="dc1-spine1:172.16.18.160 dc1-spine2:172.16.18.161 dc1-leaf1:172.16.18.162 dc1-leaf2:172.16.18.163"
+DEVICES="dc1-spine1:$SPINE1_IP dc1-spine2:$SPINE2_IP dc1-leaf1:$LEAF1_IP dc1-leaf2:$LEAF2_IP"
 
 echo "  Stage 1/3: BGP convergence"
 for name_ip in $DEVICES; do
@@ -137,7 +188,7 @@ for name_ip in $DEVICES; do
 done
 
 echo "  Stage 3/3: underlay FIB programmed"
-for entry in "172.16.18.162:dc1-leaf1:10.1.0.4" "172.16.18.163:dc1-leaf2:10.1.0.3"; do
+for entry in "$LEAF1_IP:dc1-leaf1:10.1.0.4" "$LEAF2_IP:dc1-leaf2:10.1.0.3"; do
   ip=${entry%%:*}; rest=${entry#*:}; name=${rest%%:*}; remote=${rest##*:}
   WAITED=$(wait_until "junos_cmd $ip 'show route forwarding-table destination ${remote}/32 table default' | grep -cE 'ucst .* ge-'" "2" 60 3)
   if [ $? = 0 ]; then
@@ -153,8 +204,8 @@ echo "=== 1. Control Plane ==="
 # ---------------------------------------------------------------
 
 # BGP underlay - all 4 devices should have 0 down peers
-for name_ip in "dc1-spine1:172.16.18.160" "dc1-spine2:172.16.18.161" \
-               "dc1-leaf1:172.16.18.162" "dc1-leaf2:172.16.18.163"; do
+for name_ip in "dc1-spine1:$SPINE1_IP" "dc1-spine2:$SPINE2_IP" \
+               "dc1-leaf1:$LEAF1_IP" "dc1-leaf2:$LEAF2_IP"; do
   name=${name_ip%%:*}; ip=${name_ip##*:}
   DOWN=$(junos_cmd $ip "show bgp summary" | grep "Down peers" | awk '{print $NF}')
   if [ "$DOWN" = "0" ]; then
@@ -165,7 +216,7 @@ for name_ip in "dc1-spine1:172.16.18.160" "dc1-spine2:172.16.18.161" \
 done
 
 # EVPN routes on leaf1
-EVPN_LINE=$(junos_cmd 172.16.18.162 "show route table EVPN-VXLAN.evpn.0" | grep "destinations")
+EVPN_LINE=$(junos_cmd $LEAF1_IP "show route table EVPN-VXLAN.evpn.0" | grep "destinations")
 EVPN_ROUTES=$(echo "$EVPN_LINE" | sed 's/.*: \([0-9]*\) destinations.*/\1/')
 if [ -n "$EVPN_ROUTES" ] && [ "$EVPN_ROUTES" -gt 0 ] 2>/dev/null; then
   pass "leaf1 EVPN routes: $EVPN_ROUTES destinations"
@@ -174,7 +225,7 @@ else
 fi
 
 # VTEP tunnel
-VTEP=$(junos_cmd 172.16.18.162 "show ethernet-switching vxlan-tunnel-end-point remote" | grep "RVTEP-IP" -A1 | tail -1 | awk '{print $1}')
+VTEP=$(junos_cmd $LEAF1_IP "show ethernet-switching vxlan-tunnel-end-point remote" | grep "RVTEP-IP" -A1 | tail -1 | awk '{print $1}')
 if [ "$VTEP" = "10.1.0.4" ]; then
   pass "leaf1 VTEP tunnel to leaf2 (10.1.0.4)"
 else
@@ -182,7 +233,7 @@ else
 fi
 
 # Remote MAC learning
-REMOTE_MACS=$(junos_cmd 172.16.18.162 "show ethernet-switching table" | grep -c "DR" 2>/dev/null | tail -1 || echo "0")
+REMOTE_MACS=$(junos_cmd $LEAF1_IP "show ethernet-switching table" | grep -c "DR" 2>/dev/null | tail -1 || echo "0")
 if [ "$REMOTE_MACS" -gt 0 ]; then
   pass "leaf1 remote MACs learned via EVPN: $REMOTE_MACS"
 else
@@ -190,7 +241,7 @@ else
 fi
 
 # LACP on leaf2
-LACP_STATE=$(junos_cmd 172.16.18.163 "show lacp interfaces ae0" | grep "Collecting distributing" | wc -l)
+LACP_STATE=$(junos_cmd $LEAF2_IP "show lacp interfaces ae0" | grep "Collecting distributing" | wc -l)
 if [ "$LACP_STATE" -gt 0 ]; then
   pass "leaf2 ae0 LACP: Collecting/Distributing"
 else
@@ -198,7 +249,7 @@ else
 fi
 
 # BFD sessions
-BFD_UP=$(junos_cmd 172.16.18.162 "show bfd session" | grep -c "Up" 2>/dev/null | tail -1 || echo "0")
+BFD_UP=$(junos_cmd $LEAF1_IP "show bfd session" | grep -c "Up" 2>/dev/null | tail -1 || echo "0")
 if [ "$BFD_UP" -gt 0 ]; then
   pass "leaf1 BFD sessions up: $BFD_UP"
 else
@@ -207,7 +258,7 @@ else
 fi
 
 # LLDP neighbors
-for name_ip in "dc1-spine1:172.16.18.160" "dc1-leaf1:172.16.18.162"; do
+for name_ip in "dc1-spine1:$SPINE1_IP" "dc1-leaf1:$LEAF1_IP"; do
   name=${name_ip%%:*}; ip=${name_ip##*:}
   LLDP_COUNT=$(junos_cmd $ip "show lldp neighbors" | grep "ge-" | wc -l)
   if [ "$LLDP_COUNT" -ge 2 ]; then
@@ -218,7 +269,7 @@ for name_ip in "dc1-spine1:172.16.18.160" "dc1-leaf1:172.16.18.162"; do
 done
 
 # ESI state
-ESI_STATE=$(junos_cmd 172.16.18.162 "show evpn instance extensive" | grep "all-active" | wc -l)
+ESI_STATE=$(junos_cmd $LEAF1_IP "show evpn instance extensive" | grep "all-active" | wc -l)
 if [ "$ESI_STATE" -gt 0 ]; then
   pass "leaf1 ESI all-active entries: $ESI_STATE"
 else
@@ -226,7 +277,7 @@ else
 fi
 
 # Core isolation
-CORE_ISO=$(junos_cmd 172.16.18.162 "show configuration protocols network-isolation" | grep "core-isolation" | wc -l)
+CORE_ISO=$(junos_cmd $LEAF1_IP "show configuration protocols network-isolation" | grep "core-isolation" | wc -l)
 if [ "$CORE_ISO" -gt 0 ]; then
   pass "leaf1 core-isolation configured"
 else
@@ -240,7 +291,7 @@ echo "=== 2. Underlay Reachability ==="
 
 # Every leaf should reach every other leaf/spine loopback
 # Must specify source loopback - default source uses mgmt which can't route to underlay
-for src_entry in "172.16.18.162:10.1.0.3:dc1-leaf1" "172.16.18.163:10.1.0.4:dc1-leaf2"; do
+for src_entry in "$LEAF1_IP:10.1.0.3:dc1-leaf1" "$LEAF2_IP:10.1.0.4:dc1-leaf2"; do
   src_ip=${src_entry%%:*}; rest=${src_entry#*:}; src_lo=${rest%%:*}; src_name=${rest#*:}
   for dst_lo in 10.1.0.1 10.1.0.2 10.1.0.3 10.1.0.4; do
     RESULT=$(junos_cmd $src_ip "ping $dst_lo source $src_lo count 1 rapid wait 2" | grep "received" | awk '{print $4}')
@@ -295,7 +346,7 @@ echo "=== 4. Failover: ESI-LAG ==="
 # is gone and remove the slave from the bond on the host side.
 # Baseline: count remote VTEP entries on leaf2 pointing at leaf1 (10.1.0.3).
 # Used by the post-failure withdrawal check below.
-VTEP_BEFORE=$(junos_cmd 172.16.18.163 "show ethernet-switching vxlan-tunnel-end-point remote" | grep -c "^ 10.1.0.3 ")
+VTEP_BEFORE=$(junos_cmd $LEAF2_IP "show ethernet-switching vxlan-tunnel-end-point remote" | grep -c "^ 10.1.0.3 ")
 
 echo "  Pausing leaf1 container (hard failure simulation)..."
 docker pause clab-${LAB_NAME}-dc1-leaf1
@@ -318,7 +369,7 @@ ping_test dc1-host3 10.10.20.14 "ESI-LAG failover: host3 -> host4 (leaf1 crashed
 # this typically happens in 60-100s (BGP hold + EVPN withdrawal flush).
 # Cap at 150s to give margin for the full hold timer.
 echo "  Polling for leaf2 VTEP withdrawal (BGP hold timer)..."
-WAITED=$(wait_until "junos_cmd 172.16.18.163 'show ethernet-switching vxlan-tunnel-end-point remote' | grep -c '^ 10.1.0.3 '" "0" 150 5)
+WAITED=$(wait_until "junos_cmd $LEAF2_IP 'show ethernet-switching vxlan-tunnel-end-point remote' | grep -c '^ 10.1.0.3 '" "0" 150 5)
 if [ $? = 0 ] && [ "$VTEP_BEFORE" = "1" ]; then
   pass "Post-failure withdrawal: leaf2 dropped remote VTEP 10.1.0.3 in ${WAITED}s"
 else
@@ -332,7 +383,7 @@ echo "  Waiting for leaf1 recovery..."
 # Try SSH first, restart if unresponsive
 waited=0
 while [ $waited -lt $MAX_WAIT ]; do
-  if sshpass -p 'TestLabPass1' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 admin@172.16.18.162 "show system uptime" >/dev/null 2>&1; then
+  if sshpass -p 'TestLabPass1' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 admin@$LEAF1_IP "show system uptime" >/dev/null 2>&1; then
     break
   fi
   sleep 10
@@ -349,7 +400,7 @@ while [ $waited -lt $MAX_WAIT ]; do
   fi
 done
 
-if wait_bgp_converged 172.16.18.162 "leaf1"; then
+if wait_bgp_converged $LEAF1_IP "leaf1"; then
   pass "ESI-LAG restore: leaf1 recovered"
 else
   fail "ESI-LAG restore: leaf1 BGP not converged"
@@ -358,7 +409,7 @@ fi
 ping_test dc1-host3 10.10.20.14 "ESI-LAG restore: host3 -> host4 (both leaves back)"
 
 # Reinstall: the same VTEP entry should reappear after BGP recovers.
-VTEP_AFTER=$(junos_cmd 172.16.18.163 "show ethernet-switching vxlan-tunnel-end-point remote" | grep -c "^ 10.1.0.3 ")
+VTEP_AFTER=$(junos_cmd $LEAF2_IP "show ethernet-switching vxlan-tunnel-end-point remote" | grep -c "^ 10.1.0.3 ")
 if [ "$VTEP_AFTER" = "1" ]; then
   pass "Post-recovery reinstall: leaf2 re-learned remote VTEP 10.1.0.3"
 else
@@ -375,17 +426,17 @@ echo "=== 5. Failover: Core Isolation ==="
 # (ae0 and ae1) to prevent traffic blackholing through an isolated leaf.
 
 # Baseline: leaf2 should currently see leaf1 as a remote VTEP.
-ISO_VTEP_BEFORE=$(junos_cmd 172.16.18.163 "show ethernet-switching vxlan-tunnel-end-point remote" | grep -c "^ 10.1.0.3 ")
+ISO_VTEP_BEFORE=$(junos_cmd $LEAF2_IP "show ethernet-switching vxlan-tunnel-end-point remote" | grep -c "^ 10.1.0.3 ")
 
 echo "  Deactivating overlay BGP on leaf1..."
-junos_cmd 172.16.18.162 "configure; deactivate protocols bgp group OVERLAY; commit" >/dev/null 2>&1
+junos_cmd $LEAF1_IP "configure; deactivate protocols bgp group OVERLAY; commit" >/dev/null 2>&1
 
 # Poll for ae0 going down instead of fixed 15s sleep. Core-isolation
 # detection runs every few seconds and brings the AEs down within ~5-10s.
 echo "  Polling for core-isolation to bring ae0 down..."
-WAITED=$(wait_until "junos_cmd 172.16.18.162 'show interfaces ae0 terse' | grep '^ae0 ' | awk '{print \$3}'" "down" 60 3)
-AE0_LINK=$(junos_cmd 172.16.18.162 "show interfaces ae0 terse" | grep "^ae0 " | awk '{print $3}')
-AE1_LINK=$(junos_cmd 172.16.18.162 "show interfaces ae1 terse" | grep "^ae1 " | awk '{print $3}')
+WAITED=$(wait_until "junos_cmd $LEAF1_IP 'show interfaces ae0 terse' | grep '^ae0 ' | awk '{print \$3}'" "down" 60 3)
+AE0_LINK=$(junos_cmd $LEAF1_IP "show interfaces ae0 terse" | grep "^ae0 " | awk '{print $3}')
+AE1_LINK=$(junos_cmd $LEAF1_IP "show interfaces ae1 terse" | grep "^ae1 " | awk '{print $3}')
 if [ "$AE0_LINK" = "down" ] && [ "$AE1_LINK" = "down" ]; then
   pass "Core isolation: ae0 AND ae1 both brought down in ${WAITED}s"
 else
@@ -396,7 +447,7 @@ ping_test dc1-host3 10.10.20.14 "Core isolation: host3 -> host4 (leaf1 isolated,
 
 # Post-isolation withdrawal: poll for VTEP drop instead of sleeping 80s.
 echo "  Polling for VTEP withdrawal on leaf2 (BGP hold timer)..."
-WAITED=$(wait_until "junos_cmd 172.16.18.163 'show ethernet-switching vxlan-tunnel-end-point remote' | grep -c '^ 10.1.0.3 '" "0" 150 5)
+WAITED=$(wait_until "junos_cmd $LEAF2_IP 'show ethernet-switching vxlan-tunnel-end-point remote' | grep -c '^ 10.1.0.3 '" "0" 150 5)
 if [ $? = 0 ] && [ "$ISO_VTEP_BEFORE" = "1" ]; then
   pass "Core isolation withdrawal: leaf2 dropped remote VTEP 10.1.0.3 in ${WAITED}s"
 else
@@ -404,17 +455,17 @@ else
 fi
 
 echo "  Restoring overlay BGP on leaf1..."
-junos_cmd 172.16.18.162 "configure; activate protocols bgp group OVERLAY; commit" >/dev/null 2>&1
+junos_cmd $LEAF1_IP "configure; activate protocols bgp group OVERLAY; commit" >/dev/null 2>&1
 
 echo "  Waiting for BGP + LACP recovery (includes hold-time up 60s)..."
-wait_bgp_converged 172.16.18.162 "leaf1"
+wait_bgp_converged $LEAF1_IP "leaf1"
 
 # Core isolation has hold-time up (60s) - AEs stay down after BGP recovers
 # to prevent flapping. Wait for both ae0 AND ae1 to come back.
 waited=0
 while [ $waited -lt $MAX_WAIT ]; do
-  AE0_LINK=$(junos_cmd 172.16.18.162 "show interfaces ae0 terse" | grep "ae0 " | awk '{print $3}')
-  AE1_LINK=$(junos_cmd 172.16.18.162 "show interfaces ae1 terse" | grep "ae1 " | awk '{print $3}')
+  AE0_LINK=$(junos_cmd $LEAF1_IP "show interfaces ae0 terse" | grep "ae0 " | awk '{print $3}')
+  AE1_LINK=$(junos_cmd $LEAF1_IP "show interfaces ae1 terse" | grep "ae1 " | awk '{print $3}')
   if [ "$AE0_LINK" = "up" ] && [ "$AE1_LINK" = "up" ]; then break; fi
   sleep 10
   waited=$((waited+10))
@@ -428,15 +479,15 @@ fi
 
 # Post-recovery: VTEP entry must reappear and DF election must converge to
 # the same answer on both leaves (no DF drift after a control-plane bounce).
-ISO_VTEP_AFTER=$(junos_cmd 172.16.18.163 "show ethernet-switching vxlan-tunnel-end-point remote" | grep -c "^ 10.1.0.3 ")
+ISO_VTEP_AFTER=$(junos_cmd $LEAF2_IP "show ethernet-switching vxlan-tunnel-end-point remote" | grep -c "^ 10.1.0.3 ")
 if [ "$ISO_VTEP_AFTER" = "1" ]; then
   pass "Core isolation recovery: leaf2 re-learned remote VTEP 10.1.0.3"
 else
   fail "Core isolation recovery: leaf2 VTEP for 10.1.0.3 = $ISO_VTEP_AFTER (expected 1)"
 fi
 
-iso_df_l1=$(junos_cmd 172.16.18.162 "show evpn instance designated-forwarder")
-iso_df_l2=$(junos_cmd 172.16.18.163 "show evpn instance designated-forwarder")
+iso_df_l1=$(junos_cmd $LEAF1_IP "show evpn instance designated-forwarder")
+iso_df_l2=$(junos_cmd $LEAF2_IP "show evpn instance designated-forwarder")
 iso_df_drift=0
 while read -r esi; do
   [ -z "$esi" ] && continue
@@ -458,7 +509,7 @@ echo "=== 6. Failover: Spine ==="
 # ---------------------------------------------------------------
 
 echo "  Disabling spine1 underlay interfaces..."
-junos_cmd 172.16.18.160 "configure; set interfaces ge-0/0/0 disable; set interfaces ge-0/0/1 disable; commit" >/dev/null 2>&1
+junos_cmd $SPINE1_IP "configure; set interfaces ge-0/0/0 disable; set interfaces ge-0/0/1 disable; commit" >/dev/null 2>&1
 
 # Poll for leaf1 to lose its BGP session to spine1 (10.1.0.1) instead of
 # fixed sleep. BFD detects failure within multiplier*interval = 3s; the
@@ -468,17 +519,17 @@ junos_cmd 172.16.18.160 "configure; set interfaces ge-0/0/0 disable; set interfa
 # session the last column is "<active>/<received>/<accepted>/<damped>"
 # which contains slashes, not a state word.
 echo "  Polling for leaf1 to mark spine1 BGP session down..."
-WAITED=$(wait_until "junos_cmd 172.16.18.162 'show bgp summary' | awk '/^10.1.0.1/ {if (\$NF ~ /^(Active|Connect|Idle|OpenSent|OpenConfirm)\$/) print \"down\"; else print \"up\"}'" "down" 30 2)
+WAITED=$(wait_until "junos_cmd $LEAF1_IP 'show bgp summary' | awk '/^10.1.0.1/ {if (\$NF ~ /^(Active|Connect|Idle|OpenSent|OpenConfirm)\$/) print \"down\"; else print \"up\"}'" "down" 30 2)
 echo "  spine1 session marked down on leaf1 in ${WAITED}s"
 
 ping_test dc1-host1 10.10.10.12 "Spine failover: host1 -> host2 (spine1 down, via spine2)"
 ping_test dc1-host1 10.10.20.13 "Spine failover: host1 -> host3 L3 (spine1 down)"
 
 echo "  Restoring spine1..."
-junos_cmd 172.16.18.160 "configure; delete interfaces ge-0/0/0 disable; delete interfaces ge-0/0/1 disable; commit" >/dev/null 2>&1
+junos_cmd $SPINE1_IP "configure; delete interfaces ge-0/0/0 disable; delete interfaces ge-0/0/1 disable; commit" >/dev/null 2>&1
 
 echo "  Waiting for BGP reconvergence..."
-if wait_bgp_converged 172.16.18.160 "spine1"; then
+if wait_bgp_converged $SPINE1_IP "spine1"; then
   pass "Spine restore: spine1 BGP re-established"
 else
   fail "Spine restore: spine1 BGP not converged"
@@ -493,7 +544,7 @@ echo "=== 7. Expected Failures ==="
 
 # Single-homed host loses connectivity when its leaf port is disabled
 echo "  Disabling leaf1 ge-0/0/2 (host1 access port)..."
-junos_cmd 172.16.18.162 "configure; set interfaces ge-0/0/2 disable; commit" >/dev/null 2>&1
+junos_cmd $LEAF1_IP "configure; set interfaces ge-0/0/2 disable; commit" >/dev/null 2>&1
 sleep 3
 
 HOST1_PID=$(docker inspect -f '{{.State.Pid}}' clab-${LAB_NAME}-dc1-host1)
@@ -504,7 +555,7 @@ else
 fi
 
 echo "  Restoring leaf1 ge-0/0/2..."
-junos_cmd 172.16.18.162 "configure; delete interfaces ge-0/0/2 disable; commit" >/dev/null 2>&1
+junos_cmd $LEAF1_IP "configure; delete interfaces ge-0/0/2 disable; commit" >/dev/null 2>&1
 sleep 5
 
 echo ""
@@ -713,9 +764,9 @@ validate_leaf() {
 }
 
 # Run the per-leaf validation against both leaves.
-validate_leaf 172.16.18.162 leaf1 $LEAF1_LO $LEAF2_LO
+validate_leaf $LEAF1_IP leaf1 $LEAF1_LO $LEAF2_LO
 echo ""
-validate_leaf 172.16.18.163 leaf2 $LEAF2_LO $LEAF1_LO
+validate_leaf $LEAF2_IP leaf2 $LEAF2_LO $LEAF1_LO
 echo ""
 
 # ---------------------------------------------------------------
@@ -724,8 +775,8 @@ echo ""
 
 # DF election + ESI consistency: every LACP-derived ESI (01:00:...) must
 # elect the same DF on both leaves. Mismatch = split-brain BUM forwarder.
-df_l1=$(junos_cmd 172.16.18.162 "show evpn instance designated-forwarder")
-df_l2=$(junos_cmd 172.16.18.163 "show evpn instance designated-forwarder")
+df_l1=$(junos_cmd $LEAF1_IP "show evpn instance designated-forwarder")
+df_l2=$(junos_cmd $LEAF2_IP "show evpn instance designated-forwarder")
 esi_l1=$(echo "$df_l1" | grep -c "ESI: 01:")
 esi_l2=$(echo "$df_l2" | grep -c "ESI: 01:")
 if [ "$esi_l1" -ge 2 ] && [ "$esi_l1" = "$esi_l2" ]; then

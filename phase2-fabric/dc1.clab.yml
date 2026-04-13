@@ -55,21 +55,23 @@ topology:
       startup-config: configs/dc1-leaf2.conf
 
     # Hosts (configured by setup-hosts.sh after deploy)
+    # Mgmt IPs come from env vars - same pattern as the spine/leaf
+    # CLAB_IP_* references above. See ../../evpn-lab-env/env.sh.
     dc1-host1:
       kind: linux
-      mgmt-ipv4: 172.16.18.200
+      mgmt-ipv4: ${CLAB_IP_dc1_host1}
 
     dc1-host2:
       kind: linux
-      mgmt-ipv4: 172.16.18.201
+      mgmt-ipv4: ${CLAB_IP_dc1_host2}
 
     dc1-host3:
       kind: linux
-      mgmt-ipv4: 172.16.18.202
+      mgmt-ipv4: ${CLAB_IP_dc1_host3}
 
     dc1-host4:
       kind: linux
-      mgmt-ipv4: 172.16.18.203
+      mgmt-ipv4: ${CLAB_IP_dc1_host4}
 
   links:
 
