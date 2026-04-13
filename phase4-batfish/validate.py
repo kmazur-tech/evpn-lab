@@ -5,24 +5,30 @@ Pipeline shape:
   1. Take --snapshot DIR (typically phase3-nornir/build/)
   2. Stage the .conf files into a temp dir Batfish expects:
        <staged>/configs/<host>.cfg
-  3. Connect to the Batfish server (default: netdevops-srv.lab.local:9996, the
-     netdevops-srv container - override with --bf-host)
-  4. Init the snapshot
-  5. Run every check in questions.ALL_CHECKS
-  6. Print a per-check report and exit 0/1
+  3. Verify the Batfish server is reachable on TCP/9996 (fail fast
+     with a clear error before any pybatfish API call)
+  4. Connect to the Batfish server. Host comes from $BATFISH_HOST env
+     var (set by evpn-lab-env/env.sh) or --bf-host CLI override.
+  5. Init the snapshot
+  6. Run every check in questions.ALL_CHECKS
+  7. Print a per-check report and exit 0/1
 
 Standalone usage:
+  source ../../evpn-lab-env/env.sh   # sets BATFISH_HOST
   python phase4-batfish/validate.py --snapshot phase3-nornir/build/
 
 Wired into deploy.py via the --validate flag (Phase 3, opt-in stage).
 
 CI invocation: deploy.py --validate, OR validate.py directly as a
-GitHub Actions stage. Both paths use this entry point.
+GitHub Actions stage. Both paths use this entry point and read
+BATFISH_HOST from env (CI workflow injects it from secrets).
 """
 
 import argparse
 import logging
+import os
 import shutil
+import socket
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -40,8 +46,41 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from questions import ALL_CHECKS, CheckResult  # noqa: E402
 
 
-DEFAULT_BF_HOST = "netdevops-srv.lab.local"
+# Batfish coordinator + worker ports. Standard for batfish/allinone
+# image. Not configurable on the server side without rebuilding the
+# image, so they're constants here too.
+BATFISH_COORDINATOR_PORT = 9996
+BATFISH_WORKER_PORT = 9997
 DEFAULT_NETWORK = "evpn-lab"
+
+
+def check_reachable(host: str, port: int = BATFISH_COORDINATOR_PORT, timeout: float = 5.0) -> None:
+    """TCP-connect probe. Raises RuntimeError with an actionable
+    message if the Batfish coordinator is not reachable. Runs BEFORE
+    any pybatfish API call - pybatfish's Session() constructor is
+    lazy and doesn't surface a clean error until the first real call,
+    which then comes out as a confusing nested traceback. This probe
+    fails fast with a clear message instead.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect((host, port))
+    except (socket.timeout, ConnectionRefusedError, socket.gaierror, OSError) as e:
+        raise RuntimeError(
+            f"Batfish coordinator unreachable at {host}:{port} ({type(e).__name__}: {e}).\n"
+            f"\n"
+            f"Is the container running?\n"
+            f"  ssh root@{host} 'docker compose -f /opt/batfish/docker-compose.yml ps'\n"
+            f"\n"
+            f"Is BATFISH_HOST set correctly?\n"
+            f"  source <repo-root>/../evpn-lab-env/env.sh\n"
+            f"  echo $BATFISH_HOST\n"
+            f"\n"
+            f"See phase4-batfish/README.md for one-time deployment instructions."
+        ) from e
+    finally:
+        sock.close()
 
 
 def stage_snapshot(src_dir: Path, staged_root: Path) -> Path:
@@ -128,8 +167,9 @@ def main():
     )
     parser.add_argument(
         "--bf-host",
-        default=DEFAULT_BF_HOST,
-        help=f"Batfish server hostname/IP (default: {DEFAULT_BF_HOST})",
+        default=None,
+        help="Batfish server hostname/IP (default: $BATFISH_HOST env var). "
+             "CLI flag overrides env. Hard-fails if neither is set.",
     )
     parser.add_argument(
         "--network",
@@ -156,6 +196,19 @@ def main():
         print(f"ERROR: --snapshot {src_dir} is not a directory", file=sys.stderr)
         sys.exit(2)
 
+    # Resolve Batfish host: --bf-host CLI flag wins, otherwise BATFISH_HOST
+    # env var, otherwise hard-fail with a clear pointer to env.sh.
+    bf_host = args.bf_host or os.environ.get("BATFISH_HOST")
+    if not bf_host:
+        print(
+            "ERROR: BATFISH_HOST env var not set and --bf-host not given.\n"
+            "  source <repo-root>/../evpn-lab-env/env.sh\n"
+            "or pass --bf-host <ip> on the command line.\n"
+            "See phase4-batfish/README.md.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
     with tempfile.TemporaryDirectory(prefix="bf-snap-") as staged:
         staged_root = stage_snapshot(src_dir, Path(staged))
         configs = list((staged_root / "configs").iterdir())
@@ -163,18 +216,19 @@ def main():
         for c in sorted(configs):
             print(f"  {c.name}")
 
-        print(f"\nConnecting to Batfish at {args.bf_host}:9996...")
+        # Reachability probe BEFORE any pybatfish API call. Fails fast
+        # with an actionable message if Batfish is down or BATFISH_HOST
+        # points at the wrong place.
+        print(f"\nProbing Batfish at {bf_host}:{BATFISH_COORDINATOR_PORT}...")
         try:
-            bf = Session(host=args.bf_host)
-        except Exception as e:
-            print(f"ERROR: cannot reach Batfish server: {e}", file=sys.stderr)
-            print(
-                f"\nIs the container running on {args.bf_host}?\n"
-                f"  ssh root@{args.bf_host} 'docker compose -f /opt/batfish/docker-compose.yml ps'\n"
-                f"See phase4-batfish/README.md for setup instructions.",
-                file=sys.stderr,
-            )
+            check_reachable(bf_host)
+        except RuntimeError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
             sys.exit(2)
+        print("  reachable")
+
+        print(f"Connecting to Batfish at {bf_host}:{BATFISH_COORDINATOR_PORT}...")
+        bf = Session(host=bf_host)
 
         bf.set_network(args.network)
         print(f"Initializing snapshot '{args.snapshot_name}' (this can take 30-60s)...")

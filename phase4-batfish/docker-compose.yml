@@ -1,27 +1,33 @@
 ---
 # Batfish offline configuration analyzer.
 #
-# Runs as a single container on netdevops-srv (netdevops-srv.lab.local) alongside
-# the existing NetBox stack. No state is persisted - validate.py creates
-# a fresh snapshot on every run, so the container is purely a stateless
-# parser/analyzer service.
+# Runs as a single container on the netdevops services VM (the same
+# host that runs the NetBox stack - reuses the existing Docker daemon,
+# no new VM, no lab impact). The host IP / hostname is environment-
+# specific and lives in evpn-lab-env/env.sh as $BATFISH_HOST. Nothing
+# in this file or the rest of the project hardcodes it.
 #
-# Deployment (one-time, on netdevops-srv):
-#   ssh root@netdevops-srv.lab.local
+# No state is persisted - validate.py creates a fresh snapshot on
+# every run, so the container is purely a stateless parser/analyzer
+# service.
+#
+# One-time deployment (run on the netdevops services VM):
 #   mkdir -p /opt/batfish && cd /opt/batfish
-#   # copy this docker-compose.yml here, then:
+#   # copy this file here, then:
 #   docker compose pull
 #   docker compose up -d
 #   docker compose ps        # confirm 'batfish' is Up
 #
-# Verification from WSL2 / dev box:
-#   nc -zv netdevops-srv.lab.local 9996
-#   nc -zv netdevops-srv.lab.local 9997
+# Verification from a dev box:
+#   source <repo-root>/../evpn-lab-env/env.sh
+#   nc -zv "$BATFISH_HOST" 9996
+#   nc -zv "$BATFISH_HOST" 9997
 #
-# Image: batfish/allinone is the official image from the Batfish project.
-# It bundles the Batfish server (the Java service that does the actual
-# config analysis) plus the example notebooks. We only use the server.
-# ~1.5 GB pull, runs as a single JVM process inside the container.
+# Image: batfish/allinone is the official image from the Batfish
+# project. It bundles the Batfish server (the Java service that does
+# the actual config analysis) plus the example notebooks. We only use
+# the server. ~1.5 GB pull, runs as a single JVM process inside the
+# container.
 
 services:
   batfish:
@@ -37,8 +43,12 @@ services:
     # every validate.py run. The container has its own /data tmpfs
     # area which Batfish uses for parse state, recreated each time.
     healthcheck:
-      test: ["CMD-SHELL", "curl -fs http://localhost:9996/ || exit 1"]
+      # Note: the batfish/allinone image does not ship `curl`, so we
+      # check liveness by probing the coordinator's TCP listener with
+      # bash's /dev/tcp pseudo-device. Coordinator is the JVM service
+      # validate.py talks to.
+      test: ["CMD-SHELL", "timeout 3 bash -c '</dev/tcp/127.0.0.1/9996' || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 5
-      start_period: 60s
+      start_period: 120s

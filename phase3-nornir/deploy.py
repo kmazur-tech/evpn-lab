@@ -115,6 +115,32 @@ def normalize(text: str) -> str:
     return text
 
 
+# Sentinel return code for "the validate.py script does not exist".
+# Distinct from any real exit code so tests and main() can branch on
+# it. Negative numbers are not valid POSIX exit codes so this won't
+# collide with subprocess.call() return values.
+_BATFISH_SCRIPT_MISSING = -1
+
+
+def run_batfish_validation(script_path, build_dir, runner=None):
+    """Invoke Phase 4 validate.py against `build_dir`. Returns the
+    subprocess exit code, or _BATFISH_SCRIPT_MISSING if the script
+    doesn't exist on disk.
+
+    `runner` is a dependency injection seam for tests - in production
+    it defaults to subprocess.call. Tests pass a fake that records the
+    args and returns a canned exit code so the helper can be exercised
+    without actually running validate.py or needing a Batfish container.
+    """
+    if not script_path.exists():
+        print(f"  WARN: {script_path} not found, skipping --validate")
+        return _BATFISH_SCRIPT_MISSING
+    if runner is None:
+        import subprocess
+        runner = subprocess.call
+    return runner([sys.executable, str(script_path), "--snapshot", str(build_dir)])
+
+
 # Sentinel strings the deploy guard refuses to push to a device. Any
 # rendered config containing one of these is rejected before any NAPALM
 # call. The list grows as new templates are added; treat it as the
@@ -386,19 +412,17 @@ def main():
     if args.validate and not failed:
         print()
         print("=== Phase 4 Batfish validation ===")
-        validate_script = REPO_ROOT / "phase4-batfish" / "validate.py"
-        if not validate_script.exists():
-            print(f"  WARN: {validate_script} not found, skipping --validate")
-        else:
-            import subprocess
-            rc = subprocess.call(
-                [sys.executable, str(validate_script), "--snapshot", str(BUILD_DIR)]
-            )
-            if rc != 0:
-                print(f"\nABORT: Batfish validation failed (exit {rc}); refusing to deploy.")
-                if args.dry_run or args.commit:
-                    sys.exit(2)
-                failed = True
+        rc = run_batfish_validation(
+            REPO_ROOT / "phase4-batfish" / "validate.py",
+            BUILD_DIR,
+        )
+        if rc == _BATFISH_SCRIPT_MISSING:
+            pass  # warning already printed by helper
+        elif rc != 0:
+            print(f"\nABORT: Batfish validation failed (exit {rc}); refusing to deploy.")
+            if args.dry_run or args.commit:
+                sys.exit(2)
+            failed = True
 
     if args.dry_run or args.commit:
         if not (os.environ.get("JUNOS_SSH_USER") and os.environ.get("JUNOS_SSH_PASSWORD")):
