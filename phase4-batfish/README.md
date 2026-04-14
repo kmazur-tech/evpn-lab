@@ -147,14 +147,57 @@ The `--validate` flag is opt-in (off by default) so the inner-loop `--check` wor
 ### CLI options
 
 ```
---snapshot DIR        Path to rendered configs (typically phase3-nornir/build/)
---bf-host IP          Batfish server (default: $BATFISH_HOST env var)
---network NAME        Batfish network name (default: evpn-lab)
---snapshot-name NAME  Batfish snapshot name (default: rendered)
---format text|json    Output format. text (default) is human-readable;
-                      json is machine-readable for the Phase 6 PR-comment bot
---debug               Verbose pybatfish logging
+--snapshot DIR              Path to rendered configs (typically phase3-nornir/build/)
+--reference-snapshot DIR    Optional reference for differential analysis
+                            (typically phase3-nornir/expected/, the renderer's
+                            golden file). When set, validate.py initializes
+                            both snapshots and runs differential analysis
+                            after the regular checks. INFORMATIONAL ONLY -
+                            differential output never affects exit code.
+--bf-host IP                Batfish server (default: $BATFISH_HOST env var)
+--network NAME              Batfish network name (default: evpn-lab)
+--snapshot-name NAME        Batfish snapshot name (default: rendered)
+--format text|json          Output format. text (default) is human-readable;
+                            json is machine-readable for the Phase 6 PR-comment bot
+--debug                     Verbose pybatfish logging
 ```
+
+### Differential analysis (PR-style "what changed?")
+
+The killer Batfish feature for CI: compare a candidate snapshot (this PR's render) against a reference snapshot (the last known-good golden file) and report what changed.
+
+```bash
+python validate.py \
+  --snapshot ../phase3-nornir/build/ \
+  --reference-snapshot ../phase3-nornir/expected/
+```
+
+Output (when `build/` == `expected/`, i.e. an idempotent re-render):
+
+```
+============================================================
+ Batfish differential analysis (candidate vs reference)
+============================================================
+  [DIFF] devices                    no changes (4 device(s), identical to reference)
+  [DIFF] bgp_edges                  no changes (16 BGP edges, identical to reference)
+============================================================
+```
+
+When the candidate ADDS a BGP session (e.g. spine-spine link added in NetBox):
+
+```
+  [DIFF] bgp_edges                  1 added, 0 removed (candidate has 17, reference had 16)
+    + dc1-spine1(10.1.4.8) -> dc1-spine2(10.1.4.9)
+```
+
+When a device is decommissioned:
+
+```
+  [DIFF] devices                    0 added, 1 removed (candidate has 3, reference had 4)
+    - dc1-leaf2
+```
+
+The differential layer is **informational only** — exit code is unaffected by what it finds. Phase 6's PR-comment bot consumes the JSON output (`--format json` adds a `diffs` field to the top-level payload) and posts it as the "what does this PR change?" report on the PR.
 
 ### JSON output (for CI)
 
@@ -181,16 +224,33 @@ The Phase 6 CI workflow will consume this and post it as a PR comment via a smal
 
 ## Tests
 
-Pure-function unit tests under `tests/` use mocked pybatfish - no Batfish container needed. The container is only required for end-to-end validation against real rendered configs.
+Two test paths:
+
+**Unit tests** (default, offline, ~1 second):
 
 ```bash
 ~/.venvs/evpn-lab/bin/python -m pytest
 ```
 
+Pure-function tests with mocked pybatfish. No Batfish container needed. CI runs this on every PR.
+
+**Integration tests** (require a real Batfish container):
+
+```bash
+source ../../evpn-lab-env/env.sh   # picks up BATFISH_HOST
+~/.venvs/evpn-lab/bin/python -m pytest -m integration
+```
+
+Pytest fixtures with module scope (per Said van de Klundert's pytest+Batfish pattern) - the ~30s snapshot init cost is paid ONCE per fixture and amortized across the whole integration run. Skipped automatically if `$BATFISH_HOST` is unset or the container is unreachable.
+
+Run both unit and integration: `pytest -m "integration or not integration"`.
+
 Coverage:
 - `test_questions.py` - 26 tests pinning the 6 checks against canned pandas DataFrames (init_issues severity matching + false-positive filter, parse status, BGP session counts, edge symmetry, undefined-ref ignore list, iBGP filter using Session_Type to avoid the Local_AS/Remote_AS dtype mismatch)
 - `test_validate.py` - tests for `stage_snapshot()` filter logic (excludes pre-commit backups and per-stanza files), `check_reachable()` TCP probe behavior
 - `test_json_format.py` - 6 tests pinning the JSON output schema (top-level result/total/passed/failed/checks fields, dataclass-asdict mapping, edge cases)
+- `test_diffs.py` - 10 tests pinning the differential analysis layer (`diff_bgp_edges`, `diff_node_set`) with snapshot-aware mock sessions
+- `test_integration.py` - 7 integration tests against a real Batfish container, including: full check suite passes against current Phase 3 render, init_issues clean after false-positive filter, BGP sessions 16/16, overlay loopbacks reachable (regression guard for the Session_Type dtype fix), differential self-compare reports zero changes (`build/` vs `expected/` identical state), JSON output round-trip
 
 ## CI integration (Phase 6)
 

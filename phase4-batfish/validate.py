@@ -44,7 +44,7 @@ from pybatfish.client.session import Session  # noqa: E402
 # Make `import questions` work whether validate.py is run from repo root
 # or from inside phase4-batfish/.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from questions import ALL_CHECKS, CheckResult  # noqa: E402
+from questions import ALL_CHECKS, ALL_DIFFS, CheckResult, DiffSummary  # noqa: E402
 
 
 # Batfish coordinator + worker ports. Standard for batfish/allinone
@@ -131,6 +131,42 @@ def run_checks(bf: Session) -> List[CheckResult]:
     return results
 
 
+def run_diffs(bf: Session, ref_name: str, cand_name: str) -> List[DiffSummary]:
+    """Run every entry in ALL_DIFFS and collect the results.
+    Differential analysis is informational - exceptions become a
+    DiffSummary with the error in the summary field rather than
+    bubbling up. The deploy never fails on a differential."""
+    results = []
+    for diff_fn in ALL_DIFFS:
+        try:
+            d = diff_fn(bf, ref_name, cand_name)
+        except Exception as e:
+            d = DiffSummary(
+                name=diff_fn.__name__.removeprefix("diff_"),
+                summary=f"diff raised exception: {type(e).__name__}: {e}",
+                added=[],
+                removed=[],
+            )
+        results.append(d)
+    return results
+
+
+def print_diff_report(diffs: List[DiffSummary]) -> None:
+    """Human-readable differential summary. Pure information - no
+    pass/fail, no exit code influence."""
+    print()
+    print("=" * 60)
+    print(" Batfish differential analysis (candidate vs reference)")
+    print("=" * 60)
+    for d in diffs:
+        print(f"  [DIFF] {d.name:25}  {d.summary}")
+        for entry in d.added:
+            print(f"    + {entry}")
+        for entry in d.removed:
+            print(f"    - {entry}")
+    print("=" * 60)
+
+
 def print_report(results: List[CheckResult]) -> bool:
     """Print a human-readable report. Returns True if all passed."""
     print()
@@ -156,13 +192,17 @@ def print_report(results: List[CheckResult]) -> bool:
     return all_passed
 
 
-def render_json_report(results: List[CheckResult]) -> str:
+def render_json_report(
+    results: List[CheckResult],
+    diffs: "List[DiffSummary] | None" = None,
+) -> str:
     """Machine-readable JSON report. CI consumers (Phase 6 PR-comment
     bot, GitHub Actions summary) parse this format. Stable contract:
     top-level dict with `result` (PASS|FAIL), `passed`/`failed`/`total`
-    counts, and `checks` (list of {name, passed, summary, detail}).
-    Mirrors the human-readable report's data exactly so the two
-    formats can never disagree."""
+    counts, `checks` (list of {name, passed, summary, detail}), and
+    optional `diffs` (list of {name, summary, added, removed}) when
+    differential analysis was run. Mirrors the human-readable report's
+    data exactly so the two formats can never disagree."""
     passed_count = sum(1 for r in results if r.passed)
     failed_count = len(results) - passed_count
     payload = {
@@ -172,6 +212,8 @@ def render_json_report(results: List[CheckResult]) -> str:
         "failed": failed_count,
         "checks": [asdict(r) for r in results],
     }
+    if diffs is not None:
+        payload["diffs"] = [asdict(d) for d in diffs]
     return json.dumps(payload, indent=2)
 
 
@@ -202,6 +244,16 @@ def main():
         help="Batfish snapshot name (default: rendered)",
     )
     parser.add_argument(
+        "--reference-snapshot",
+        default=None,
+        help="Path to a REFERENCE snapshot dir to compare the candidate "
+             "against (typically phase3-nornir/expected/, the renderer's "
+             "golden file). When set, validate.py initializes both "
+             "snapshots and runs differential analysis after the regular "
+             "checks. Differential output is informational only - exit "
+             "code is unaffected.",
+    )
+    parser.add_argument(
         "--format",
         choices=["text", "json"],
         default="text",
@@ -223,6 +275,13 @@ def main():
         print(f"ERROR: --snapshot {src_dir} is not a directory", file=sys.stderr)
         sys.exit(2)
 
+    ref_dir = None
+    if args.reference_snapshot:
+        ref_dir = Path(args.reference_snapshot).resolve()
+        if not ref_dir.is_dir():
+            print(f"ERROR: --reference-snapshot {ref_dir} is not a directory", file=sys.stderr)
+            sys.exit(2)
+
     # Resolve Batfish host: --bf-host CLI flag wins, otherwise BATFISH_HOST
     # env var, otherwise hard-fail with a clear pointer to env.sh.
     bf_host = args.bf_host or os.environ.get("BATFISH_HOST")
@@ -236,12 +295,18 @@ def main():
         )
         sys.exit(2)
 
+    diffs: List[DiffSummary] = []
     with tempfile.TemporaryDirectory(prefix="bf-snap-") as staged:
-        staged_root = stage_snapshot(src_dir, Path(staged))
+        staged_root = stage_snapshot(src_dir, Path(staged) / "candidate")
         configs = list((staged_root / "configs").iterdir())
-        print(f"Staged {len(configs)} config(s) -> {staged_root}")
+        print(f"Staged {len(configs)} candidate config(s) -> {staged_root}")
         for c in sorted(configs):
             print(f"  {c.name}")
+
+        if ref_dir is not None:
+            ref_root = stage_snapshot(ref_dir, Path(staged) / "reference")
+            ref_configs = list((ref_root / "configs").iterdir())
+            print(f"Staged {len(ref_configs)} reference config(s) -> {ref_root}")
 
         # Reachability probe BEFORE any pybatfish API call. Fails fast
         # with an actionable message if Batfish is down or BATFISH_HOST
@@ -258,16 +323,29 @@ def main():
         bf = Session(host=bf_host)
 
         bf.set_network(args.network)
-        print(f"Initializing snapshot '{args.snapshot_name}' (this can take 30-60s)...")
-        bf.init_snapshot(str(staged_root), name=args.snapshot_name, overwrite=True)
+        cand_name = args.snapshot_name
+        print(f"Initializing candidate snapshot '{cand_name}' (this can take 30-60s)...")
+        bf.init_snapshot(str(staged_root), name=cand_name, overwrite=True)
 
         results = run_checks(bf)
 
+        if ref_dir is not None:
+            ref_name = f"{cand_name}-reference"
+            print(f"Initializing reference snapshot '{ref_name}'...")
+            bf.init_snapshot(str(ref_root), name=ref_name, overwrite=True)
+            print("Running differential analysis...")
+            # Re-set the active snapshot to the candidate so any
+            # post-diff checks (none today) see the right state.
+            bf.set_snapshot(cand_name)
+            diffs = run_diffs(bf, ref_name=ref_name, cand_name=cand_name)
+
     if args.format == "json":
-        print(render_json_report(results))
+        print(render_json_report(results, diffs if diffs else None))
         all_passed = all(r.passed for r in results)
     else:
         all_passed = print_report(results)
+        if diffs:
+            print_diff_report(diffs)
     sys.exit(0 if all_passed else 1)
 
 

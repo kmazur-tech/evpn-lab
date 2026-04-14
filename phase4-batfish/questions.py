@@ -381,3 +381,91 @@ ALL_CHECKS = [
     check_undefined_references,
     check_overlay_loopback_reachability,
 ]
+
+
+# ----- Differential analysis -----------------------------------------
+#
+# Differential checks compare a CANDIDATE snapshot (typically the
+# rendered output of the current PR) against a REFERENCE snapshot
+# (typically phase3-nornir/expected/, the renderer's last known-good
+# golden file). They answer the question "what does this change to
+# the templates / NetBox actually do to the fabric?" - the killer
+# Batfish feature for CI/CD per the pybatfish docs.
+#
+# Output is INFORMATIONAL only - the differential summary never
+# fails the deploy. Adds and removals get reported as a structured
+# report that the Phase 6 PR-comment bot will paste into a PR.
+#
+# Implementation note: pybatfish supports a native differential mode
+# (snapshot=<cand>, reference_snapshot=<ref>) on most questions, but
+# we use the manual "fetch both, set-diff in pandas" approach because:
+#   - It's deterministic and easy to test with mocked frames.
+#   - It composes naturally with the existing _frame_to_str rendering.
+#   - The native diff mode requires both snapshots to be uploaded
+#     under the same Network at the same time, which our caller
+#     already does.
+
+
+@dataclass
+class DiffSummary:
+    """Output of one differential question. The same shape as
+    CheckResult so the JSON renderer can serialize it without a
+    second code path."""
+    name: str
+    summary: str
+    added: List[str]
+    removed: List[str]
+
+
+def _bgp_edge_key(row) -> str:
+    """Stable string key for a BGP edge row, used as set element."""
+    return f"{row['Node']}({row['IP']}) -> {row['Remote_Node']}({row['Remote_IP']})"
+
+
+def diff_bgp_edges(bf: Session, ref_name: str, cand_name: str) -> DiffSummary:
+    """BGP topology delta: which BGP sessions were added/removed
+    between the reference snapshot and the candidate snapshot."""
+    ref_df = bf.q.bgpEdges().answer(snapshot=ref_name).frame()
+    cand_df = bf.q.bgpEdges().answer(snapshot=cand_name).frame()
+
+    ref_set = {_bgp_edge_key(r) for _, r in ref_df.iterrows()}
+    cand_set = {_bgp_edge_key(r) for _, r in cand_df.iterrows()}
+
+    added = sorted(cand_set - ref_set)
+    removed = sorted(ref_set - cand_set)
+
+    if not added and not removed:
+        summary = f"no changes ({len(cand_set)} BGP edges, identical to reference)"
+    else:
+        summary = f"{len(added)} added, {len(removed)} removed (candidate has {len(cand_set)}, reference had {len(ref_set)})"
+
+    return DiffSummary(name="bgp_edges", summary=summary, added=added, removed=removed)
+
+
+def diff_node_set(bf: Session, ref_name: str, cand_name: str) -> DiffSummary:
+    """Device delta: which devices appeared / disappeared between
+    snapshots. Catches the "this PR adds a new device" or "this PR
+    decommissions a device" cases."""
+    ref_df = bf.q.nodeProperties().answer(snapshot=ref_name).frame()
+    cand_df = bf.q.nodeProperties().answer(snapshot=cand_name).frame()
+
+    ref_set = set(ref_df["Node"].astype(str))
+    cand_set = set(cand_df["Node"].astype(str))
+
+    added = sorted(cand_set - ref_set)
+    removed = sorted(ref_set - cand_set)
+
+    if not added and not removed:
+        summary = f"no changes ({len(cand_set)} device(s), identical to reference)"
+    else:
+        summary = f"{len(added)} added, {len(removed)} removed (candidate has {len(cand_set)}, reference had {len(ref_set)})"
+
+    return DiffSummary(name="devices", summary=summary, added=added, removed=removed)
+
+
+# Master list of differential analyses run by validate.py when a
+# reference snapshot is provided.
+ALL_DIFFS = [
+    diff_node_set,
+    diff_bgp_edges,
+]
