@@ -21,6 +21,7 @@ from questions import (
     IGNORED_REF_STRUCT_TYPES,
     check_bgp_edges_symmetric,
     check_bgp_sessions,
+    check_init_issues,
     check_overlay_loopback_reachability,
     check_parse_status,
     check_undefined_references,
@@ -60,6 +61,106 @@ class FakeSession:
     tests. Construct with a dict mapping question name -> DataFrame."""
     def __init__(self, **frames):
         self.q = _FakeQNamespace(frames)
+
+
+# ----- init_issues ---------------------------------------------------
+
+def test_init_issues_empty_passes():
+    """No init issues at all -> clean pass."""
+    bf = FakeSession(initIssues=pd.DataFrame())
+    r = check_init_issues(bf)
+    assert r.passed
+    assert "no init issues" in r.summary
+
+
+def test_init_issues_warnings_only_passes():
+    """Junos EVPN warnings (Batfish doesn't fully model the feature)
+    must NOT cause a failure - they're informational."""
+    df = pd.DataFrame([
+        {"Nodes": ["dc1-leaf1"], "Type": "Convert warning",
+         "Details": "EVPN Type-2 not modeled", "Line_Text": ""},
+        {"Nodes": ["dc1-leaf2"], "Type": "Convert warning",
+         "Details": "ESI-LAG not modeled", "Line_Text": ""},
+    ])
+    r = check_init_issues(FakeSession(initIssues=df))
+    assert r.passed
+    assert "no init errors" in r.summary
+    assert "2 warning" in r.summary
+
+
+def test_init_issues_with_real_error_fails():
+    """An actual error row must hard-fail the check, with the warning
+    count and false-positive count called out separately."""
+    df = pd.DataFrame([
+        {"Nodes": ["dc1-leaf1"], "Type": "Convert error",
+         "Details": "syntax error in protocol stanza", "Line_Text": "set bogus"},
+        {"Nodes": ["dc1-leaf2"], "Type": "Convert warning",
+         "Details": "EVPN Type-2 not modeled", "Line_Text": ""},
+    ])
+    r = check_init_issues(FakeSession(initIssues=df))
+    assert not r.passed
+    assert "1 init error" in r.summary
+    assert "1 warning" in r.summary
+    assert "syntax error" in r.detail
+
+
+def test_init_issues_redflag_warning_does_not_fail():
+    """Regression guard: an earlier version of this check matched
+    'Red' as a substring of the severity field. That accidentally
+    flagged 'Convert warning (redflag)' rows as errors - they're
+    warnings (Batfish's tag for "warning we want you to notice"),
+    not fatal. Match 'error' only, not 'Red'."""
+    df = pd.DataFrame([
+        {"Nodes": ["x"], "Type": "Convert warning (redflag)",
+         "Details": "feature partially modeled", "Line_Text": ""},
+    ])
+    r = check_init_issues(FakeSession(initIssues=df))
+    assert r.passed
+    assert "no init errors" in r.summary
+    assert "1 warning" in r.summary
+
+
+def test_init_issues_known_false_positive_filtered():
+    """The same Junos mac-vrf VLAN scope gap that causes the 'vlan'
+    undefined_references false positives also produces 'Cannot assign
+    access vlan to interface ...' and 'Deactivating irb...' init
+    warnings. Both are downstream of the same Batfish parser
+    limitation. They must be filtered, not reported."""
+    df = pd.DataFrame([
+        {"Nodes": ["dc1-leaf1"], "Type": "Convert warning (redflag)",
+         "Details": "Cannot assign access vlan to interface ge-0/0/2.0: no vlan-id is assigned to vlan VLAN10",
+         "Line_Text": ""},
+        {"Nodes": ["dc1-leaf1"], "Type": "Convert warning (redflag)",
+         "Details": "Deactivating irb.10 because it has no assigned vlan",
+         "Line_Text": ""},
+    ])
+    r = check_init_issues(FakeSession(initIssues=df))
+    assert r.passed
+    assert "2 known false positive(s) ignored" in r.summary
+
+
+def test_init_issues_real_error_not_filtered():
+    """An error that doesn't match a false-positive pattern still fails."""
+    df = pd.DataFrame([
+        {"Nodes": ["x"], "Type": "Convert error",
+         "Details": "syntax error in protocol stanza", "Line_Text": "set bogus"},
+    ])
+    r = check_init_issues(FakeSession(initIssues=df))
+    assert not r.passed
+    assert "1 init error" in r.summary
+
+
+def test_init_issues_unknown_severity_column_treated_as_warning():
+    """If neither Type nor Severity column exists (older Batfish?),
+    we report row count as a warning rather than failing - we'd
+    rather not block the deploy on a column-name change."""
+    df = pd.DataFrame([
+        {"Nodes": ["x"], "Details": "something", "Line_Text": ""},
+    ])
+    r = check_init_issues(FakeSession(initIssues=df))
+    assert r.passed
+    assert "1 init issue" in r.summary
+    assert "severity column not found" in r.summary
 
 
 # ----- parse_status --------------------------------------------------

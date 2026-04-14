@@ -25,13 +25,14 @@ BATFISH_HOST from env (CI workflow injects it from secrets).
 """
 
 import argparse
+import json
 import logging
 import os
 import shutil
 import socket
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import List
 
@@ -155,6 +156,25 @@ def print_report(results: List[CheckResult]) -> bool:
     return all_passed
 
 
+def render_json_report(results: List[CheckResult]) -> str:
+    """Machine-readable JSON report. CI consumers (Phase 6 PR-comment
+    bot, GitHub Actions summary) parse this format. Stable contract:
+    top-level dict with `result` (PASS|FAIL), `passed`/`failed`/`total`
+    counts, and `checks` (list of {name, passed, summary, detail}).
+    Mirrors the human-readable report's data exactly so the two
+    formats can never disagree."""
+    passed_count = sum(1 for r in results if r.passed)
+    failed_count = len(results) - passed_count
+    payload = {
+        "result": "PASS" if failed_count == 0 else "FAIL",
+        "total": len(results),
+        "passed": passed_count,
+        "failed": failed_count,
+        "checks": [asdict(r) for r in results],
+    }
+    return json.dumps(payload, indent=2)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Phase 4 - Batfish offline config validation",
@@ -180,6 +200,13 @@ def main():
         "--snapshot-name",
         default="rendered",
         help="Batfish snapshot name (default: rendered)",
+    )
+    parser.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        help="Output format. text (default) is human-readable; json is "
+             "machine-readable for CI consumers (Phase 6 PR-comment bot).",
     )
     parser.add_argument(
         "--debug",
@@ -236,7 +263,11 @@ def main():
 
         results = run_checks(bf)
 
-    all_passed = print_report(results)
+    if args.format == "json":
+        print(render_json_report(results))
+        all_passed = all(r.passed for r in results)
+    else:
+        all_passed = print_report(results)
     sys.exit(0 if all_passed else 1)
 
 

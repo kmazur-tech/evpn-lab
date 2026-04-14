@@ -31,7 +31,16 @@
 
 services:
   batfish:
-    image: batfish/allinone:latest
+    # Pinned by digest, NOT :latest. Reproducibility for CI:
+    # the same image gets used across every run, immune to upstream
+    # `latest` tag re-pushes. Upgrade procedure (one-time, when you
+    # want a newer Batfish):
+    #   docker pull batfish/allinone:latest
+    #   docker image inspect batfish/allinone:latest --format '{{.RepoDigests}}'
+    #   # copy the sha256:... digest into this file, replacing the line below
+    #   docker compose up -d
+    # Current pin: image as it was running on 2026-04-06.
+    image: batfish/allinone@sha256:09817554db90e2f2674b72562c2d659427094187de0a3dfc23534ab58bf26207
     container_name: batfish
     restart: unless-stopped
     ports:

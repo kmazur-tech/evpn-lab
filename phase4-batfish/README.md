@@ -6,6 +6,7 @@ Offline validation of rendered Junos configs before they touch a real device. Ca
 
 | Check | What it catches | Confidence |
 |---|---|---|
+| `init_issues` | Vendor-model conversion errors, feature-not-supported, red flags across the snapshot. Broadest catch-all - recommended by pybatfish docs as the FIRST check | High - hard fail on `Convert error`, info on `Convert warning` (incl. `redflag`), known Junos EVPN false positives filtered |
 | `parse_status` | Batfish cannot parse the config at all | High - hard fail on FAILED, warning on PARTIALLY_UNRECOGNIZED (Junos features Batfish doesn't fully model) |
 | `bgp_sessions` | ASN mismatch, missing peer config, unreachable peer, wrong family | High - the most useful single Batfish check for an EVPN lab |
 | `bgp_edges_symmetric` | One side defines a peer the other doesn't (asymmetric template bug) | High |
@@ -150,8 +151,33 @@ The `--validate` flag is opt-in (off by default) so the inner-loop `--check` wor
 --bf-host IP          Batfish server (default: $BATFISH_HOST env var)
 --network NAME        Batfish network name (default: evpn-lab)
 --snapshot-name NAME  Batfish snapshot name (default: rendered)
+--format text|json    Output format. text (default) is human-readable;
+                      json is machine-readable for the Phase 6 PR-comment bot
 --debug               Verbose pybatfish logging
 ```
+
+### JSON output (for CI)
+
+```bash
+python validate.py --snapshot ../phase3-nornir/build/ --format json
+```
+
+Stable schema:
+
+```json
+{
+  "result": "PASS",
+  "total": 6,
+  "passed": 6,
+  "failed": 0,
+  "checks": [
+    {"name": "init_issues", "passed": true, "summary": "no init errors; 32 warning(s) - ...", "detail": ""},
+    ...
+  ]
+}
+```
+
+The Phase 6 CI workflow will consume this and post it as a PR comment via a small renderer.
 
 ## Tests
 
@@ -162,8 +188,9 @@ Pure-function unit tests under `tests/` use mocked pybatfish - no Batfish contai
 ```
 
 Coverage:
-- `test_questions.py` - 19 tests pinning the 5 checks against canned pandas DataFrames (parse status, BGP session counts, edge symmetry, undefined-ref ignore list, iBGP filter using Session_Type to avoid the Local_AS/Remote_AS dtype mismatch)
+- `test_questions.py` - 26 tests pinning the 6 checks against canned pandas DataFrames (init_issues severity matching + false-positive filter, parse status, BGP session counts, edge symmetry, undefined-ref ignore list, iBGP filter using Session_Type to avoid the Local_AS/Remote_AS dtype mismatch)
 - `test_validate.py` - tests for `stage_snapshot()` filter logic (excludes pre-commit backups and per-stanza files), `check_reachable()` TCP probe behavior
+- `test_json_format.py` - 6 tests pinning the JSON output schema (top-level result/total/passed/failed/checks fields, dataclass-asdict mapping, edge cases)
 
 ## CI integration (Phase 6)
 

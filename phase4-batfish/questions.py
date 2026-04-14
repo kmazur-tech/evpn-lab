@@ -71,6 +71,103 @@ def _frame_to_str(df: pd.DataFrame, max_rows: int = 20) -> str:
 
 # ----- checks ----------------------------------------------------------
 
+# Init-issue Details substrings we ignore as known false positives.
+# All five of these are downstream effects of the SAME Batfish gap:
+# the Junos parser does not track VLAN definitions inside
+# `routing-instances ... mac-vrf { vlans { ... } }`, so VLANs
+# referenced from `family ethernet-switching` show as "no vlan-id
+# assigned" even though real Junos resolves them fine. The IRBs
+# bound to those VLANs then get deactivated as a downstream effect.
+# Same root cause as IGNORED_REF_STRUCT_TYPES = {"vlan"} above.
+IGNORED_INIT_ISSUE_PATTERNS = (
+    "Cannot assign access vlan to interface",  # access port + VLAN binding
+    "Deactivating irb",                         # IRB downstream of above
+)
+
+
+def check_init_issues(bf: Session) -> CheckResult:
+    """The broadest single Batfish question - reports issues from snapshot
+    initialization including parse failures, vendor-model conversion errors,
+    feature-not-supported warnings, and red flags across the whole snapshot.
+
+    Recommended by pybatfish docs as the FIRST thing to check after
+    init_snapshot. Complements (does not replace) check_parse_status:
+    parse_status only catches parse failures, init_issues catches the
+    additional class of "Batfish parsed your line but couldn't build a
+    model from it" issues.
+
+    Severity model:
+      - "Convert error" / "Parse error" rows  -> hard fail
+      - "Convert warning" rows (incl. "redflag" sub-category)  -> info, do not fail
+      - rows whose Details match a known-false-positive pattern -> filtered out entirely
+      - empty                 -> pass
+
+    Junos EVPN/VXLAN under-modeling produces a lot of warning-level
+    init_issues for things Batfish doesn't simulate (Type-2 routes,
+    ESI-LAG, etc). We accept these as warnings rather than failing,
+    same way check_parse_status accepts PARTIALLY_UNRECOGNIZED.
+    """
+    df = bf.q.initIssues().answer().frame()
+    if df.empty:
+        return CheckResult("init_issues", True, "no init issues")
+
+    # Batfish severity column is "Type" in some versions, "Severity" in
+    # others. Probe both. Anything containing "error" (case-insensitive)
+    # is fatal. Note: we deliberately do NOT match "Red" as a substring -
+    # "redflag" is Batfish's tag for "warning we want you to notice",
+    # NOT a fatal severity, and an earlier version of this check
+    # incorrectly classified "Convert warning (redflag)" rows as errors.
+    sev_col = None
+    for col in ("Type", "Severity"):
+        if col in df.columns:
+            sev_col = col
+            break
+
+    if sev_col is None:
+        return CheckResult(
+            "init_issues",
+            True,
+            f"{len(df)} init issue(s) reported (severity column not found, "
+            f"treating as warning)",
+        )
+
+    # Filter out known false positives by Details substring match.
+    # Use the existing Details column if present.
+    if "Details" in df.columns:
+        ignored_mask = df["Details"].astype(str).apply(
+            lambda d: any(p in d for p in IGNORED_INIT_ISSUE_PATTERNS)
+        )
+        ignored = df[ignored_mask]
+        df = df[~ignored_mask]
+    else:
+        ignored = pd.DataFrame()
+
+    error_mask = df[sev_col].astype(str).str.contains("error", case=False, na=False)
+    errors = df[error_mask]
+    warnings = df[~error_mask]
+
+    if not errors.empty:
+        cols_to_show = [c for c in ["Nodes", "Type", "Severity", "Details", "Line_Text"]
+                        if c in df.columns]
+        return CheckResult(
+            "init_issues",
+            False,
+            f"{len(errors)} init error(s) (and {len(warnings)} warning(s), "
+            f"{len(ignored)} known-false-positive(s) filtered)",
+            detail=_frame_to_str(errors[cols_to_show] if cols_to_show else errors),
+        )
+
+    summary_parts = ["no init errors"]
+    if len(warnings):
+        summary_parts.append(
+            f"{len(warnings)} warning(s) - typically Junos EVPN features "
+            f"Batfish does not fully model"
+        )
+    if len(ignored):
+        summary_parts.append(f"{len(ignored)} known false positive(s) ignored")
+    return CheckResult("init_issues", True, "; ".join(summary_parts))
+
+
 def check_parse_status(bf: Session) -> CheckResult:
     """Every config file must be parsed by Batfish. Hard fail on PASSED=False;
     PARTIALLY_UNRECOGNIZED is a warning (Junos has features Batfish doesn't
@@ -277,6 +374,7 @@ def check_overlay_loopback_reachability(bf: Session) -> CheckResult:
 # all checks run regardless of earlier results so the operator sees the
 # full picture in one report.
 ALL_CHECKS = [
+    check_init_issues,
     check_parse_status,
     check_bgp_sessions,
     check_bgp_edges_symmetric,
