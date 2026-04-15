@@ -20,6 +20,28 @@ The Phase 2 smoke suite (~76 checks) covers the runtime side: actual BGP converg
 - **Phase 4 Batfish** = "did the templates produce structurally valid configs?" Runs in seconds, no devices needed.
 - **Phase 2 smoke** = "does the deployed fabric actually work?" Runs against the live lab.
 
+### Specific Batfish features explicitly NOT used today, mapped to the phase that would adopt them
+
+| Batfish question | What it does | Why deferred | Phase that adopts it |
+|---|---|---|---|
+| `testFilters` / `searchFilters` | ACL and firewall filter analysis - "would packet X be permitted by the filter on interface Y?" | Phase 2/3 lab has zero filters in the rendered config. Nothing to test against. | **Phase 9 (CIS/PCI-DSS hardening)** when management ACLs, NTP/syslog/RADIUS source filters, and login-banner-class controls land. The ACL analysis becomes load-bearing once we're checking that the management subnet ACL doesn't accidentally block the BGP/BFD/VXLAN control plane. |
+| `nodeProperties` / `interfaceProperties` | Per-device configured-state checks: admin state, MTU, descriptions, bond parameters | Already covered by Phase 3's byte-exact regression gate against `phase3-nornir/expected/`. Adding the same coverage here would duplicate the work without adding signal. | Stays out of scope; Phase 3 owns it. |
+| `evpnL3VniProperties` / `vxlanVniProperties` | EVPN VNI configuration discovery (which VNIs each leaf has, RT/RD per VNI) | Batfish's Junos EVPN modeling is partial (see [batfish#5036](https://github.com/batfish/batfish/issues/5036)). What it CAN extract today is mostly redundant with the Phase 3 enrich path that already pulls this from NetBox. | **Phase 11 (multi-DC)** when EVPN Type-5 DCI between Junos (DC1) and Arista cEOS (DC2) becomes the most likely place for protocol-level interop bugs. Cross-vendor VNI configuration discovery via Batfish becomes useful precisely when we have two vendors to compare. |
+| `traceroute` / `bidirectionalReachability` | Symbolic data-plane simulation - "can host A reach host B in this snapshot?" | Phase 2 smoke does this for real on the live lab. Batfish's version is more useful when the lab is too big to spin up cheaply, OR when you want to test "what if I disable this interface?" scenarios offline. Neither is the case for a 4-device lab. | **Phase 11** at the earliest, when DC2 doubles the device count and what-if-this-link-fails scenarios become more interesting. |
+| `subnetMultipleNodes` / `unusedStructures` | Hygiene checks: which prefixes have multiple devices on them, which defined structures aren't referenced anywhere | Low signal-to-noise on a fabric this small. unusedStructures would flag the FABRIC-TENANT-RT-RANGE community we deliberately defined for documentation. | **Optional in Phase 6 (CI)** as a soft warning, never as a fail. |
+| `definedStructures` (full inventory) | Lists every structure name Batfish parsed - useful for reverse-engineering what Batfish thinks the config looks like | Debug-only, not a regression check. | Available as `bf.q.definedStructures().answer().frame()` in interactive sessions for anyone exploring the snapshot. |
+
+### Specific Batfish features explicitly NOT used because Batfish does NOT support them on Junos
+
+These are real Junos features that Batfish either doesn't model at all or models so partially that running the question gives misleading results:
+
+- **EVPN Type-2 MAC/IP route propagation, Type-3 inclusive multicast, Type-5 IP prefix routes** — pybatfish's [VXLAN and EVPN](https://batfish.readthedocs.io/en/latest/notebooks/vxlan_evpn.html) docs mention partial support; the active development is on Cisco NX-OS, with Junos catch-up tracked in [batfish#5036](https://github.com/batfish/batfish/issues/5036).
+- **ESI-LAG, designated forwarder election** — runtime EVPN concepts not in Batfish's model.
+- **BFD timers and convergence** — not modeled.
+- **`mac-vrf` instance VLAN scope** — Batfish doesn't track VLAN definitions inside `routing-instances ... mac-vrf { vlans { ... } }`. This is the root cause of the `IGNORED_REF_STRUCT_TYPES = {"vlan"}` filter and the `IGNORED_INIT_ISSUE_PATTERNS` list in `questions.py`. Confirmed via [batfish#7289](https://github.com/batfish/batfish/issues/7289).
+
+If Batfish ever adds full EVPN/Junos modeling (it's an active area), the Phase 4 ignore lists in `questions.py` are the first thing to revisit.
+
 ## Environment configuration
 
 The Batfish server hostname/IP is environment-specific and lives in the external env file (same one Phase 1/3 use):
