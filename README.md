@@ -52,8 +52,8 @@ An automated EVPN-VXLAN data center fabric built with Infrastructure as Code pri
 | [NetBox](https://netbox.dev/) | Source of Truth - devices, IPs, VLANs, ASNs, cabling |
 | [Containerlab](https://containerlab.dev/) | Virtual network lab (vJunos-switch, Linux hosts) |
 | [pynetbox](https://github.com/netbox-community/pynetbox) | Idempotent NetBox population via Python |
-| [Nornir](https://nornir.readthedocs.io/) | Configuration rendering and deployment (planned) |
-| [Batfish](https://www.batfish.org/) | Pre-deployment config validation (planned) |
+| [Nornir](https://nornir.readthedocs.io/) | Configuration rendering and deployment |
+| [Batfish](https://www.batfish.org/) | Pre-deployment config validation |
 | [Suzieq](https://suzieq.readthedocs.io/) | Post-deployment state validation (planned) |
 | Juniper Junos | Network OS (EVPN-VXLAN, ERB, ESI-LAG) |
 | Arista EOS | Multi-vendor DC2 extension (planned) |
