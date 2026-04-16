@@ -105,20 +105,31 @@ Result: `python deploy.py` builds the full fabric from zero to production. Chang
 
 ## Phase 4 - Batfish Pre-Deployment Validation
 
-Offline validation of generated configurations before deploying them to devices.
+Offline structural validation of rendered configs before they touch any device. Catches the class of bugs (BGP topology errors, undefined policy references, parse failures, IP ownership conflicts, loopback unreachability) that the Phase 3 regression gate and on-disk guard don't cover - and catches them **without** spinning up the lab.
+
+Scope intentionally narrowed from "everything Batfish can do" to "what Batfish models reliably on Junos". The two boundaries below are deliberate, not gaps:
+
+- **Runtime EVPN behaviors** (Type-2/3/5 propagation, ESI-LAG, DF election, BFD convergence) are owned by the Phase 2 smoke suite, which validates them on the live fabric. Batfish's Junos EVPN modeling is partial ([batfish#5036](https://github.com/batfish/batfish/issues/5036), [#7289](https://github.com/batfish/batfish/issues/7289)); duplicating Phase 2 here would add false positives without signal.
+- **ACL/firewall analysis** (`testFilters` / `searchFilters` for BGP/VXLAN UDP 4789/BFD reachability) is deferred to Phase 8 (CIS/PCI-DSS hardening). The current rendered configs have zero filters, so there's nothing to analyze; the analysis becomes load-bearing once management ACLs land.
+- **Route-target consistency** is already enforced by the Phase 3 byte-exact regression gate against `phase3-nornir/expected/`. Re-checking it in Batfish would duplicate without adding signal.
 
 Scope:
-- Batfish container in docker-compose
-- Python validation script (pybatfish) running after config rendering, before deployment
-- Tests:
-  - Will all BGP sessions establish (topology and configuration analysis)
-  - Are EVPN route-targets consistent across leaves
-  - Are there any IP addressing conflicts
-  - Do ACLs/firewall filters block control plane traffic (BGP, VXLAN UDP 4789, BFD)
-- Differential analysis: before/after comparison on configuration changes
-- Test output in CI-friendly format (exit code 0/1 + report)
+- Batfish container in docker-compose, deployed alongside the Phase 1 NetBox stack on the netdevops services VM. Image pinned by SHA256 digest for reproducibility.
+- Python validation script (`phase4-batfish/validate.py`) using pybatfish, runs after config rendering, before deployment. Wired into Phase 3 `deploy.py` via opt-in `--validate` flag and as a standalone CI stage.
+- Reachability probe (TCP/9996) before any pybatfish API call so unreachable Batfish fails fast with an actionable error.
+- Six structural checks against the rendered snapshot:
+  1. `init_issues` - vendor-model conversion errors, parser red flags (with documented Junos mac-vrf VLAN false-positive filter)
+  2. `parse_status` - file-level parse failures
+  3. `bgp_sessions` - every defined BGP session reaches ESTABLISHED in simulation (catches ASN mismatch, missing peer, unreachable peer, wrong family)
+  4. `bgp_edges_symmetric` - one-sided peer definitions (asymmetric template bug)
+  5. `undefined_references` - template emits a policy/community/AS-path name that isn't defined (with documented Junos mac-vrf VLAN false-positive filter)
+  6. `overlay_loopback_reachability` - every iBGP overlay peer's loopback is in the local BGP RIB
+  7. `ip_ownership_conflicts` - no non-anycast IP is owned by more than one (node, VRF) pair (catches duplicate /31 P2P numbering, loopback collision, IRB unicast collision)
+- **Differential analysis** (the killer Batfish-for-CI feature): when `--reference-snapshot` is provided (typically `phase3-nornir/expected/`), validate.py initializes both snapshots and reports what changed - device set delta + BGP topology delta. Informational output, never affects exit code. Phase 6's PR-comment bot consumes the JSON `diffs` field.
+- Two-tier pytest suite: unit tests (mocked pybatfish, ~1s, runs on every PR) + integration tests (against real Batfish container, marked `@pytest.mark.integration`).
+- CI-friendly JSON output (`--format json`) with stable schema for the Phase 6 PR-comment bot.
 
-Result: configuration errors caught before touching any device.
+Result: structural configuration errors caught before touching any device. Runtime correctness stays Phase 2's job; ACL hygiene is deferred to Phase 8.
 
 ---
 
