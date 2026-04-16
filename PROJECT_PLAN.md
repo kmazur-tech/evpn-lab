@@ -117,7 +117,7 @@ Scope:
 - Batfish container in docker-compose, deployed alongside the Phase 1 NetBox stack on the netdevops services VM. Image pinned by SHA256 digest for reproducibility.
 - Python validation script (`phase4-batfish/validate.py`) using pybatfish, runs after config rendering, before deployment. Wired into Phase 3 `deploy.py` via opt-in `--validate` flag and as a standalone CI stage.
 - Reachability probe (TCP/9996) before any pybatfish API call so unreachable Batfish fails fast with an actionable error.
-- Six structural checks against the rendered snapshot:
+- Seven structural checks against the rendered snapshot:
   1. `init_issues` - vendor-model conversion errors, parser red flags (with documented Junos mac-vrf VLAN false-positive filter)
   2. `parse_status` - file-level parse failures
   3. `bgp_sessions` - every defined BGP session reaches ESTABLISHED in simulation (catches ASN mismatch, missing peer, unreachable peer, wrong family)

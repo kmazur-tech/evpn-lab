@@ -269,7 +269,7 @@ Pytest fixtures with module scope (per Said van de Klundert's pytest+Batfish pat
 Run both unit and integration: `pytest -m "integration or not integration"`.
 
 Coverage:
-- `test_questions.py` - 26 tests pinning the 6 checks against canned pandas DataFrames (init_issues severity matching + false-positive filter, parse status, BGP session counts, edge symmetry, undefined-ref ignore list, iBGP filter using Session_Type to avoid the Local_AS/Remote_AS dtype mismatch)
+- `test_questions.py` - 33 tests pinning the 7 checks against canned pandas DataFrames (init_issues severity matching + false-positive filter, parse status, BGP session counts, edge symmetry, undefined-ref ignore list, iBGP filter using Session_Type to avoid the Local_AS/Remote_AS dtype mismatch, IP ownership conflicts with anycast IRB allowlist)
 - `test_validate.py` - tests for `stage_snapshot()` filter logic (excludes pre-commit backups and per-stanza files), `check_reachable()` TCP probe behavior
 - `test_json_format.py` - 6 tests pinning the JSON output schema (top-level result/total/passed/failed/checks fields, dataclass-asdict mapping, edge cases)
 - `test_diffs.py` - 10 tests pinning the differential analysis layer (`diff_bgp_edges`, `diff_node_set`) with snapshot-aware mock sessions
@@ -291,6 +291,9 @@ phase4-batfish/
   validate.py           entry point: snapshot -> reachability probe -> Batfish -> report -> exit 0/1
   questions.py          check definitions (one function per check, all in ALL_CHECKS list)
   tests/
-    test_questions.py   unit tests for the 5 checks (mocked pybatfish)
+    test_questions.py   unit tests for the 7 checks (mocked pybatfish)
     test_validate.py    unit tests for stage_snapshot() and check_reachable()
+    test_json_format.py unit tests pinning the JSON output schema
+    test_diffs.py       unit tests for differential analysis (diff_bgp_edges, diff_node_set)
+    test_integration.py integration tests against a real Batfish container (marked @pytest.mark.integration)
 ```

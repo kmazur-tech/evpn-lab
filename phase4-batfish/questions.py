@@ -72,7 +72,7 @@ def _frame_to_str(df: pd.DataFrame, max_rows: int = 20) -> str:
 # ----- checks ----------------------------------------------------------
 
 # Init-issue Details substrings we ignore as known false positives.
-# All five of these are downstream effects of the SAME Batfish gap:
+# Both of these are downstream effects of the SAME Batfish gap:
 # the Junos parser does not track VLAN definitions inside
 # `routing-instances ... mac-vrf { vlans { ... } }`, so VLANs
 # referenced from `family ethernet-switching` show as "no vlan-id
