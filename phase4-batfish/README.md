@@ -12,6 +12,7 @@ Offline validation of rendered Junos configs before they touch a real device. Ca
 | `bgp_edges_symmetric` | One side defines a peer the other doesn't (asymmetric template bug) | High |
 | `undefined_references` | Template emits `vrf-import EVPN-IMPORT-X` but no policy named EVPN-IMPORT-X is defined | High - catches Phase 3 template typos |
 | `overlay_loopback_reachability` | iBGP overlay peer loopbacks not present in BGP RIB (overlay can't establish) | High |
+| `ip_ownership_conflicts` | Same IP owned by more than one (node, VRF) pair - duplicate /31 P2P numbering, loopback collision, IRB unicast collision | High - allowlists `irb.*` interfaces because the lab's anycast gateway address is intentionally shared across both leaves via `virtual-gateway-address` |
 
 ## What it does NOT validate (intentionally)
 

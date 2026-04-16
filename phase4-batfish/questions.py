@@ -370,6 +370,84 @@ def check_overlay_loopback_reachability(bf: Session) -> CheckResult:
     )
 
 
+# Interface name patterns whose IPs are EXPECTED to be duplicated
+# across nodes by design. Lab convention: anycast gateways live on
+# IRB interfaces using `virtual-gateway-address`, intentionally shared
+# across both leaves of an ESI-LAG. Batfish reports the virtual-gateway
+# address as a normal owner on each leaf, which would otherwise look
+# like a duplicate IP. The leaf-LOCAL irb address (different per leaf)
+# is unaffected because it's, well, different per leaf.
+#
+# This is the only legitimate cross-node IP duplication in the lab.
+# Anything else (a /31 P2P link with both ends configured the same,
+# a typoed loopback, etc.) is a real bug and must fail the check.
+IGNORED_DUPLICATE_IP_INTERFACE_PREFIXES = ("irb.",)
+
+
+def check_ip_ownership_conflicts(bf: Session) -> CheckResult:
+    """No non-anycast IP should be owned by more than one (node, VRF)
+    pair. Catches duplicate /31 P2P numbering, loopback collisions,
+    IRB unicast collisions - all real bugs that would either prevent
+    the session establishing or cause silent black-holing.
+
+    Allowlist: IRB interfaces are expected to share the anycast
+    gateway address across leaves by design (lab convention uses
+    `virtual-gateway-address` on `irb.<vlan>`). See
+    IGNORED_DUPLICATE_IP_INTERFACE_PREFIXES for the rationale.
+
+    Uses Batfish's `ipOwners` question. Active=False rows are filtered
+    out (an IP on a shutdown interface isn't a conflict)."""
+    df = bf.q.ipOwners().answer().frame()
+    if df.empty:
+        return CheckResult(
+            "ip_ownership_conflicts",
+            True,
+            "no IP owners reported (empty fabric?)",
+        )
+
+    # Drop inactive interfaces - their IPs aren't really owned.
+    if "Active" in df.columns:
+        df = df[df["Active"] != False]  # noqa: E712 - explicit bool compare for pandas
+    if df.empty:
+        return CheckResult("ip_ownership_conflicts", True, "no active IP owners")
+
+    # Filter the anycast allowlist BEFORE counting duplicates so that
+    # legitimate IRB virtual-gateway addresses don't pollute the
+    # conflict report.
+    if "Interface" in df.columns:
+        ignored_mask = df["Interface"].astype(str).apply(
+            lambda i: any(i.startswith(p) for p in IGNORED_DUPLICATE_IP_INTERFACE_PREFIXES)
+        )
+        ignored_count = int(ignored_mask.sum())
+        df = df[~ignored_mask]
+    else:
+        ignored_count = 0
+
+    # Group by IP. A conflict is any IP owned by more than one
+    # (Node, VRF) pair. Same node + same VRF + multiple interfaces is
+    # legitimate (e.g. secondary addresses); we don't flag that.
+    grouped = df.groupby("IP")[["Node", "VRF"]].apply(
+        lambda g: len({(r["Node"], r["VRF"]) for _, r in g.iterrows()})
+    )
+    conflicting_ips = grouped[grouped > 1].index.tolist()
+
+    if not conflicting_ips:
+        msg = f"no IP conflicts ({len(df)} active owner(s) checked"
+        if ignored_count:
+            msg += f", {ignored_count} anycast IRB row(s) allowlisted"
+        msg += ")"
+        return CheckResult("ip_ownership_conflicts", True, msg)
+
+    detail_rows = df[df["IP"].isin(conflicting_ips)].sort_values("IP")
+    cols = [c for c in ["IP", "Node", "VRF", "Interface"] if c in detail_rows.columns]
+    return CheckResult(
+        "ip_ownership_conflicts",
+        False,
+        f"{len(conflicting_ips)} IP(s) owned by multiple (node, VRF) pairs",
+        detail=_frame_to_str(detail_rows[cols]),
+    )
+
+
 # Master list - validate.py iterates this. Order is informational only;
 # all checks run regardless of earlier results so the operator sees the
 # full picture in one report.
@@ -380,6 +458,7 @@ ALL_CHECKS = [
     check_bgp_edges_symmetric,
     check_undefined_references,
     check_overlay_loopback_reachability,
+    check_ip_ownership_conflicts,
 ]
 
 

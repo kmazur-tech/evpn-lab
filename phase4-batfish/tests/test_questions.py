@@ -22,6 +22,7 @@ from questions import (
     check_bgp_edges_symmetric,
     check_bgp_sessions,
     check_init_issues,
+    check_ip_ownership_conflicts,
     check_overlay_loopback_reachability,
     check_parse_status,
     check_undefined_references,
@@ -379,6 +380,87 @@ def test_overlay_loopback_empty_sessions_fails():
     assert not r.passed
 
 
+# ----- ip_ownership_conflicts ----------------------------------------
+
+def _ip_owner_row(ip, node, vrf="default", interface="lo0.0", active=True):
+    return {"IP": ip, "Node": node, "VRF": vrf, "Interface": interface,
+            "Mask": 32, "Active": active}
+
+
+def test_ip_ownership_no_duplicates_passes():
+    df = pd.DataFrame([
+        _ip_owner_row("10.1.0.1", "dc1-spine1"),
+        _ip_owner_row("10.1.0.2", "dc1-spine2"),
+        _ip_owner_row("10.1.0.3", "dc1-leaf1"),
+    ])
+    r = check_ip_ownership_conflicts(FakeSession(ipOwners=df))
+    assert r.passed
+    assert "no IP conflicts" in r.summary
+
+
+def test_ip_ownership_duplicate_loopback_fails():
+    """Two devices configured with the same loopback - the bug class
+    that breaks the EVPN overlay silently."""
+    df = pd.DataFrame([
+        _ip_owner_row("10.1.0.3", "dc1-leaf1"),
+        _ip_owner_row("10.1.0.3", "dc1-leaf2"),  # collision
+    ])
+    r = check_ip_ownership_conflicts(FakeSession(ipOwners=df))
+    assert not r.passed
+    assert "1 IP(s) owned by multiple" in r.summary
+    assert "10.1.0.3" in r.detail
+
+
+def test_ip_ownership_duplicate_p2p_fails():
+    """Both ends of a /31 P2P link configured with the same address."""
+    df = pd.DataFrame([
+        _ip_owner_row("10.1.4.0", "dc1-spine1", interface="ge-0/0/0.0"),
+        _ip_owner_row("10.1.4.0", "dc1-leaf1", interface="ge-0/0/0.0"),
+    ])
+    r = check_ip_ownership_conflicts(FakeSession(ipOwners=df))
+    assert not r.passed
+
+
+def test_ip_ownership_anycast_irb_allowlisted():
+    """The lab's anycast gateway lives on irb.<vlan> and is shared
+    across both leaves by design (virtual-gateway-address). Must NOT
+    be flagged as a conflict."""
+    df = pd.DataFrame([
+        _ip_owner_row("10.10.10.1", "dc1-leaf1", interface="irb.10"),
+        _ip_owner_row("10.10.10.1", "dc1-leaf2", interface="irb.10"),
+    ])
+    r = check_ip_ownership_conflicts(FakeSession(ipOwners=df))
+    assert r.passed
+    assert "anycast IRB row(s) allowlisted" in r.summary
+
+
+def test_ip_ownership_inactive_interface_ignored():
+    """An IP on a shutdown interface isn't really owned and shouldn't
+    create a conflict report."""
+    df = pd.DataFrame([
+        _ip_owner_row("10.1.0.3", "dc1-leaf1", active=True),
+        _ip_owner_row("10.1.0.3", "dc1-leaf2", active=False),  # shutdown
+    ])
+    r = check_ip_ownership_conflicts(FakeSession(ipOwners=df))
+    assert r.passed
+
+
+def test_ip_ownership_same_node_same_vrf_not_a_conflict():
+    """Multiple addresses on the same (node, VRF) - e.g. a primary
+    plus secondary on one interface - is legitimate, not a conflict."""
+    df = pd.DataFrame([
+        _ip_owner_row("10.1.0.3", "dc1-leaf1", interface="lo0.0"),
+        _ip_owner_row("10.1.0.3", "dc1-leaf1", interface="lo0.1"),
+    ])
+    r = check_ip_ownership_conflicts(FakeSession(ipOwners=df))
+    assert r.passed
+
+
+def test_ip_ownership_empty_passes():
+    r = check_ip_ownership_conflicts(FakeSession(ipOwners=pd.DataFrame()))
+    assert r.passed
+
+
 # ----- ALL_CHECKS sanity ---------------------------------------------
 
 def test_all_checks_have_unique_names():
@@ -392,6 +474,7 @@ def test_all_checks_have_unique_names():
         bgpEdges=pd.DataFrame(),
         undefinedReferences=pd.DataFrame(),
         routes=pd.DataFrame(),
+        ipOwners=pd.DataFrame(),
     )
     names = []
     for check in ALL_CHECKS:
