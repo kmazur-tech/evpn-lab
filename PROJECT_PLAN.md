@@ -99,7 +99,7 @@ Scope:
 - `deploy.py` script as entry point: fetch from NetBox -> render -> deploy -> report
 - Idempotency: re-running causes no changes if the NetBox intent hasn't changed
 
-Result: `python deploy.py` builds the full fabric from zero to production. Change in NetBox -> re-deploy -> fabric updates. Phase 3 is **add/update-oriented**: it covers the full path from yaml -> NetBox -> Nornir render -> NAPALM commit-confirmed deploy for adding new objects and updating the small allowlist of fields populate.py knows how to patch. Destructive lifecycle operations (prune of allowlisted classes, whole-device or whole-link decommission) are introduced separately in Phase 11 - Controlled Lifecycle Operations.
+Result: `python deploy.py` builds the full fabric from zero to production. Change in NetBox -> re-deploy -> fabric updates. Phase 3 is **add/update-oriented**: it covers the full path from yaml -> NetBox -> Nornir render -> NAPALM commit-confirmed deploy for adding new objects and updating the small allowlist of fields populate.py knows how to patch. Destructive and operator-driven lifecycle operations (prune of allowlisted classes, graceful drain for safe firmware upgrades, whole-device or whole-link decommission) are introduced separately in Phase 11 - Controlled Lifecycle Operations.
 
 ---
 
@@ -311,15 +311,15 @@ Result: multi-vendor, multi-DC EVPN-VXLAN with NetBox as single source of truth,
 
 ## Phase 11 - Controlled Lifecycle Operations
 
-Closing the operational gap between Phase 3 ("from zero to production") and a real day-2 lifecycle. Phase 3 demonstrated NetBox-as-SoT for **adding** infrastructure; Phase 11 adds **explicitly limited, safe** patterns for **modifying** and **removing** it.
+Closing the operational gap between Phase 3 ("from zero to production") and a real day-2 lifecycle. Phase 3 demonstrated NetBox-as-SoT for **adding** infrastructure; Phase 11 adds **explicitly limited, safe** patterns for **modifying**, **temporarily draining**, and **removing** it.
 
 ### Why this is deliberately limited
 
 A full desired-state reconciler (yaml + computed CREATE/UPDATE/DELETE plan against every object class in NetBox, with full dependency ordering, opt-in destructive flags, journal integration, rollback, etc.) is a real engineering investment. Production network orchestrators do this; for a showcase lab it would be a 10x scope explosion that brings 10x the test surface, edge cases, and rollback complexity.
 
-Phase 11 takes a different bet: **three explicit tiers of action, narrow allowlists, and never any blind cleanup.** The lab demonstrates safe day-2 operations without pretending to be a full reconciler. The honest framing (controlled, limited, predictable) is better showcase material than the dishonest framing (looks like full CRUD but breaks under edge cases).
+Phase 11 takes a different bet: **four explicit tiers of action, narrow allowlists, and never any blind cleanup.** The lab demonstrates safe day-2 operations without pretending to be a full reconciler. The honest framing (controlled, limited, predictable) is better showcase material than the dishonest framing (looks like full CRUD but breaks under edge cases).
 
-### Three tiers of operation
+### Four tiers of operation
 
 #### Tier 1: Add / update (non-destructive)
 
@@ -343,7 +343,7 @@ A new entry point: `python phase11-lifecycle/prune.py <class>`. Removes objects 
 | BGP neighbor (when modeled as NetBox object) | Reverses Phase 3 enrich derivation | Drop a stale peer from a fabric link |
 | L2VPN VLAN termination | Reverses Phase 3 prep step 14e | Remove a VLAN from a tenant's MAC-VRF |
 
-Anything NOT in this list — devices, cables, prefixes, VRFs, sites, custom fields, anycast gateway IPs, lo0 interfaces — is **explicitly out of scope for prune** and requires Tier 3 or manual NetBox UI action.
+Anything NOT in this list — devices, cables, prefixes, VRFs, sites, custom fields, anycast gateway IPs, lo0 interfaces — is **explicitly out of scope for prune** and requires Tier 4 or manual NetBox UI action.
 
 How prune works:
 - **Diff-driven**: takes a yaml stanza (or explicit object IDs) and computes "objects in NetBox of this class that are not in yaml"
@@ -353,9 +353,49 @@ How prune works:
 - **Hard-fail if any to-be-pruned object has a dependency the prune doesn't know about** (e.g. an IRB still has IPs assigned, or an L2VPN termination is the last termination on a non-empty L2VPN)
 - **Never combined with a device push in one step**: prune mutates NetBox only. The operator runs `python phase3-nornir/deploy.py --commit` separately as the explicit second step. The two-step model means you always have a chance to review the rendered config diff after the NetBox change before anything reaches a device.
 
-#### Tier 3: Decommission workflow
+#### Tier 3: Maintenance mode (graceful traffic drain)
 
-A separate path for removing a **whole device** or a **whole fabric link** (cable + the two interface assignments). Not run from `populate.py` or `prune.py`. New script: `phase11-lifecycle/decommission.py`.
+A separate path for **temporarily** removing a device from the data path so a human operator can do disruptive work on it (firmware upgrade, line-card swap, RMA, BIOS update, kernel patch) without dropping production traffic. Reversible by definition - the device stays in NetBox, the cables stay in NetBox, the BGP sessions stay configured. The drain only changes how peers select paths, not what exists.
+
+Why this is its own tier and not part of decommission: maintenance is the **most common** day-2 destructive-looking operation in real networks (every device gets firmware upgrades; very few get decommissioned), and conflating it with permanent removal is exactly how operators end up either (a) dropping traffic during a "routine" upgrade because they skipped the drain or (b) accidentally removing a device they meant to bring back. Naming the workflow separately makes the intent unambiguous.
+
+New script: `phase11-lifecycle/maintenance.py <device> {drain|restore} [--plan|--apply]`. Steps for `drain`:
+
+1. **Pre-flight check**: verify the redundant peer is healthy. The drain is unsafe if the peer is itself down or already draining. Reuses Phase 5 SuzieQ assertions:
+   - For a spine: the OTHER spine has all expected BGP sessions Established and is forwarding traffic.
+   - For a leaf in an ESI-LAG pair: the OTHER leaf in the same ESI is healthy AND is currently the DF or capable of becoming DF for every ESI it shares.
+   - Hard fail if the peer is not in a state that can absorb the load.
+2. **Apply drain knobs** (BGP-level traffic steering, not interface shut):
+   - **Underlay**: AS-path prepending on every eBGP session out of the device (3x prepend by default, configurable). Peers prefer the alternate path; the device still has full reachability so SSH and Suzieq polling continue to work.
+   - **Overlay (EVPN)**: announce all locally-originated EVPN routes with the **graceful shutdown community** (RFC 8326, `well-known:graceful-shutdown` = 65535:0). Remote VTEPs lower local-preference on those routes and converge on the peer VTEP.
+   - **ESI-LAG (leaf only)**: trigger DF re-election by withdrawing the local Type-4 ES route (or, on platforms that support it, set the ESI-LAG DF preference to lowest so the peer becomes DF). Host-facing LACP stays UP so the device can still talk to its hosts after restore - this is a routing-level drain, not a link-level shutdown.
+3. **Wait for convergence**: poll Suzieq until the BGP best-path on every neighbor has shifted off the draining device, then poll for N additional seconds (default 30) to let host-side ARP/MAC tables age out and re-learn via the peer.
+4. **Verify drain**: traffic counters on the drained device's transit interfaces decrease to zero (or a configured threshold) and stay there. The device is still UP and reachable, but no production traffic flows through it.
+5. **Hand off to operator**: print a clear "device is drained, safe to take maintenance action" message with the BGP / EVPN / ESI state at drain time captured in a JSON artifact under `phase11-lifecycle/maintenance-state/<device>-<timestamp>.json`. The operator now does whatever they need to do (firmware upgrade via vendor tooling, hardware swap, etc.) outside this script.
+
+Steps for `restore`:
+
+1. **Pre-flight check**: the device is reachable (SSH, BGP TCP up) and its software version / hardware inventory matches what the operator declares with `--expect-version` (catches "I drained spine1 then forgot which spine I was upgrading" class).
+2. **Reverse the drain knobs** in opposite order: ESI-LAG DF preference back to default, EVPN graceful shutdown community removed, eBGP AS-path prepend removed.
+3. **Wait for convergence + re-verify**: BGP back to Established with full prefix counts, traffic counters back to expected baseline, ESI DF election balanced.
+4. **Re-run smoke gate**: full Phase 2 smoke from the lab server. Hard fail on any regression.
+5. **Snapshot post-restore state**: the same JSON artifact format as drain, for diff-against-pre-drain comparison.
+
+How `maintenance.py` is bounded:
+
+- **Pure config-overlay drain, never an interface shut**: an interface shut on the wrong port can take down a host LACP bundle in a way that hard-loses traffic during the drain itself. The BGP / EVPN / DF approach reroutes BEFORE removing the device from the path.
+- **Single device per invocation**: the script refuses to drain two devices at once. Operators who want to drain a whole pair (e.g. both spines for a fabric-wide upgrade) run the script twice with explicit confirmation between runs.
+- **Reversible by design**: drain mutates only the rendered config push (a small overlay applied via Phase 3's commit-confirmed flow), not NetBox. The drain config is its own commit-confirm stage with the same 300s rollback timer Phase 3 uses, so a botched drain self-recovers if the SSH session dies.
+- **No NetBox mutation**: maintenance is a runtime state, not an intent change. The device remains a fully-modeled member of the fabric in NetBox throughout. A separate `maintenance_until: <timestamp>` custom field on the device records WHEN the drain started, for the Suzieq drift harness to suppress drift alerts on the drained device while it's down.
+- **Drain artifact is the audit trail**: the JSON snapshot in `phase11-lifecycle/maintenance-state/` is the operator's evidence that the drain landed cleanly before the maintenance window started.
+
+Same `--plan` / `--apply` discipline as Tier 2 prune. `--plan` shows the rendered drain config diff, the pre-flight check results, and the predicted convergence path; `--apply` runs the live sequence above. Never combined with a NetBox mutation in one step.
+
+#### Tier 4: Decommission workflow
+
+A separate path for **permanently** removing a **whole device** or a **whole fabric link** (cable + the two interface assignments). Not run from `populate.py`, `prune.py`, or `maintenance.py`. New script: `phase11-lifecycle/decommission.py`.
+
+A typical decommission flow uses Tier 3 first - drain the device, do nothing destructive while drained to verify the peer takes the load cleanly, then run decommission to remove it from NetBox and the rendered configs. This way the irreversible step (NetBox delete) only happens after the reversible step (drain) has proved the topology survives without it.
 
 Steps for device decommission:
 1. **Dependency scan**: walk every NetBox object that references the target device — interfaces, IPs, cables, BGP sessions on peer devices, L2VPN terminations, journal entries. Produce a structured tree.
@@ -374,7 +414,7 @@ Same shape for link decommission (cable + endpoint cleanup) with a smaller depen
 These are the things a full reconciler would do that Phase 11 explicitly does NOT:
 
 - **No blind mass prune** ("remove from NetBox everything Phase 3 enrich didn't see"). Every prune is allowlist-class scoped and operator-invoked.
-- **No mixed atomic actions**. Tier 2 / Tier 3 mutations to NetBox are NEVER combined with destructive push to devices in one step. Plan in NetBox first → review → apply to NetBox → run Phase 3 deploy as a separate explicit invocation.
+- **No mixed atomic actions**. Tier 2 / Tier 4 mutations to NetBox are NEVER combined with destructive push to devices in one step. Plan in NetBox first → review → apply to NetBox → run Phase 3 deploy as a separate explicit invocation. Tier 3 (maintenance) does push config to a device, but its push is ONLY the drain overlay (BGP attributes / community / DF preference) and rides the same Phase 3 commit-confirmed 300s rollback timer.
 - **No automatic cable / link delete without dependency check**.
 - **No automatic device delete without typed-name confirmation**.
 - **No reverse-direction reconciliation** (NetBox UI edits becoming yaml PRs). Out of scope; possible Phase 12+ if it ever becomes relevant.
@@ -389,22 +429,27 @@ These are the things a full reconciler would do that Phase 11 explicitly does NO
 - Idempotency: running `prune --plan` twice produces identical output
 - Negative tests: trying to prune a class not in the allowlist returns a clear "not supported" error, not a partial action
 - Negative tests: device decommission with typo'd confirmation name aborts, no NetBox mutation
+- Maintenance pre-flight: peer-health gate refuses to drain when the redundant peer is itself unhealthy (mocked Suzieq state showing peer BGP not Established → drain refused)
+- Maintenance plan rendering: golden file for the drain overlay config (AS-path prepend, graceful-shutdown community, ESI DF tweak) for spine and leaf shapes
+- Maintenance restore reversibility: drain overlay -> restore overlay round-trips to byte-identical config (pure overlay add/remove, no leftover state)
+- Maintenance/decommission interaction: trying to decommission a currently-drained device requires explicit `--was-drained` flag (catches "I forgot to restore the drain before deleting")
 
 ### CI integration (Phase 6 reference)
 
 Phase 6 CI gains one optional stage:
-- `lifecycle-plan` runs `prune.py --plan` and `decommission.py --plan` on PRs that touch the `phase11-lifecycle/` paths. Posts the plan as a PR comment. Never auto-applies.
+- `lifecycle-plan` runs `prune.py --plan`, `maintenance.py --plan`, and `decommission.py --plan` on PRs that touch the `phase11-lifecycle/` paths. Posts the plan as a PR comment. Never auto-applies.
 
 The Phase 6 deploy pipeline does NOT auto-trigger on lifecycle changes — they're explicit operator invocations, not part of the PR-merge-deploys-everything loop.
 
 ### Result
 
-`python phase3-nornir/deploy.py` continues to mean "make the fabric match NetBox intent" for the additive case. Phase 11 adds two more verbs to the project's vocabulary:
+`python phase3-nornir/deploy.py` continues to mean "make the fabric match NetBox intent" for the additive case. Phase 11 adds three more verbs to the project's vocabulary:
 
 - `prune` — narrow, allowlisted, planned, never blind, never combined with device push
-- `decommission` — single device or link, dependency-scanned, typed confirmation, snapshot-then-apply
+- `drain` / `restore` — temporary, reversible BGP/EVPN traffic steering for safe firmware upgrades, line-card swaps, and other operator-driven maintenance windows. Pre-flight gates on peer health, post-restore gates on full Phase 2 smoke.
+- `decommission` — single device or link, dependency-scanned, typed confirmation, snapshot-then-apply. Typically runs AFTER a successful drain has proved the topology survives without the device.
 
-Both are deliberately bounded so the showcase story is **"controlled day-2 operations"** not **"full reconciler with hidden edge cases"**. The lab demonstrates that production lifecycle work is broken into explicit, reviewable steps — not magic.
+All three are deliberately bounded so the showcase story is **"controlled day-2 operations"** not **"full reconciler with hidden edge cases"**. The lab demonstrates that production lifecycle work is broken into explicit, reviewable steps — not magic.
 
 ---
 
@@ -433,7 +478,9 @@ Both are deliberately bounded so the showcase story is **"controlled day-2 opera
 │       └── checks/
 ├── phase11-lifecycle/             # Controlled day-2 lifecycle ops (Phase 11)
 │   ├── prune.py                   # Tier 2: allowlisted-class prune (--plan / --apply)
-│   ├── decommission.py            # Tier 3: whole device or link removal workflow
+│   ├── maintenance.py             # Tier 3: graceful drain / restore for safe firmware upgrades
+│   ├── maintenance-state/         # Per-drain JSON audit artifacts (gitignored, generated)
+│   ├── decommission.py            # Tier 4: whole device or link removal workflow
 │   ├── allowlist.yml              # Enumerated managed-class list for prune
 │   └── tests/                     # pytest with mocked pynetbox
 ├── docker-compose.yml            # Batfish, Telegraf, helper container
@@ -486,21 +533,24 @@ Suzieq: continuous state monitor + NetBox drift check
 
 The diagram above is the **default add/update flow**: PR -> CI -> render -> validate -> deploy -> verify. It's PR-driven and runs on every merge.
 
-Phase 11 introduces a **separate operator-driven lifecycle workflow** for destructive operations (prune of allowlisted classes, decommission of a whole device or link). It is NOT part of the automatic deploy loop above:
+Phase 11 introduces a **separate operator-driven lifecycle workflow** for destructive operations (prune of allowlisted classes, drain for safe maintenance, decommission of a whole device or link). It is NOT part of the automatic deploy loop above:
 
 ```
-Operator decides to remove something
+Operator decides to remove or temporarily drain something
     │
     ▼
-phase11-lifecycle/{prune,decommission}.py --plan
-    │  (NetBox read-only, no mutation, no device contact)
+phase11-lifecycle/{prune,maintenance,decommission}.py --plan
+    │  (NetBox read-only / Suzieq peer-health read for drain;
+    │   no mutation, no device contact)
     ▼
 Plan output: which NetBox objects, which dependencies, which devices affected
+    │  (drain plan also shows: rendered drain overlay diff +
+    │   peer-health pre-flight result + predicted convergence)
     │
     ├── REJECT -> abandon
     │
     ▼ APPROVE (interactive confirmation, typed device name for decommission)
-phase11-lifecycle/{prune,decommission}.py --apply
+phase11-lifecycle/{prune,maintenance,decommission}.py --apply
     │  (NetBox mutation only - dependency-ordered, journal-tagged)
     ▼
 Operator reviews `python phase3-nornir/deploy.py --check` diff
