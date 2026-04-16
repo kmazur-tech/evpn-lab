@@ -57,6 +57,7 @@ tags:
   - { name: Loopback,   slug: loopback,   color: "3f51b5", description: "Loopback interface" }
   - { name: DC1,        slug: dc1,        color: "1565c0", description: "Data Center 1 (Juniper)" }
   - { name: DC2,        slug: dc2,        color: "2e7d32", description: "Data Center 2 (Arista, project Phase 10)" }
+  - { name: Suzieq,     slug: suzieq,     color: "ff9800", description: "Polled by Suzieq (Phase 5 operational state monitor)" }
 
 # ---------------------------------------------------------------------------
 # Step 3 - Regions, Tenant Groups, Tenants
@@ -274,7 +275,7 @@ devices:
     status: active
     asn: 65001
     oob_ip: "$MGMT_dc1_spine1"
-    tags: [spine, dc1]
+    tags: [spine, dc1, suzieq]
 
   - name: dc1-spine2
     device_type: EX9214
@@ -284,7 +285,7 @@ devices:
     status: active
     asn: 65002
     oob_ip: "$MGMT_dc1_spine2"
-    tags: [spine, dc1]
+    tags: [spine, dc1, suzieq]
 
   - name: dc1-leaf1
     device_type: EX9214
@@ -294,7 +295,7 @@ devices:
     status: active
     asn: 65003
     oob_ip: "$MGMT_dc1_leaf1"
-    tags: [leaf, dc1]
+    tags: [leaf, dc1, suzieq]
 
   - name: dc1-leaf2
     device_type: EX9214
@@ -304,7 +305,7 @@ devices:
     status: active
     asn: 65004
     oob_ip: "$MGMT_dc1_leaf2"
-    tags: [leaf, dc1]
+    tags: [leaf, dc1, suzieq]
 
   - name: dc1-host1
     device_type: Container Host
