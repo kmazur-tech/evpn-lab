@@ -1,0 +1,6 @@
+# Generated at deploy time by gen-inventory.py from NetBox.
+# Contains real device IPs (oob_ip values from NetBox); never commit.
+inventory.yml
+
+# Local pytest cache
+.pytest_cache/

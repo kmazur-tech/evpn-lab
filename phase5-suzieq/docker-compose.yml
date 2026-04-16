@@ -1,0 +1,164 @@
+---
+# Suzieq operational state monitor + drift detection stack.
+#
+# Three processes, all from the same image, sharing one parquet store:
+#   sq-poller       polls DC1 devices over SSH, writes to parquet
+#   sq-coalescer    housekeeping: compacts small parquet files into
+#                   larger ones. NOT optional - without it the store
+#                   fragments badly over time.
+#   sq-rest-server  optional REST API for ad-hoc operator queries.
+#                   Lab-only no-https; see README banner before reuse.
+#
+# Runs as a docker-compose stack on the netdevops services VM (the
+# same host that runs NetBox and Batfish - reuses the existing Docker
+# daemon, no new VM, no lab impact). The host IP is environment-
+# specific and lives in evpn-lab-env/env.sh; nothing in this file
+# hardcodes it.
+#
+# One-time deployment (run on the netdevops services VM):
+#   mkdir -p /opt/suzieq && cd /opt/suzieq
+#   # copy this file, suzieq.cfg, and inventory.yml here, then:
+#   # 1. resolve the image digest:
+#   docker pull netenglabs/suzieq:latest
+#   docker image inspect netenglabs/suzieq:latest \
+#     --format '{{index .RepoDigests 0}}'
+#   # copy the sha256:... value into BOTH `image:` lines below
+#   # 2. populate env vars (sourced from evpn-lab-env/env.sh):
+#   #    JUNOS_SSH_USER, JUNOS_SSH_PASSWORD,
+#   #    NETBOX_URL, NETBOX_TOKEN, SUZIEQ_API_KEY
+#   # 3. before first up, run the syntax-check gate from the README
+#   docker compose up -d
+#   docker compose ps   # confirm all three services Up (healthy)
+#
+# Pin discipline: digest, not :latest. Reproducibility for CI - the
+# same image gets used across every run, immune to upstream `latest`
+# tag re-pushes. Upgrade procedure is the same `docker pull` + digest
+# copy as Phase 4's batfish/allinone pin.
+
+services:
+  sq-poller:
+    # PIN ME: replace <DIGEST> with the sha256:... value from the
+    # `docker image inspect` step above. Do NOT merge with :latest.
+    image: netenglabs/suzieq@sha256:6e4e955ae0ca214af975d0278e16f7d4e193685369fdefb92c563a60fc3d5472
+    container_name: sq-poller
+    restart: unless-stopped
+    # Image entrypoint is /bin/bash with no Cmd, so we override
+    # entrypoint to the actual python script and put the flags in
+    # `command:`. Confirmed against the pinned digest.
+    entrypoint: ["/usr/local/bin/sq-poller"]
+    command: ["-I", "/suzieq/inventory.yml", "-c", "/suzieq/suzieq.cfg"]
+    volumes:
+      - parquet:/suzieq/parquet
+      - archive:/suzieq/archive
+      - ./suzieq.cfg:/suzieq/suzieq.cfg:ro
+      - ./inventory.yml:/suzieq/inventory.yml:ro
+      # Also mount the same config at the path suzieq-cli looks for
+      # by default, so `docker exec sq-poller suzieq-cli bgp show`
+      # finds the right data-directory without having to pass
+      # --config every time. Same file, two paths inside the
+      # container.
+      - ./suzieq.cfg:/home/suzieq/.suzieq/suzieq-cfg.yml:ro
+    environment:
+      # SuzieQ inventory.yml resolves these via `env:VARNAME` syntax.
+      # Values come from evpn-lab-env/env.sh, never committed.
+      JUNOS_SSH_USER: ${JUNOS_SSH_USER}
+      JUNOS_SSH_PASSWORD: ${JUNOS_SSH_PASSWORD}
+      NETBOX_URL: ${NETBOX_URL}
+      NETBOX_TOKEN: ${NETBOX_TOKEN}
+      # suzieq.cfg parsing happens in every service (poller,
+      # coalescer, rest-server) and the rest section is validated
+      # even when the binary itself does not serve REST. So the
+      # API_KEY env var must be present here too, otherwise the
+      # poller fails to start with "Invalid config file".
+      SUZIEQ_API_KEY: ${SUZIEQ_API_KEY}
+    healthcheck:
+      # Liveness = parquet directory exists and the poller process is
+      # writing to it. The image does not ship curl; we check the
+      # data dir is non-empty after the first poll cycle.
+      test: ["CMD-SHELL", "test -d /suzieq/parquet/sqpoller && find /suzieq/parquet/sqpoller -type f -name '*.parquet' | head -1 | grep -q . || exit 1"]
+      interval: 60s
+      timeout: 5s
+      retries: 5
+      # First poll cycle on a 4-device fabric typically completes in
+      # under 90s. Give 3 minutes before declaring unhealthy.
+      start_period: 180s
+
+  sq-coalescer:
+    # Same digest as sq-poller. Two services from one image.
+    image: netenglabs/suzieq@sha256:6e4e955ae0ca214af975d0278e16f7d4e193685369fdefb92c563a60fc3d5472
+    container_name: sq-coalescer
+    restart: unless-stopped
+    # `--run-once` on sq-coalescer is a BOOLEAN flag (presence =
+    # run once and exit). Omit it entirely for run-forever mode.
+    entrypoint: ["/usr/local/bin/sq-coalescer"]
+    command: ["-c", "/suzieq/suzieq.cfg"]
+    volumes:
+      - parquet:/suzieq/parquet
+      - archive:/suzieq/archive
+      - ./suzieq.cfg:/suzieq/suzieq.cfg:ro
+    environment:
+      # See note on sq-poller about why API_KEY is needed for
+      # config parsing even in non-REST services.
+      SUZIEQ_API_KEY: ${SUZIEQ_API_KEY}
+    depends_on:
+      sq-poller:
+        condition: service_started
+    healthcheck:
+      # Coalescer is a long-running compactor. Liveness = process
+      # alive (pgrep) - it does not write a heartbeat file, and
+      # checking the archive dir would race with the coalescer period.
+      test: ["CMD-SHELL", "pgrep -f sq-coalescer >/dev/null || exit 1"]
+      interval: 60s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  sq-rest-server:
+    # Same digest as sq-poller. Three services from one image.
+    image: netenglabs/suzieq@sha256:6e4e955ae0ca214af975d0278e16f7d4e193685369fdefb92c563a60fc3d5472
+    container_name: sq-rest-server
+    restart: unless-stopped
+    # `--no-https` is a CLI flag on the pinned digest, NOT a config
+    # knob (despite suzieq.cfg accepting `no-https:`, the rest
+    # server only honors the CLI flag). Lab-only - see README banner.
+    entrypoint: ["/usr/local/bin/sq-rest-server"]
+    command: ["-c", "/suzieq/suzieq.cfg", "--no-https"]
+    volumes:
+      - parquet:/suzieq/parquet
+      - ./suzieq.cfg:/suzieq/suzieq.cfg:ro
+    environment:
+      SUZIEQ_API_KEY: ${SUZIEQ_API_KEY}
+    ports:
+      # Bound on the lab mgmt segment only. See README "REST TLS"
+      # banner before exposing this anywhere else. no-https mode is
+      # acceptable ONLY because this port stays on the private mgmt
+      # interface; production must terminate TLS at a reverse proxy
+      # or set rest-keyfile/rest-certfile in suzieq.cfg AND drop the
+      # --no-https flag from the rest server command line.
+      #
+      # Host port 8443 (NOT 8000) because netdevops-srv already runs
+      # NetBox on 8000. Inside the container the rest server still
+      # binds 8000 (suzieq.cfg `rest.port`) - only the host-side
+      # mapping is shifted.
+      - "8443:8000"
+    depends_on:
+      sq-poller:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 3 bash -c '</dev/tcp/127.0.0.1/8000' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  # Parquet store. Sized for ~weeks of 4-device history at the
+  # default service polling cadences. Monitor with `du -sh` on the
+  # host volume path; tune coalescer.period in suzieq.cfg if growth
+  # is unexpected.
+  parquet:
+    driver: local
+  # Coalescer archive (raw uncoalesced parquet, kept as a safety net
+  # against coalescer bugs - per upstream docs).
+  archive:
+    driver: local
