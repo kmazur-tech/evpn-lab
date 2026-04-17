@@ -156,6 +156,49 @@ services:
       retries: 5
       start_period: 30s
 
+  # Phase 5 Part B drift harness sibling container.
+  #
+  # Built from drift/Dockerfile - a small python:3.11-slim image with
+  # pandas + pyarrow + pynetbox. Does NOT inherit from the suzieq
+  # base image; reads the parquet store directly via pyarrow hive
+  # partitioning, never imports the suzieq python package.
+  #
+  # Invoked as a one-shot CLI:
+  #     docker compose run --rm drift              # JSON output (default)
+  #     docker compose run --rm drift --human      # human-readable table
+  #     docker compose run --rm drift --namespace dc1 --human
+  #
+  # NOT a long-running daemon (no `restart` policy, no healthcheck).
+  # Lives in compose only so it shares the same docker network as the
+  # other suzieq services and can mount the suzieq_parquet volume by
+  # name.
+  drift:
+    build:
+      context: ./drift
+      dockerfile: Dockerfile
+    image: evpn-lab/phase5-drift:dev
+    container_name: drift
+    volumes:
+      # READ-ONLY mount of the parquet store. The drift harness reads
+      # only - it never writes to the suzieq parquet volume. The :ro
+      # flag is enforced at the docker layer so even a bug in the
+      # harness cannot accidentally corrupt poller data.
+      - parquet:/suzieq/parquet:ro
+      # Drift code mounted from the host so iteration during
+      # development does not need an image rebuild. The image already
+      # has /drift on PYTHONPATH (set in Dockerfile), so this mount
+      # makes `python -m drift.cli` resolve immediately.
+      - ./drift:/drift:ro
+    environment:
+      # NetBox credentials for the intent collection step.
+      NETBOX_URL: ${NETBOX_URL}
+      NETBOX_TOKEN: ${NETBOX_TOKEN}
+      DRIFT_NAMESPACE: ${DRIFT_NAMESPACE:-dc1}
+    # `docker compose run --rm drift` reuses the ENTRYPOINT from the
+    # Dockerfile (`python -m drift.cli`) and accepts CLI flags as
+    # the trailing argument. We do NOT set `command:` here so the
+    # default --json output stays the no-flag invocation.
+
 volumes:
   # Parquet store. Sized for ~weeks of 4-device history at the
   # default service polling cadences. Monitor with `du -sh` on the

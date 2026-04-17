@@ -209,13 +209,119 @@ The lab rolls its own thin Python harness (Parts B/C/D) for three reasons: it's 
 - **Devtype semantics vs JSON shape**: see "Junos devtype override" above. The lab uses EX9214 semantics but `junos-mx` SuzieQ devtype because that is the only built-in template whose `device` service parses vJunos-switch's JSON correctly.
 - **MAC table EVPN vs VPLS** - SuzieQ treats Junos MAC entries with EVPN-VXLAN encapsulation correctly out of the box. Worth knowing if Phase 10 ever introduces a Junos MX with classic VPLS for comparison.
 
-## What lands in Parts B/C/D
+## Part B-min: NetBox-vs-Suzieq drift harness (DONE)
+
+The killer use case for Phase 5: catches the class of bugs that neither Phase 2 smoke nor Phase 4 Batfish can see — drift between what NetBox SAYS the network is and what the network actually IS, in real time.
+
+### Architecture
+
+A **sibling container** (`drift`) in [docker-compose.yml](docker-compose.yml), built from [drift/Dockerfile](drift/Dockerfile). Slim `python:3.11-slim` base + `pandas` + `pyarrow` + `pynetbox`. **Does NOT inherit from `netenglabs/suzieq`** — reads the parquet store directly via pyarrow hive partitioning, never imports the suzieq python package. Saves ~600 MB image size and decouples the drift harness from suzieq base image upgrade cadence.
+
+The container mounts the `suzieq_parquet` docker volume **read-only** and the `drift/` source code as a separate read-only mount so iteration during development does not need an image rebuild. Invoked as a one-shot CLI:
+
+```bash
+docker compose run --rm drift              # JSON output for CI
+docker compose run --rm drift --human      # human-readable table
+docker compose run --rm drift --namespace dc1 --human
+```
+
+### Module boundaries
+
+Strict separation so the unit tests are dependency-light:
+
+| Module | Imports | Role |
+|---|---|---|
+| [drift/intent.py](drift/intent.py) | `pynetbox` only | NetBox -> dataclass intent |
+| [drift/state.py](drift/state.py) | `pyarrow`, `pandas` only | parquet store -> pandas DataFrames |
+| [drift/diff.py](drift/diff.py) | `pandas`, dataclasses | pure structured comparison, the comparison core |
+| [drift/cli.py](drift/cli.py) | all of the above | I/O orchestration only |
+
+`test_drift_diff.py` and `test_drift_cli.py` import nothing heavier than `pandas` and use hand-built dicts as fixtures for both intent and state. `test_drift_state.py` writes tiny real parquet files into a `tmp_path` fixture (hermetic, no SuzieQ container needed). `test_drift_intent.py` uses a small `FakeNb` test double (~50 lines) that returns hand-built objects shaped like `pynetbox.Record` — not a mock, a real read-only stub class.
+
+### Drift dimensions (4)
+
+| Dimension | Catches | Severity model |
+|---|---|---|
+| `device_presence` | NetBox-modeled device not seen by SuzieQ (or vice versa) | error if modeled-but-not-polled; warning if polled-but-not-modeled |
+| `interface_admin` | NetBox `enabled` != SuzieQ `adminState` for NetBox-modeled interfaces | error on disagreement; warning if interface modeled but not yet seen by SuzieQ; SuzieQ-only interfaces (lo0.16384, jsrv, em0...) deliberately ignored |
+| `lldp_topology` | mis-cabled fabric, missing LLDP neighbor, port flap | two-tier match - see "Junos LLDP limitation" below |
+| `bgp_session` | cable-derived BGP session expectation not present, or present but not Established | error |
+
+BGP session intent is **derived from NetBox cables + IPs**, not from a NetBox BGP plugin (Phase 1 does not install one). Each fabric P2P /31 cable produces one expected BGP session; the drift check looks for a matching SuzieQ row on EITHER side and asserts state=Established.
+
+### Junos LLDP limitation (Tier B fallback)
+
+Discovered during Part B bring-up against vJunos-switch 23.2R1.14: `show lldp neighbors | display json` (the summary view that SuzieQ's junos template uses) **does not include `lldp-remote-port-id`** at all. Only `lldp-remote-system-name` and `lldp-remote-port-description`. SuzieQ correctly stores empty `peerIfname` because the source data has nothing to put there.
+
+`drift/diff.py` handles this via a **two-tier LLDP match**:
+
+| Tier | Match shape | Result |
+|---|---|---|
+| **A** (strict) | LLDP row has both `peerHostname` AND `peerIfname` | Compare canonical `(devA, ifaceA) <-> (devB, ifaceB)` against NetBox cable graph. Catches interface-level miscabling within a device pair. |
+| **B** (degraded) | `peerHostname` present, `peerIfname` empty | Falls back to checking that the LLDP row reports the right peer DEVICE; cannot verify the peer interface. **Emits a warning** so the operator knows the check is degraded. |
+
+On the vJunos lab today every LLDP cable matches at Tier B and produces 4 warnings. A real fabric with EOS / IOS-XR / NX-OS would match at Tier A and produce zero warnings on a clean network. The Tier B fallback still catches **device-pair miscabling** — if a cable physically connects A to C while NetBox says A to B, that's still an error in either tier.
+
+### Output contract
+
+JSON (default, for Phase 6 CI):
+
+```json
+{
+  "namespace": "dc1",
+  "timestamp": "2026-04-07T20:08:11.234567+00:00",
+  "drift_count": 4,
+  "error_count": 0,
+  "warning_count": 4,
+  "drifts": [
+    {
+      "dimension": "lldp_topology",
+      "severity": "warning",
+      "subject": "dc1-leaf1:ge-0/0/0<->dc1-spine1:ge-0/0/0",
+      "detail": "LLDP peer device matches but peer interface is unknown ...",
+      "intent": {"a": {"device": "dc1-leaf1", "interface": "ge-0/0/0"}, "b": {...}},
+      "state": {"degraded_match": "device-level only"}
+    }
+  ]
+}
+```
+
+Exit codes — the contract Phase 6 CI relies on:
+
+| Code | Meaning |
+|---|---|
+| 0 | No error-severity drift (warnings allowed) |
+| 1 | One or more error-severity drifts found (Phase 6 stage 11 soft-fails per `PROJECT_PLAN.md:200`) |
+| 2 | Tooling error (NetBox unreachable, parquet path missing). Phase 6 should distinguish this from "drift found" — the second is a real failure of the harness itself. |
+
+### Verification (run on netdevops-srv 2026-04-07)
+
+Positive case (no drift on a clean fabric):
+
+```
+namespace=dc1: 4 drift(s)
+  [WRN] lldp_topology  (4x, all Tier B fallback - documented limitation)
+EXIT: 0
+```
+
+Negative case (injected `dc1-leaf1:ge-0/0/0 enabled=False` in NetBox while real interface is up):
+
+```
+namespace=dc1: 5 drift(s)
+  [ERR] interface_admin  dc1-leaf1:ge-0/0/0
+        admin state drift: NetBox enabled=False, SuzieQ adminState='up'
+  [WRN] lldp_topology    (the 4 documented Tier B warnings)
+EXIT: 1
+```
+
+Negative test exits 1, positive test exits 0. The drift was visible to the harness within ~1 second of the NetBox change being saved.
+
+## What lands in Parts B-full / C / D
 
 | Part | Scope |
 |---|---|
-| B-min | Drift harness for `device` / `interfaces` / `lldp` / `bgp` (smallest viable end-to-end loop) |
-| B-full | Drift extended to `evpnVni` / `routes` / `macs` / `arpnd` |
+| B-full | Drift extended to `evpnVni` / `routes` / `macs` / `arpnd` (same module shape, more dimensions) |
 | C | Strict assertions, gated by a non-overlap rule against Phase 2 smoke |
-| D | Time-window queries via SuzieQ's native `view='all'` + `start_time`/`end_time` |
+| D | Time-window queries via pyarrow over the parquet history |
 
-Parts B onward use SuzieQ's Python API (`get_sqobject`) directly against the parquet volume, not the REST server. REST stays exposed for ad-hoc operator queries only.
+All of B/C/D use the same drift sibling container — no new venvs, no new infrastructure, just more code in `drift/`.

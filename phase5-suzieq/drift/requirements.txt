@@ -1,0 +1,6 @@
+# Phase 5 Part B drift harness runtime deps. Pinned upper bounds
+# kept loose - this is a small read-only harness, not a release
+# artifact. Tighten if a future upstream change breaks the API.
+pandas>=2.0
+pyarrow>=14.0
+pynetbox>=7.4
