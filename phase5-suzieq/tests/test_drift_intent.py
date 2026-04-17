@@ -30,11 +30,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from drift.intent import (  # noqa: E402
     DRIFT_TAG,
+    AnycastMacIntent,
     BgpSessionIntent,
     Cable,
     CableEdge,
     DeviceIntent,
     InterfaceIntent,
+    LoopbackRouteIntent,
+    PeerIrbArpIntent,
+    VniIntent,
     collect,
 )
 
@@ -51,9 +55,16 @@ class _Obj:
 
 
 class _Endpoint:
-    """A pynetbox endpoint stub - exposes .filter() and .get()."""
+    """A pynetbox endpoint stub - exposes .filter(), .get(), .all()."""
     def __init__(self, records):
         self._records = records
+
+    def all(self):
+        return list(self._records)
+
+    def get(self, **kwargs):
+        results = self.filter(**kwargs)
+        return results[0] if results else None
 
     def filter(self, **kwargs):
         out = []
@@ -104,13 +115,16 @@ def _has_tag(record, slug):
 
 class FakeNb:
     """Minimal pynetbox.api shape for intent.collect()."""
-    def __init__(self, devices, interfaces, ip_addresses):
+    def __init__(self, devices, interfaces, ip_addresses,
+                 vlans=None, vrfs=None):
         self.dcim = _Obj(
             devices=_Endpoint(devices),
             interfaces=_Endpoint(interfaces),
         )
         self.ipam = _Obj(
             ip_addresses=_Endpoint(ip_addresses),
+            vlans=_Endpoint(vlans or []),
+            vrfs=_Endpoint(vrfs or []),
         )
 
 
@@ -284,6 +298,277 @@ class TestCollectCables:
 # ---------------------------------------------------------------------------
 # BGP session derivation
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Part B-full collectors: VNIs, loopback routes, anycast macs, peer IRB ARPs
+# ---------------------------------------------------------------------------
+
+def _vlan(vid, name, vni):
+    return _Obj(vid=vid, name=name, custom_fields={"vni": vni})
+
+
+def _vrf(name, l3vni=None, anycast_mac=None):
+    return _Obj(name=name, custom_fields={
+        "l3vni": l3vni,
+        "anycast_mac": anycast_mac,
+    })
+
+
+def _ip_addr(address, iface, role_value=None, vrf_name=None):
+    role = _Obj(value=role_value) if role_value else None
+    vrf_ref = _Obj(name=vrf_name) if vrf_name else None
+    return _Obj(address=address, assigned_object=iface,
+                role=role, vrf=vrf_ref)
+
+
+def _set_primary_ip4(device_obj, address):
+    device_obj.primary_ip4 = _Obj(address=address)
+
+
+class TestCollectVnis:
+    """Walks NetBox VLANs (custom_fields.vni for L2) and VRFs
+    (custom_fields.l3vni for L3) and emits one VniIntent per
+    (leaf, vni). Spines do not appear because they have no
+    EVPN VNI configuration in this lab."""
+
+    def test_emits_l2_and_l3_vnis_for_each_leaf(self):
+        spine = _device("dc1-spine1", role_slug="spine")
+        leaf1 = _device("dc1-leaf1", role_slug="leaf")
+        leaf2 = _device("dc1-leaf2", role_slug="leaf")
+        vlans = [_vlan(10, "VLAN10", 10010), _vlan(20, "VLAN20", 10020)]
+        vrfs = [_vrf("TENANT-1", l3vni=5000)]
+
+        nb = FakeNb(
+            devices=[spine, leaf1, leaf2],
+            interfaces=[],
+            ip_addresses=[],
+            vlans=vlans,
+            vrfs=vrfs,
+        )
+        intent = collect(nb, "dc1")
+
+        # 2 leaves * (2 L2 + 1 L3) = 6 entries; spines excluded
+        assert len(intent.vnis) == 6
+        leaf_names = {v.device for v in intent.vnis}
+        assert leaf_names == {"dc1-leaf1", "dc1-leaf2"}
+        types = {v.vni_type for v in intent.vnis}
+        assert types == {"L2", "L3"}
+
+    def test_vlan_without_vni_custom_field_skipped(self):
+        leaf = _device("dc1-leaf1", role_slug="leaf")
+        vlans = [
+            _vlan(10, "VLAN10", 10010),
+            _Obj(vid=99, name="MGMT", custom_fields={"vni": None}),
+        ]
+        nb = FakeNb(devices=[leaf], interfaces=[], ip_addresses=[],
+                    vlans=vlans, vrfs=[])
+        intent = collect(nb, "dc1")
+        l2_vnis = [v.vni for v in intent.vnis if v.vni_type == "L2"]
+        assert l2_vnis == [10010]
+
+    def test_no_leaves_no_vnis(self):
+        spine = _device("dc1-spine1", role_slug="spine")
+        nb = FakeNb(devices=[spine], interfaces=[], ip_addresses=[],
+                    vlans=[_vlan(10, "VLAN10", 10010)], vrfs=[])
+        intent = collect(nb, "dc1")
+        assert intent.vnis == []
+
+
+class TestCollectLoopbackRoutes:
+    """N*(N-1) cross-product of devices with primary_ip4."""
+
+    def test_emits_cross_product_minus_self(self):
+        spine = _device("dc1-spine1", role_slug="spine")
+        leaf1 = _device("dc1-leaf1", role_slug="leaf")
+        leaf2 = _device("dc1-leaf2", role_slug="leaf")
+        _set_primary_ip4(spine, "10.1.0.1/32")
+        _set_primary_ip4(leaf1, "10.1.0.3/32")
+        _set_primary_ip4(leaf2, "10.1.0.4/32")
+
+        nb = FakeNb(devices=[spine, leaf1, leaf2],
+                    interfaces=[], ip_addresses=[])
+        intent = collect(nb, "dc1")
+
+        # 3 devices -> 3*2 = 6 (observer, target) pairs
+        assert len(intent.loopback_routes) == 6
+        # Each device sees the OTHER two as targets, not itself
+        for r in intent.loopback_routes:
+            assert r.observer_device != r.target_device
+
+    def test_device_without_primary_ip4_excluded(self):
+        leaf1 = _device("dc1-leaf1", role_slug="leaf")
+        leaf2 = _device("dc1-leaf2", role_slug="leaf")
+        leaf3 = _device("dc1-leaf3", role_slug="leaf")
+        _set_primary_ip4(leaf1, "10.1.0.3/32")
+        _set_primary_ip4(leaf2, "10.1.0.4/32")
+        leaf3.primary_ip4 = None  # no loopback set
+
+        nb = FakeNb(devices=[leaf1, leaf2, leaf3],
+                    interfaces=[], ip_addresses=[])
+        intent = collect(nb, "dc1")
+
+        # leaf3 must not appear as observer OR target
+        for r in intent.loopback_routes:
+            assert "leaf3" not in r.observer_device
+            assert "leaf3" not in r.target_device
+        # 2 devices -> 2 entries
+        assert len(intent.loopback_routes) == 2
+
+    def test_clos_rule_excludes_spine_to_spine_pairs(self):
+        """REGRESSION GUARD for the Clos topology rule. In a 2-tier
+        Clos fabric, spines do not peer with each other and do not
+        need each other's loopbacks. Discovered live on the lab:
+        without this exclusion the harness reported 2 false-positive
+        drifts (spine1 has no route to spine2's loopback and vice
+        versa) on a clean fabric. The architecturally correct
+        statement is 'spine-to-spine reachability is NOT required
+        in a 2-tier Clos'."""
+        spine1 = _device("dc1-spine1", role_slug="spine")
+        spine2 = _device("dc1-spine2", role_slug="spine")
+        leaf1 = _device("dc1-leaf1", role_slug="leaf")
+        leaf2 = _device("dc1-leaf2", role_slug="leaf")
+        for d, ip in [(spine1, "10.1.0.1/32"), (spine2, "10.1.0.2/32"),
+                      (leaf1, "10.1.0.3/32"), (leaf2, "10.1.0.4/32")]:
+            _set_primary_ip4(d, ip)
+
+        nb = FakeNb(devices=[spine1, spine2, leaf1, leaf2],
+                    interfaces=[], ip_addresses=[])
+        intent = collect(nb, "dc1")
+
+        # Valid pairs (both directions counted):
+        #   spine1<->leaf1, spine1<->leaf2,
+        #   spine2<->leaf1, spine2<->leaf2,
+        #   leaf1<->leaf2
+        # = 4*2 + 1*2 = 10 entries (but each pair has 2 directions)
+        # Let me count: 4 pairs * 2 directions each + 1 pair * 2
+        # = 10 entries.
+        # FORBIDDEN: spine1<->spine2 (both directions = 2 entries)
+        # So total should be 12 - 2 = 10
+        assert len(intent.loopback_routes) == 10
+
+        # Specifically: no spine -> spine entry
+        for r in intent.loopback_routes:
+            obs_role = "spine" if "spine" in r.observer_device else "leaf"
+            tgt_role = "spine" if "spine" in r.target_device else "leaf"
+            assert not (obs_role == "spine" and tgt_role == "spine"), \
+                f"unexpected spine-to-spine pair: {r.observer_device}->{r.target_device}"
+
+    def test_normalizes_loopback_to_slash_32(self):
+        """NetBox might store the loopback as 10.1.0.3/24 (wrong
+        but possible). The collector forces /32 because that's
+        what BGP would advertise."""
+        leaf1 = _device("dc1-leaf1", role_slug="leaf")
+        leaf2 = _device("dc1-leaf2", role_slug="leaf")
+        _set_primary_ip4(leaf1, "10.1.0.3/24")
+        _set_primary_ip4(leaf2, "10.1.0.4/32")
+
+        nb = FakeNb(devices=[leaf1, leaf2], interfaces=[], ip_addresses=[])
+        intent = collect(nb, "dc1")
+        for r in intent.loopback_routes:
+            assert r.prefix.endswith("/32")
+
+
+class TestCollectAnycastMacs:
+    """Walks tenant VLANs and finds the anycast MAC via the
+    VLAN -> IRB interface -> IP -> VRF chain."""
+
+    def _build_lab(self, anycast_mac="00:00:5e:00:01:01"):
+        leaf1 = _device("dc1-leaf1", role_slug="leaf")
+        leaf2 = _device("dc1-leaf2", role_slug="leaf")
+
+        vrf = _vrf("TENANT-1", l3vni=5000, anycast_mac=anycast_mac)
+        vlan10 = _vlan(10, "VLAN10", 10010)
+        vlan20 = _vlan(20, "VLAN20", 10020)
+
+        # IRB interfaces with IPs in TENANT-1 VRF
+        l1_irb10 = _Obj(id=100, device=leaf1, name="irb.10", enabled=True,
+                        cable=None, link_peers=[])
+        l2_irb10 = _Obj(id=101, device=leaf2, name="irb.10", enabled=True,
+                        cable=None, link_peers=[])
+
+        ip1 = _ip_addr("10.10.10.3/24", l1_irb10, vrf_name="TENANT-1")
+        ip2 = _ip_addr("10.10.10.4/24", l2_irb10, vrf_name="TENANT-1")
+
+        return FakeNb(
+            devices=[leaf1, leaf2],
+            interfaces=[l1_irb10, l2_irb10],
+            ip_addresses=[ip1, ip2],
+            vlans=[vlan10, vlan20],
+            vrfs=[vrf],
+        )
+
+    def test_emits_anycast_mac_per_leaf_per_vlan(self):
+        nb = self._build_lab()
+        intent = collect(nb, "dc1")
+
+        # 2 leaves x 2 vlans (the test only built irb.10 IRBs but
+        # the collector walks ALL tenant VLANs from netbox.vlans -
+        # so VLAN20 is also enumerated even without an IRB. The
+        # current collector ignores the per-leaf irb absence and
+        # emits intent for every VLAN with a vni custom field. For
+        # the lab where every leaf serves every VLAN this is right.)
+        # However the irb-IP-to-VRF lookup needs an irb.20 IP to
+        # discover the anycast MAC. Without irb.20 in the fixture,
+        # only VLAN10 will produce intent. Verify that.
+        v10_intents = [m for m in intent.anycast_macs if m.vlan == 10]
+        assert len(v10_intents) == 2
+        assert {m.device for m in v10_intents} == {"dc1-leaf1", "dc1-leaf2"}
+        assert all(m.anycast_mac == "00:00:5e:00:01:01" for m in v10_intents)
+
+    def test_mac_normalized_to_lowercase(self):
+        nb = self._build_lab(anycast_mac="00:00:5E:00:01:01")
+        intent = collect(nb, "dc1")
+        for m in intent.anycast_macs:
+            assert m.anycast_mac == m.anycast_mac.lower()
+
+
+class TestCollectPeerIrbArps:
+    """For each leaf-local IRB IP (role != anycast), every peer
+    leaf with the same VLAN should have an arpnd entry for it."""
+
+    def test_two_leaf_peer_arp_pair(self):
+        leaf1 = _device("dc1-leaf1", role_slug="leaf")
+        leaf2 = _device("dc1-leaf2", role_slug="leaf")
+
+        l1_irb10 = _Obj(id=100, device=leaf1, name="irb.10", enabled=True,
+                        cable=None, link_peers=[])
+        l2_irb10 = _Obj(id=101, device=leaf2, name="irb.10", enabled=True,
+                        cable=None, link_peers=[])
+
+        # Each leaf has TWO IPs on irb.10: leaf-local (no role)
+        # AND anycast gateway (role=anycast). Only the leaf-local
+        # should produce intent.
+        l1_local = _ip_addr("10.10.10.3/24", l1_irb10)
+        l1_anycast = _ip_addr("10.10.10.1/24", l1_irb10, role_value="anycast")
+        l2_local = _ip_addr("10.10.10.4/24", l2_irb10)
+        l2_anycast = _ip_addr("10.10.10.1/24", l2_irb10, role_value="anycast")
+
+        nb = FakeNb(
+            devices=[leaf1, leaf2],
+            interfaces=[l1_irb10, l2_irb10],
+            ip_addresses=[l1_local, l1_anycast, l2_local, l2_anycast],
+        )
+        intent = collect(nb, "dc1")
+
+        # leaf1's IP (10.10.10.3) should be expected on leaf2;
+        # leaf2's IP (10.10.10.4) should be expected on leaf1
+        assert len(intent.peer_irb_arps) == 2
+        target_ips = {a.target_ip for a in intent.peer_irb_arps}
+        assert target_ips == {"10.10.10.3", "10.10.10.4"}
+        # The anycast IP must NOT appear in any intent
+        assert "10.10.10.1" not in target_ips
+
+    def test_single_leaf_yields_no_peer_arps(self):
+        """Need at least 2 leaves to have a peer relationship."""
+        leaf1 = _device("dc1-leaf1", role_slug="leaf")
+        l1_irb10 = _Obj(id=100, device=leaf1, name="irb.10", enabled=True,
+                        cable=None, link_peers=[])
+        l1_local = _ip_addr("10.10.10.3/24", l1_irb10)
+        nb = FakeNb(devices=[leaf1], interfaces=[l1_irb10],
+                    ip_addresses=[l1_local])
+        intent = collect(nb, "dc1")
+        assert intent.peer_irb_arps == []
+
 
 class TestDeriveBgp:
     def test_p2p_cable_with_31s_yields_one_bgp_session(self, two_device_lab):

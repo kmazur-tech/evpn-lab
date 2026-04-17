@@ -354,12 +354,65 @@ EXIT: 1
 
 Negative test exits 1, positive test exits 0. The drift was visible to the harness within ~1 second of the NetBox change being saved.
 
-## What lands in Parts B-full / C / D
+## Part B-full: 4 more drift dimensions (DONE)
+
+Same module shape, four new dimensions covering EVPN VNI presence, overlay-via-underlay reachability, anycast gateway MAC, and EVPN Type-2 ARP advertisement. Required two layers of work: (a) inverting the patcher's default base from junos-mx to junos-qfx (because three of the four new tables either had wrong data or no data with junos-mx as the base), and (b) adding 4 new intent collectors / 4 new diff functions.
+
+### Patcher inversion (junos-qfx as the default base)
+
+Originally the patcher defaulted to `copy: junos-mx` for all simple-copy services with a chain resolver to walk junos-mx -> junos-qfx for the 7 services where junos-mx was itself a copy. Live verification of Part B-full revealed three real problems with that default:
+
+1. **`macs.yml`** — junos-mx uses `show bridge mac-table` (an MX-only command, the bridge table is not present on EX/QFX/vJunos switches). junos-qfx uses `show ethernet-switching table detail` which works on vJunos. With the original default, the macs table was empty.
+
+2. **`routes.yml`** — junos-mx uses `show route protocol direct` (the documented MX scale workaround for full-Internet RIBs - returns ONLY direct/connected routes). junos-qfx uses `show route` + `show evpn ip-prefix-database` (full RIB + EVPN learned). With the original default, the routes table had 26 connected-only entries; switching to junos-qfx took it to **86 rows** including bgp/evpn/vpn protocols.
+
+3. **`evpnVni.yml`** — junos-mx is **completely absent** upstream. The patcher saw no junos-mx text and skipped the file, leaving suzieq with no evpnVni collector at all.
+
+The clean architecture, validated empirically: **`junos-qfx` is REAL in every Junos service yaml upstream** (12 of 12). junos-mx has its own real definition in only 4/12 services, and 3 of those 4 (arpnd, macs, routes) are exactly the services where junos-mx is the **wrong** choice for vJunos. So:
+
+```python
+DEFAULT_BASE = "junos-qfx"
+SERVICE_BASE_OVERRIDES = {"device.yml": "junos-mx"}  # the only one needed
+```
+
+`device.yml` is the lone override because it's the one service where junos-mx has the right definition for vJunos: the single-routing-engine uptime parser that vJunos's JSON shape requires. The corresponding `node.py:1969` Python source patch (`patch_node_multi_re_list`) keeps the parser path consistent.
+
+### 4 new drift dimensions
+
+| Dimension | Catches | Source of intent |
+|---|---|---|
+| `evpn_vni` | NetBox-modeled VNI not present in `evpnVni` table, or present but not `state=up` | L2 from `VLAN.custom_fields.vni`, L3 from `VRF.custom_fields.l3vni` |
+| `loopback_route` | Underlay reachability broken: device's loopback /32 not in another device's RIB | `Device.primary_ip4` cross product, with **Clos topology rule** (spine-to-spine pairs excluded) |
+| `anycast_mac` | Anycast gateway MAC not in a leaf's MAC table for a tenant VLAN it serves | `VRF.custom_fields.anycast_mac` walked via VLAN -> IRB interface -> IP -> VRF chain |
+| `peer_irb_arp` | EVPN Type-2 ARP advertisement broken: peer leaf's IRB IP not resolved in this leaf's ARP table | per-leaf IRB IPs (non-anycast role) cross product across leaves serving the same VLAN |
+
+### The Clos topology rule (regression guard)
+
+`_collect_loopback_routes` skips pairs where both observer and target are role=spine. Discovered live on the lab: without the exclusion the harness produces 2 false-positive drifts on a clean fabric (`spine1->spine2(10.1.0.2/32)` and `spine2->spine1(10.1.0.1/32)`). In a 2-tier Clos, spines do not peer with each other and do not need each other's loopbacks - the architecturally correct statement. Pinned by `test_clos_rule_excludes_spine_to_spine_pairs` in [tests/test_drift_intent.py](tests/test_drift_intent.py).
+
+### Live verification
+
+| Check | Expected | Got |
+|---|---|---|
+| Clean state, all 8 dimensions | exit 0, 0 drifts | ✅ |
+| Inject fake VLAN with vni=99099 in NetBox | 2 drifts (one per leaf), exit 1 | ✅ `[ERR] evpn_vni dc1-leaf1:vni99099` + `dc1-leaf2:vni99099` |
+| Cleanup, re-run | exit 0, 0 drifts | ✅ |
+
+### Test count growth across the parts
+
+| Tier | Tests | Time |
+|---|---|---|
+| Part A only | 22 | 0.14s |
+| + Part B-min | 75 | 1.4s |
+| + Part B-full + patcher inversion | **128** | 1.83s |
+
+The 53 new tests in B-full break down as: 1 patcher test rewrite + 2 new patcher tests (inverted defaults + override + evpnVni-no-junos-mx fixture), 11 intent collector tests (4 new collector classes + Clos rule guard), 1 state test for the new tables, 16 diff tests (4 new dimension classes), and a small number of cross-cutting test updates. All run in <2 seconds, no docker, no network, no SuzieQ install.
+
+## What lands in Parts C / D
 
 | Part | Scope |
 |---|---|
-| B-full | Drift extended to `evpnVni` / `routes` / `macs` / `arpnd` (same module shape, more dimensions) |
 | C | Strict assertions, gated by a non-overlap rule against Phase 2 smoke |
 | D | Time-window queries via pyarrow over the parquet history |
 
-All of B/C/D use the same drift sibling container — no new venvs, no new infrastructure, just more code in `drift/`.
+Both use the same drift sibling container - no new infrastructure, no new venvs, just more code in `drift/`.

@@ -61,7 +61,7 @@ Test contract (see tests/test_suzieq_image_patches.py):
 import sys
 from pathlib import Path
 
-# Service yamls that get the simple `copy: junos-mx` shim. lldp is
+# Service yamls that get a simple `copy: <base>` shim. lldp is
 # excluded because it gets a special-cased explicit block below.
 SIMPLE_COPY_SERVICES = [
     "arpnd.yml",
@@ -81,6 +81,50 @@ SIMPLE_COPY_SERVICES = [
     "time.yml",
     "topcpu.yml",
 ]
+
+# Default base devtype: junos-qfx.
+#
+# vJunos-switch IS architecturally a switch (the vrnetlab image
+# emulates EX9214, a switch). junos-qfx is the canonical Junos
+# switch base in upstream SuzieQ - in fact, junos-qfx is the ONLY
+# Junos devtype that has a real definition in EVERY service yaml
+# (verified empirically). All the other Junos variants (junos-ex,
+# junos-es, junos-qfx10k, junos-evo, AND junos-mx in 7 of 12
+# services) inherit from junos-qfx via `copy:` chains.
+#
+# Why this is the right default (and not junos-mx):
+#   - junos-qfx is REAL in 12/12 service yamls. junos-mx is
+#     `copy: junos-qfx` in 7/12, ABSENT in 1/12, and has its own
+#     real definition in only 4/12 (arpnd, device, macs, routes).
+#   - For 3 of those 4 (arpnd, macs, routes), junos-mx is
+#     specifically the WRONG base for vJunos:
+#       * arpnd: identical command, no advantage
+#       * macs:  junos-mx uses `show bridge mac-table` (MX-only)
+#                while junos-qfx uses `show ethernet-switching
+#                table detail` (which vJunos-switch has)
+#       * routes: junos-mx uses `show route protocol direct`
+#                (the documented MX scale workaround - returns
+#                ONLY direct/connected routes, no BGP, no EVPN).
+#                junos-qfx uses `show route` + `show evpn
+#                ip-prefix-database` (full RIB + EVPN learned).
+#                Verified live: switching routes to junos-qfx took
+#                the table from 26 connected-only rows to 86 rows
+#                including bgp, evpn, vpn, static, local protocols.
+#   - The single service where junos-mx is correct for vJunos is
+#     device.yml - junos-mx uses the single-RE uptime parser that
+#     vJunos's JSON shape requires. That's the lone override below.
+DEFAULT_BASE = "junos-qfx"
+
+# Per-service base override. ONLY used when junos-qfx is the wrong
+# base. Currently exactly one entry: device.yml needs the junos-mx
+# single-RE uptime parser because vJunos returns the single-RE
+# `system-uptime-information/*` JSON shape (no
+# `multi-routing-engine-results` wrapper). The corresponding Python
+# source patch in patch_node_multi_re_list() adds vJunos to the
+# allowlist for the same parser path - both must agree.
+SERVICE_BASE_OVERRIDES = {
+    "device.yml": "junos-mx",
+}
 
 # The explicit junos-vjunos-switch lldp block. Identical shape to upstream
 # junos-qfx (detail view), only the devtype label is different.
@@ -162,21 +206,44 @@ def patch_simple_copy_yaml(path: Path) -> None:
     if PATCH_MARKER in text:
         print(f"  SKIP: {path.name} (already patched)")
         return
-    if "junos-mx:" not in text:
-        # Service does not target junos-mx at all - skip silently.
-        # Some services (e.g. ifCounters might not exist for Junos
-        # in older suzieq versions) wouldn't have a junos-mx block.
-        print(f"  SKIP: {path.name} (no junos-mx block to copy from)")
-        return
-    base = resolve_base_devtype(text, start="junos-mx")
+
+    # Pick the base: per-service override (currently only device.yml)
+    # or DEFAULT_BASE (junos-qfx for everything else).
+    base = SERVICE_BASE_OVERRIDES.get(path.name, DEFAULT_BASE)
+
+    # Verify the chosen base actually has a block in this file.
+    # Services that don't target Junos at all (mlag, time, topcpu)
+    # have no junos-* blocks - skip them silently. This is a
+    # NORMAL outcome, not an error.
+    if f"{base}:" not in text:
+        # If the chosen base is missing, optionally walk a `copy:`
+        # chain from any other Junos devtype to find a real
+        # definition. In current upstream this never fires
+        # (junos-qfx is REAL in every Junos service file) but the
+        # fallback is here so a future upstream restructure
+        # doesn't silently skip services it shouldn't.
+        fallback = resolve_base_devtype(text, start=base)
+        if fallback == base or f"{fallback}:" not in text:
+            print(f"  SKIP: {path.name} (no {base!r} block - "
+                  f"service does not target Junos)")
+            return
+        base = fallback
+        reason = "chain-fallback"
+    elif path.name in SERVICE_BASE_OVERRIDES:
+        reason = "override"
+    else:
+        reason = "default"
+
     block = SIMPLE_COPY_BLOCK_TEMPLATE.format(base=base)
     new_text = text.rstrip() + "\n" + block + "\n" + PATCH_MARKER + "\n"
     path.write_text(new_text)
-    if base == "junos-mx":
-        print(f"  PATCH: {path.name} (junos-vjunos-switch -> copy: junos-mx)")
-    else:
-        print(f"  PATCH: {path.name} (junos-vjunos-switch -> copy: {base}, "
-              f"resolved through junos-mx)")
+
+    label = {
+        "default": f"junos-vjunos-switch -> copy: {base}",
+        "override": f"junos-vjunos-switch -> copy: {base} (per SERVICE_BASE_OVERRIDES)",
+        "chain-fallback": f"junos-vjunos-switch -> copy: {base} (chain fallback)",
+    }[reason]
+    print(f"  PATCH: {path.name} ({label})")
 
 
 def patch_lldp_yaml(path: Path) -> None:

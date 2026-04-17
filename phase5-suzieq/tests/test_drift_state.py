@@ -125,14 +125,48 @@ class TestReadTable:
 # ---------------------------------------------------------------------------
 
 class TestCollect:
-    def test_returns_fabric_state_with_all_four_tables(self, populated_parquet):
+    def test_returns_fabric_state_with_all_eight_tables(self, populated_parquet):
         state = collect("dc1", str(populated_parquet))
-        # device + bgp populated, interfaces + lldp empty (not in fixture)
+        # device + bgp populated by fixture, the other 6 are empty
         assert len(state.devices) == 2
         assert len(state.bgp) == 1
         assert state.interfaces.empty
         assert state.lldp.empty
+        # Part B-full additions
+        assert state.evpn_vnis.empty
+        assert state.routes.empty
+        assert state.macs.empty
+        assert state.arpnd.empty
         assert state.namespace == "dc1"
+
+    def test_reads_part_b_full_tables_when_present(self, populated_parquet):
+        """End-to-end smoke for the new tables: write each one
+        with one row, verify state.collect() picks them up."""
+        _write_table(populated_parquet, "evpnVni", "dc1", "dc1-leaf1",
+                     pd.DataFrame([{"vni": 10010, "type": "L2",
+                                    "vlan": 10, "state": "up",
+                                    "timestamp": 1700000000000}]))
+        _write_table(populated_parquet, "routes", "dc1", "dc1-leaf1",
+                     pd.DataFrame([{"vrf": "default",
+                                    "prefix": "10.1.0.1/32",
+                                    "protocol": "bgp",
+                                    "timestamp": 1700000000000}]))
+        _write_table(populated_parquet, "macs", "dc1", "dc1-leaf1",
+                     pd.DataFrame([{"vlan": 10,
+                                    "macaddr": "00:00:5e:00:01:01",
+                                    "oif": "esi", "flags": "remote",
+                                    "timestamp": 1700000000000}]))
+        _write_table(populated_parquet, "arpnd", "dc1", "dc1-leaf1",
+                     pd.DataFrame([{"ipAddress": "10.10.10.4",
+                                    "macaddr": "2c:6b:f5:41:e8:f0",
+                                    "state": "reachable",
+                                    "timestamp": 1700000000000}]))
+
+        state = collect("dc1", str(populated_parquet))
+        assert len(state.evpn_vnis) == 1
+        assert len(state.routes) == 1
+        assert len(state.macs) == 1
+        assert len(state.arpnd) == 1
 
     def test_empty_store_yields_all_empty_dataframes(self, tmp_path):
         state = collect("dc1", str(tmp_path))

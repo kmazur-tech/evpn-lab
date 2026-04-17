@@ -72,16 +72,14 @@ apply:
   junos-ex:
     copy: junos-qfx
   junos-mx:
-    version: all
-    command: show bgp summary | display json
+    copy: junos-qfx
   junos-es:
     copy: junos-mx
 """
 
 # Real-world shape from upstream devconfig.yml: junos-mx is itself
 # a copy: junos-qfx (because devconfig is the same command across
-# all Junos variants). The patcher MUST dereference the chain or
-# SuzieQ's one-level copy resolver chokes.
+# all Junos variants).
 UPSTREAM_DEVCONFIG_YML = """\
 service: devconfig
 apply:
@@ -92,6 +90,54 @@ apply:
   junos-mx:
     copy: junos-qfx
   junos-es:
+    copy: junos-qfx
+"""
+
+# device.yml is the lone service where junos-mx has its OWN real
+# definition that vJunos needs (the single-RE uptime parser).
+# This is the only service in SERVICE_BASE_OVERRIDES.
+UPSTREAM_DEVICE_YML = """\
+service: device
+apply:
+  junos-qfx:
+    version: all
+    command:
+      - command: "show system uptime | display json"
+        normalize: 'multi-routing-engine-results/[0]/multi-routing-engine-item/[0]/system-uptime-information/*/[
+        "data: bootupTimestamp?|"
+        ]'
+  junos-ex:
+    copy: junos-qfx
+  junos-mx:
+    version: all
+    command:
+      - command: "show system uptime | display json"
+        normalize: 'system-uptime-information/*/[
+        "data: bootupTimestamp?|"
+        ]'
+  junos-es:
+    copy: junos-mx
+"""
+
+# evpnVni.yml shape: junos-mx is COMPLETELY ABSENT upstream. The
+# patcher must still produce a valid junos-vjunos-switch entry by
+# falling back to junos-qfx (the new default base, which is real).
+UPSTREAM_EVPNVNI_YML = """\
+service: evpnVni
+apply:
+  cumulus:
+    version: all
+    command: vtysh -c "show evpn vni detail json"
+  junos-qfx:
+    version: all
+    command: show evpn instance extensive | display json
+  junos-ex:
+    copy: junos-qfx
+  junos-es:
+    copy: junos-qfx
+  junos-qfx10k:
+    copy: junos-qfx
+  junos-evo:
     copy: junos-qfx
 """
 
@@ -200,38 +246,55 @@ apply:
 
 
 class TestSimpleCopyPatch:
-    def test_appends_vjunos_switch_copy_block_when_junos_mx_is_real(self, tmp_path):
-        """When junos-mx has a real definition (not a copy itself),
-        junos-vjunos-switch copies directly from junos-mx."""
+    def test_default_base_is_junos_qfx(self, tmp_path):
+        """Default base for the simple-copy patch is junos-qfx
+        (the canonical Junos base in upstream - REAL in every
+        Junos service yaml). The earlier patcher version defaulted
+        to junos-mx with a chain resolver, but the user pushed back
+        pointing out that junos-qfx is semantically closer for
+        vJunos-switch (which IS architecturally a switch). The
+        live verification confirmed: routes table went from 26
+        connected-only rows to 86 rows including bgp/evpn/vpn
+        protocols once routes was switched to junos-qfx."""
         bgp = tmp_path / "bgp.yml"
         bgp.write_text(UPSTREAM_BGP_YML)
         patcher.patch_simple_copy_yaml(bgp)
 
         result = yaml.safe_load(bgp.read_text())
         assert "junos-vjunos-switch" in result["apply"]
+        assert result["apply"]["junos-vjunos-switch"] == {"copy": "junos-qfx"}
+
+    def test_device_yml_overrides_to_junos_mx(self, tmp_path):
+        """REGRESSION GUARD for the lone SERVICE_BASE_OVERRIDES
+        entry. device.yml is the only service where junos-mx is
+        the right base for vJunos-switch (single-RE uptime
+        parser). Don't change this without first verifying that
+        the upstream junos-qfx device template no longer requires
+        the multi-RE wrapper AND that vJunos has changed its
+        JSON shape - both are extremely unlikely."""
+        device = tmp_path / "device.yml"
+        device.write_text(UPSTREAM_DEVICE_YML)
+        patcher.patch_simple_copy_yaml(device)
+
+        result = yaml.safe_load(device.read_text())
         assert result["apply"]["junos-vjunos-switch"] == {"copy": "junos-mx"}
 
-    def test_dereferences_chain_when_junos_mx_is_itself_a_copy(self, tmp_path):
-        """REGRESSION GUARD. Real-world: in upstream devconfig.yml,
-        junos-mx is itself `copy: junos-qfx`. SuzieQ's service-loader
-        copy resolver only follows ONE level - if junos-vjunos-switch
-        copies from junos-mx and junos-mx copies from junos-qfx,
-        the resolver gets `{copy: junos-qfx}` and rejects it as
-        missing command/normalize. The patcher must dereference
-        the chain at PATCH time and copy from the resolved base.
+    def test_evpnvni_with_no_junos_mx_block_still_patches(self, tmp_path):
+        """REGRESSION GUARD. evpnVni.yml has NO junos-mx block at
+        all upstream - only junos-qfx (and copies of it). With
+        the earlier patcher (default=junos-mx) the file got
+        SKIPped because there was no junos-mx text to copy from,
+        leaving suzieq with no evpnVni collector for vJunos-switch
+        and the table empty. With default=junos-qfx the patch
+        produces a valid junos-vjunos-switch entry from the only
+        base that exists in the file. Verified live: after the
+        fix, vJunos collects 6 evpnVni rows."""
+        evpnvni = tmp_path / "evpnVni.yml"
+        evpnvni.write_text(UPSTREAM_EVPNVNI_YML)
+        patcher.patch_simple_copy_yaml(evpnvni)
 
-        Verified against the running suzieq image during Phase 5
-        Part B junos-vjunos-switch bring-up: this exact failure mode
-        broke devconfig, fs, interfaces, inventory, ospfIf, ospfNbr
-        and bgp services on the first attempt."""
-        devconfig = tmp_path / "devconfig.yml"
-        devconfig.write_text(UPSTREAM_DEVCONFIG_YML)
-        patcher.patch_simple_copy_yaml(devconfig)
-
-        result = yaml.safe_load(devconfig.read_text())
-        # junos-vjunos-switch copies from junos-qfx (the resolved base),
-        # NOT from junos-mx (which is itself a copy). This sidesteps
-        # the SuzieQ one-level resolver bug entirely.
+        result = yaml.safe_load(evpnvni.read_text())
+        assert "junos-vjunos-switch" in result["apply"]
         assert result["apply"]["junos-vjunos-switch"] == {"copy": "junos-qfx"}
 
     def test_idempotent_on_already_patched_file(self, tmp_path):
@@ -245,7 +308,9 @@ class TestSimpleCopyPatch:
         second = bgp.read_text()
         assert first == second
 
-    def test_skips_yaml_without_junos_mx_block(self, tmp_path):
+    def test_skips_yaml_without_any_junos_block(self, tmp_path):
+        """Services like mlag.yml / time.yml / topcpu.yml have no
+        Junos block at all - skipped silently as a normal outcome."""
         weird = tmp_path / "weird.yml"
         weird.write_text(UPSTREAM_NO_JUNOS_YML)
         patcher.patch_simple_copy_yaml(weird)
@@ -258,17 +323,19 @@ class TestSimpleCopyPatch:
         additive. Pollution of the built-in devtype namespace is
         the bug class this whole approach exists to avoid."""
         bgp = tmp_path / "bgp.yml"
+        original = yaml.safe_load(UPSTREAM_BGP_YML)
         bgp.write_text(UPSTREAM_BGP_YML)
         patcher.patch_simple_copy_yaml(bgp)
 
         result = yaml.safe_load(bgp.read_text())
-        # Stock devtype blocks are byte-identical to upstream
-        assert result["apply"]["junos-qfx"]["command"] == "show bgp summary | display json"
-        assert result["apply"]["junos-ex"] == {"copy": "junos-qfx"}
-        assert result["apply"]["junos-mx"]["command"] == "show bgp summary | display json"
-        assert result["apply"]["junos-es"] == {"copy": "junos-mx"}
-        assert "cumulus" in result["apply"]
-        assert "eos" in result["apply"]
+        # Every stock devtype block must be byte-identical to
+        # upstream. Iterate the original, assert each survived.
+        for devtype in original["apply"]:
+            assert result["apply"][devtype] == original["apply"][devtype], \
+                f"upstream {devtype!r} block was mutated by the patcher"
+        # And junos-vjunos-switch is the only NEW key
+        added = set(result["apply"]) - set(original["apply"])
+        assert added == {"junos-vjunos-switch"}
 
 
 # ---------------------------------------------------------------------------

@@ -26,12 +26,16 @@ from drift.diff import (  # noqa: E402
     compare,
 )
 from drift.intent import (  # noqa: E402
+    AnycastMacIntent,
     BgpSessionIntent,
     Cable,
     CableEdge,
     DeviceIntent,
     FabricIntent,
     InterfaceIntent,
+    LoopbackRouteIntent,
+    PeerIrbArpIntent,
+    VniIntent,
 )
 from drift.state import FabricState  # noqa: E402
 
@@ -44,23 +48,34 @@ def _device(name, status="active", role="leaf"):
     return DeviceIntent(name=name, status=status, site_slug="dc1", role_slug=role)
 
 
-def _intent(devices=None, interfaces=None, cables=None, bgp_sessions=None):
+def _intent(devices=None, interfaces=None, cables=None, bgp_sessions=None,
+            vnis=None, loopback_routes=None, anycast_macs=None,
+            peer_irb_arps=None):
     return FabricIntent(
         namespace="dc1",
         devices=devices or [],
         interfaces=interfaces or [],
         cables=cables or [],
         bgp_sessions=bgp_sessions or [],
+        vnis=vnis or [],
+        loopback_routes=loopback_routes or [],
+        anycast_macs=anycast_macs or [],
+        peer_irb_arps=peer_irb_arps or [],
     )
 
 
-def _state(devices=None, interfaces=None, lldp=None, bgp=None):
+def _state(devices=None, interfaces=None, lldp=None, bgp=None,
+           evpn_vnis=None, routes=None, macs=None, arpnd=None):
     return FabricState(
         namespace="dc1",
         devices=pd.DataFrame(devices or []),
         interfaces=pd.DataFrame(interfaces or []),
         lldp=pd.DataFrame(lldp or []),
         bgp=pd.DataFrame(bgp or []),
+        evpn_vnis=pd.DataFrame(evpn_vnis or []),
+        routes=pd.DataFrame(routes or []),
+        macs=pd.DataFrame(macs or []),
+        arpnd=pd.DataFrame(arpnd or []),
     )
 
 
@@ -355,6 +370,203 @@ class TestBgpSession:
 # ---------------------------------------------------------------------------
 # Output stability
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Dimension 5: EVPN VNI presence (Part B-full)
+# ---------------------------------------------------------------------------
+
+class TestEvpnVniDiff:
+    def test_modeled_vni_present_and_up_no_drift(self):
+        intent = _intent(vnis=[VniIntent(device="dc1-leaf1", vni=10010, vni_type="L2")])
+        state = _state(evpn_vnis=[
+            {"hostname": "dc1-leaf1", "vni": 10010, "type": "L2", "state": "up"},
+        ])
+        drifts = [d for d in compare(intent, state) if d.dimension == "evpn_vni"]
+        assert drifts == []
+
+    def test_modeled_vni_missing_from_state_is_error(self):
+        intent = _intent(vnis=[VniIntent(device="dc1-leaf1", vni=10010, vni_type="L2")])
+        state = _state(evpn_vnis=[])  # empty
+        drifts = [d for d in compare(intent, state) if d.dimension == "evpn_vni"]
+        assert len(drifts) == 1
+        assert drifts[0].severity == SEVERITY_ERROR
+        assert "10010" in drifts[0].subject
+
+    def test_vni_present_but_not_up_is_error(self):
+        intent = _intent(vnis=[VniIntent(device="dc1-leaf1", vni=10010, vni_type="L2")])
+        state = _state(evpn_vnis=[
+            {"hostname": "dc1-leaf1", "vni": 10010, "type": "L2", "state": "down"},
+        ])
+        drifts = [d for d in compare(intent, state) if d.dimension == "evpn_vni"]
+        assert len(drifts) == 1
+        assert "not up" in drifts[0].detail
+        assert "down" in drifts[0].detail
+
+    def test_extra_vni_in_state_not_in_intent_is_ignored(self):
+        """One-directional check: SuzieQ-only VNIs are not flagged.
+        We only care that intent VNIs exist in state, not the
+        reverse. (Phase 7 multi-tenant might add a reverse check.)"""
+        intent = _intent(vnis=[])
+        state = _state(evpn_vnis=[
+            {"hostname": "dc1-leaf1", "vni": 99999, "type": "L2", "state": "up"},
+        ])
+        drifts = [d for d in compare(intent, state) if d.dimension == "evpn_vni"]
+        assert drifts == []
+
+
+# ---------------------------------------------------------------------------
+# Dimension 6: loopback routes
+# ---------------------------------------------------------------------------
+
+class TestLoopbackRouteDiff:
+    def _route(self, observer, target, prefix):
+        return LoopbackRouteIntent(observer_device=observer,
+                                   target_device=target, prefix=prefix)
+
+    def test_loopback_present_in_default_vrf_no_drift(self):
+        intent = _intent(loopback_routes=[
+            self._route("dc1-leaf1", "dc1-spine1", "10.1.0.1/32"),
+        ])
+        state = _state(routes=[
+            {"hostname": "dc1-leaf1", "vrf": "default",
+             "prefix": "10.1.0.1/32", "protocol": "bgp"},
+        ])
+        drifts = [d for d in compare(intent, state) if d.dimension == "loopback_route"]
+        assert drifts == []
+
+    def test_missing_loopback_is_error(self):
+        intent = _intent(loopback_routes=[
+            self._route("dc1-leaf1", "dc1-spine1", "10.1.0.1/32"),
+        ])
+        state = _state(routes=[])
+        drifts = [d for d in compare(intent, state) if d.dimension == "loopback_route"]
+        assert len(drifts) == 1
+        assert drifts[0].severity == SEVERITY_ERROR
+        assert "10.1.0.1/32" in drifts[0].subject
+
+    def test_loopback_in_non_default_vrf_does_not_count(self):
+        """Underlay loopbacks live in the global RIB. A /32 in
+        TENANT-1 VRF is unrelated and must NOT satisfy the
+        underlay reachability check."""
+        intent = _intent(loopback_routes=[
+            self._route("dc1-leaf1", "dc1-spine1", "10.1.0.1/32"),
+        ])
+        state = _state(routes=[
+            {"hostname": "dc1-leaf1", "vrf": "TENANT-1",
+             "prefix": "10.1.0.1/32", "protocol": "bgp"},
+        ])
+        drifts = [d for d in compare(intent, state) if d.dimension == "loopback_route"]
+        assert len(drifts) == 1  # the global VRF check still fires
+
+    def test_each_observer_checked_independently(self):
+        """A loopback present on leaf1 but not spine1 produces a
+        drift for spine1's perspective only."""
+        intent = _intent(loopback_routes=[
+            self._route("dc1-leaf1", "dc1-spine1", "10.1.0.1/32"),
+            self._route("dc1-spine1", "dc1-leaf1", "10.1.0.3/32"),
+        ])
+        state = _state(routes=[
+            {"hostname": "dc1-leaf1", "vrf": "default",
+             "prefix": "10.1.0.1/32", "protocol": "bgp"},
+            # spine1 is missing the leaf1 loopback
+        ])
+        drifts = [d for d in compare(intent, state) if d.dimension == "loopback_route"]
+        assert len(drifts) == 1
+        assert "dc1-spine1" in drifts[0].subject
+
+
+# ---------------------------------------------------------------------------
+# Dimension 7: anycast gateway MAC
+# ---------------------------------------------------------------------------
+
+class TestAnycastMacDiff:
+    def _intent_mac(self, device, vlan, mac="00:00:5e:00:01:01"):
+        return AnycastMacIntent(device=device, vlan=vlan, anycast_mac=mac)
+
+    def test_present_in_mac_table_no_drift(self):
+        intent = _intent(anycast_macs=[self._intent_mac("dc1-leaf1", 10)])
+        state = _state(macs=[
+            {"hostname": "dc1-leaf1", "vlan": 10,
+             "macaddr": "00:00:5e:00:01:01", "oif": "esi", "flags": "remote"},
+        ])
+        drifts = [d for d in compare(intent, state) if d.dimension == "anycast_mac"]
+        assert drifts == []
+
+    def test_missing_anycast_mac_is_error(self):
+        intent = _intent(anycast_macs=[self._intent_mac("dc1-leaf1", 10)])
+        state = _state(macs=[])
+        drifts = [d for d in compare(intent, state) if d.dimension == "anycast_mac"]
+        assert len(drifts) == 1
+        assert "vlan10" in drifts[0].subject
+        assert "00:00:5e:00:01:01" in drifts[0].subject
+
+    def test_macaddr_match_is_case_insensitive(self):
+        """Junos returns MACs in lowercase, NetBox custom field
+        might be uppercase. Both should match."""
+        intent = _intent(anycast_macs=[
+            self._intent_mac("dc1-leaf1", 10, mac="00:00:5E:00:01:01"),
+        ])
+        state = _state(macs=[
+            {"hostname": "dc1-leaf1", "vlan": 10,
+             "macaddr": "00:00:5e:00:01:01", "oif": "esi", "flags": "remote"},
+        ])
+        drifts = [d for d in compare(intent, state) if d.dimension == "anycast_mac"]
+        assert drifts == []
+
+    def test_wrong_vlan_is_error(self):
+        """The MAC must be in the table for the SPECIFIC vlan,
+        not just anywhere."""
+        intent = _intent(anycast_macs=[self._intent_mac("dc1-leaf1", 10)])
+        state = _state(macs=[
+            {"hostname": "dc1-leaf1", "vlan": 99,  # wrong vlan
+             "macaddr": "00:00:5e:00:01:01", "oif": "esi", "flags": "remote"},
+        ])
+        drifts = [d for d in compare(intent, state) if d.dimension == "anycast_mac"]
+        assert len(drifts) == 1
+
+
+# ---------------------------------------------------------------------------
+# Dimension 8: peer leaf IRB ARP
+# ---------------------------------------------------------------------------
+
+class TestPeerIrbArpDiff:
+    def _arp(self, observer, target_dev, target_ip):
+        return PeerIrbArpIntent(observer_device=observer,
+                                target_device=target_dev,
+                                target_ip=target_ip)
+
+    def test_peer_irb_resolved_no_drift(self):
+        intent = _intent(peer_irb_arps=[
+            self._arp("dc1-leaf1", "dc1-leaf2", "10.10.10.4"),
+        ])
+        state = _state(arpnd=[
+            {"hostname": "dc1-leaf1", "ipAddress": "10.10.10.4",
+             "macaddr": "2c:6b:f5:41:e8:f0", "state": "reachable"},
+        ])
+        drifts = [d for d in compare(intent, state) if d.dimension == "peer_irb_arp"]
+        assert drifts == []
+
+    def test_missing_peer_arp_entry_is_error(self):
+        intent = _intent(peer_irb_arps=[
+            self._arp("dc1-leaf1", "dc1-leaf2", "10.10.10.4"),
+        ])
+        state = _state(arpnd=[])
+        drifts = [d for d in compare(intent, state) if d.dimension == "peer_irb_arp"]
+        assert len(drifts) == 1
+        assert drifts[0].severity == SEVERITY_ERROR
+        assert "10.10.10.4" in drifts[0].subject
+
+    def test_arp_for_different_ip_does_not_satisfy(self):
+        intent = _intent(peer_irb_arps=[
+            self._arp("dc1-leaf1", "dc1-leaf2", "10.10.10.4"),
+        ])
+        state = _state(arpnd=[
+            {"hostname": "dc1-leaf1", "ipAddress": "10.10.10.99",
+             "macaddr": "aa:bb:cc:dd:ee:ff", "state": "reachable"},
+        ])
+        drifts = [d for d in compare(intent, state) if d.dimension == "peer_irb_arp"]
+        assert len(drifts) == 1
+
 
 class TestOutputStability:
     def test_drifts_are_sorted_by_dimension_then_subject(self):

@@ -28,11 +28,15 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from .intent import (
+    AnycastMacIntent,
     BgpSessionIntent,
     Cable,
     DeviceIntent,
     FabricIntent,
     InterfaceIntent,
+    LoopbackRouteIntent,
+    PeerIrbArpIntent,
+    VniIntent,
 )
 from .state import FabricState
 
@@ -70,15 +74,21 @@ class Drift:
 # ---------------------------------------------------------------------------
 
 def compare(intent: FabricIntent, state: FabricState) -> List[Drift]:
-    """Run all four dimension comparisons. Returns a flat list of
+    """Run all eight dimension comparisons. Returns a flat list of
     Drift records, sorted by dimension then subject so output is
     stable across runs (important for golden-file tests in Phase 6
     and for human readability)."""
     drifts: List[Drift] = []
+    # Part B-min dimensions
     drifts.extend(_diff_devices(intent.devices, state.devices))
     drifts.extend(_diff_interfaces(intent.interfaces, state.interfaces))
     drifts.extend(_diff_lldp(intent.cables, state.lldp))
     drifts.extend(_diff_bgp(intent.bgp_sessions, state.bgp))
+    # Part B-full dimensions
+    drifts.extend(_diff_evpn_vnis(intent.vnis, state.evpn_vnis))
+    drifts.extend(_diff_loopback_routes(intent.loopback_routes, state.routes))
+    drifts.extend(_diff_anycast_macs(intent.anycast_macs, state.macs))
+    drifts.extend(_diff_peer_irb_arp(intent.peer_irb_arps, state.arpnd))
     return sorted(drifts, key=lambda d: (d.dimension, d.subject))
 
 
@@ -370,4 +380,234 @@ def _diff_bgp(
                     },
                 ))
 
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Dimension 5: EVPN VNI presence (Part B-full)
+# ---------------------------------------------------------------------------
+
+def _diff_evpn_vnis(intent_vnis: List[VniIntent], state_df: pd.DataFrame) -> List[Drift]:
+    """Each NetBox-modeled VNI (L2 from VLAN custom field, L3 from
+    VRF custom field) should appear in the SuzieQ evpnVni table on
+    every leaf, with state == up.
+
+    Catches:
+      - VNI not configured at all (NetBox model says it should be,
+        Phase 3 render didn't ship it - rare but possible during
+        a partial deploy)
+      - VNI configured but not up (typically a VLAN-to-VNI mapping
+        broken in the templates, or an irb interface admin-down)
+    """
+    out: List[Drift] = []
+    if state_df.empty:
+        # The whole table is empty - emit one drift per intent VNI
+        for v in intent_vnis:
+            out.append(Drift(
+                dimension="evpn_vni",
+                severity=SEVERITY_ERROR,
+                subject=f"{v.device}:vni{v.vni}",
+                detail=f"{v.vni_type} VNI {v.vni} expected on {v.device} but evpnVni table is empty",
+                intent=asdict(v),
+                state=None,
+            ))
+        return out
+
+    # Build {(hostname, vni) -> row} from state
+    state_idx = {}
+    for _, row in state_df.iterrows():
+        try:
+            state_idx[(row["hostname"], int(row["vni"]))] = row
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    for v in intent_vnis:
+        row = state_idx.get((v.device, v.vni))
+        if row is None:
+            out.append(Drift(
+                dimension="evpn_vni",
+                severity=SEVERITY_ERROR,
+                subject=f"{v.device}:vni{v.vni}",
+                detail=f"{v.vni_type} VNI {v.vni} expected on {v.device} but not in SuzieQ evpnVni table",
+                intent=asdict(v),
+                state=None,
+            ))
+            continue
+        state_str = str(row.get("state", "")).lower()
+        if state_str != "up":
+            out.append(Drift(
+                dimension="evpn_vni",
+                severity=SEVERITY_ERROR,
+                subject=f"{v.device}:vni{v.vni}",
+                detail=f"{v.vni_type} VNI {v.vni} on {v.device} not up: state={row.get('state')!r}",
+                intent=asdict(v),
+                state={"state": row.get("state"), "type": row.get("type")},
+            ))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Dimension 6: Loopback routes (overlay reachability via underlay)
+# ---------------------------------------------------------------------------
+
+def _diff_loopback_routes(
+    intent_routes: List[LoopbackRouteIntent],
+    state_df: pd.DataFrame,
+) -> List[Drift]:
+    """Each device's loopback /32 should be present in every other
+    device's route table. The check is per (observer, target) pair.
+
+    Catches:
+      - underlay BGP session up but loopback not exported
+      - eBGP next-hop-self missing on a spine -> leaf cannot resolve
+      - one device's underlay completely broken (no foreign routes
+        at all in its table)
+      - typo in loopback IP modeling vs rendered config
+    """
+    out: List[Drift] = []
+    if state_df.empty:
+        for r in intent_routes:
+            out.append(Drift(
+                dimension="loopback_route",
+                severity=SEVERITY_ERROR,
+                subject=f"{r.observer_device}->{r.target_device}({r.prefix})",
+                detail=f"routes table empty - cannot verify {r.target_device} loopback reachability from {r.observer_device}",
+                intent=asdict(r),
+                state=None,
+            ))
+        return out
+
+    # Build {hostname -> set(prefixes)} from state. We use the
+    # default VRF only - underlay loopbacks live in the global RIB.
+    routes_by_host = {}
+    for _, row in state_df.iterrows():
+        if str(row.get("vrf", "")).lower() not in ("default", ""):
+            continue
+        host = row.get("hostname")
+        prefix = row.get("prefix")
+        if host is None or prefix is None:
+            continue
+        routes_by_host.setdefault(host, set()).add(prefix)
+
+    for r in intent_routes:
+        prefixes = routes_by_host.get(r.observer_device, set())
+        if r.prefix not in prefixes:
+            out.append(Drift(
+                dimension="loopback_route",
+                severity=SEVERITY_ERROR,
+                subject=f"{r.observer_device}->{r.target_device}({r.prefix})",
+                detail=f"{r.observer_device} has no /32 route to {r.target_device}'s loopback {r.prefix}",
+                intent=asdict(r),
+                state=None,
+            ))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Dimension 7: Anycast gateway MAC presence (Part B-full)
+# ---------------------------------------------------------------------------
+
+def _diff_anycast_macs(
+    intent_macs: List[AnycastMacIntent],
+    state_df: pd.DataFrame,
+) -> List[Drift]:
+    """The anycast gateway MAC for each tenant VLAN should appear in
+    every leaf's MAC table for that VLAN. With ESI multi-homing both
+    leaves use the same anycast MAC and learn the peer's via EVPN.
+
+    Catches:
+      - anycast MAC not configured (NetBox VRF custom field changed
+        but Phase 3 render didn't pick up - rare)
+      - VLAN-to-MAC-VRF binding broken (the MAC table for that VLAN
+        is empty or missing the gateway entry)
+      - EVPN MAC advertisement broken between leaves
+    """
+    out: List[Drift] = []
+    if state_df.empty:
+        for m in intent_macs:
+            out.append(Drift(
+                dimension="anycast_mac",
+                severity=SEVERITY_ERROR,
+                subject=f"{m.device}:vlan{m.vlan}({m.anycast_mac})",
+                detail=f"anycast MAC {m.anycast_mac} expected on {m.device} vlan{m.vlan} but macs table is empty",
+                intent=asdict(m),
+                state=None,
+            ))
+        return out
+
+    # Build {(hostname, vlan, macaddr_lower) -> row}
+    state_idx = set()
+    for _, row in state_df.iterrows():
+        try:
+            host = row.get("hostname")
+            vlan = int(row.get("vlan", 0))
+            mac = str(row.get("macaddr", "")).lower()
+        except (TypeError, ValueError):
+            continue
+        if host and mac:
+            state_idx.add((host, vlan, mac))
+
+    for m in intent_macs:
+        if (m.device, m.vlan, m.anycast_mac.lower()) not in state_idx:
+            out.append(Drift(
+                dimension="anycast_mac",
+                severity=SEVERITY_ERROR,
+                subject=f"{m.device}:vlan{m.vlan}({m.anycast_mac})",
+                detail=f"anycast MAC {m.anycast_mac} not in {m.device} mac table for vlan {m.vlan}",
+                intent=asdict(m),
+                state=None,
+            ))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Dimension 8: Peer leaf IRB ARP (EVPN Type-2 ARP advertisement)
+# ---------------------------------------------------------------------------
+
+def _diff_peer_irb_arp(
+    intent_arps: List[PeerIrbArpIntent],
+    state_df: pd.DataFrame,
+) -> List[Drift]:
+    """Each leaf-local IRB IP should appear in every peer leaf's
+    arpnd table. EVPN Type-2 routes carry the ARP binding so the
+    peer learns the local-IRB-IP -> local-IRB-MAC mapping without
+    a real ARP exchange.
+
+    Catches:
+      - EVPN Type-2 ARP extended community not advertised
+      - peer leaf's import policy filtering the route
+      - IRB interface down on the source leaf (no IP to advertise)
+    """
+    out: List[Drift] = []
+    if state_df.empty:
+        for a in intent_arps:
+            out.append(Drift(
+                dimension="peer_irb_arp",
+                severity=SEVERITY_ERROR,
+                subject=f"{a.observer_device}->{a.target_device}({a.target_ip})",
+                detail=f"arpnd table empty - cannot verify peer IRB resolution",
+                intent=asdict(a),
+                state=None,
+            ))
+        return out
+
+    # Build {(hostname, ipAddress) -> row}
+    state_idx = {}
+    for _, row in state_df.iterrows():
+        host = row.get("hostname")
+        ip = row.get("ipAddress")
+        if host and ip:
+            state_idx[(host, str(ip))] = row
+
+    for a in intent_arps:
+        row = state_idx.get((a.observer_device, a.target_ip))
+        if row is None:
+            out.append(Drift(
+                dimension="peer_irb_arp",
+                severity=SEVERITY_ERROR,
+                subject=f"{a.observer_device}->{a.target_device}({a.target_ip})",
+                detail=f"{a.observer_device} has no ARP entry for peer {a.target_device}'s IRB IP {a.target_ip}",
+                intent=asdict(a),
+                state=None,
+            ))
     return out

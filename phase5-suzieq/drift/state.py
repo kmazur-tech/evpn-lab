@@ -42,9 +42,10 @@ import pyarrow.dataset as ds
 # suzieq_parquet docker volume read-only at this path.
 DEFAULT_PARQUET_DIR = "/suzieq/parquet"
 
-# Tables we read for Part B-min. Order matches intent.py and diff.py
-# dimension order.
-TABLES = ("device", "interfaces", "lldp", "bgp")
+# Tables we read for Part B (min + full). Order matches intent.py
+# and diff.py dimension order.
+TABLES = ("device", "interfaces", "lldp", "bgp",
+          "evpnVni", "routes", "macs", "arpnd")
 
 
 @dataclass
@@ -58,10 +59,15 @@ class FabricState:
     interfaces: pd.DataFrame = field(default_factory=pd.DataFrame)
     lldp:       pd.DataFrame = field(default_factory=pd.DataFrame)
     bgp:        pd.DataFrame = field(default_factory=pd.DataFrame)
+    # Part B-full additions
+    evpn_vnis:  pd.DataFrame = field(default_factory=pd.DataFrame)
+    routes:     pd.DataFrame = field(default_factory=pd.DataFrame)
+    macs:       pd.DataFrame = field(default_factory=pd.DataFrame)
+    arpnd:      pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 def collect(namespace: str, parquet_dir: str = DEFAULT_PARQUET_DIR) -> FabricState:
-    """Read the four state tables for one namespace. Returns empty
+    """Read the eight state tables for one namespace. Returns empty
     DataFrames for any table that has not been polled yet (rather
     than raising) so first-cycle drift runs do not crash before any
     data has been collected."""
@@ -75,6 +81,14 @@ def collect(namespace: str, parquet_dir: str = DEFAULT_PARQUET_DIR) -> FabricSta
                         pk=("namespace", "hostname", "ifname")),
         bgp=read_table("bgp", namespace, parquet_dir,
                        pk=("namespace", "hostname", "vrf", "peer")),
+        evpn_vnis=read_table("evpnVni", namespace, parquet_dir,
+                             pk=("namespace", "hostname", "vni")),
+        routes=read_table("routes", namespace, parquet_dir,
+                          pk=("namespace", "hostname", "vrf", "prefix")),
+        macs=read_table("macs", namespace, parquet_dir,
+                        pk=("namespace", "hostname", "vlan", "macaddr")),
+        arpnd=read_table("arpnd", namespace, parquet_dir,
+                         pk=("namespace", "hostname", "ipAddress")),
     )
 
 
