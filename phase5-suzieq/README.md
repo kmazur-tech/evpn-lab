@@ -46,19 +46,57 @@ Phase 1 [`netbox-data.yml`](../phase1-netbox/netbox-data.yml) now creates a `Suz
 
 When DC2 lands in Phase 10, tag its devices similarly (the Phase 1 model can either reuse `suzieq` or add a per-DC tag). `gen-inventory.py` will fan out automatically because it groups by `(site.slug, devtype)`.
 
-## Junos devtype override (the "EX devices but `junos-mx` devtype" thing)
+## `junos-vjunos-switch` devtype (project-owned, added at image build time)
 
-SuzieQ ships per-devtype templates in `device.yml`. The `device` service collects model/version/serial/uptime via `show system uptime | display json`. The expected JSON shape varies:
+The lab runs vJunos-switch (the vrnetlab image `juniper_vjunos-switch:23.2R1.14`) which needs an unusual mix of SuzieQ service templates that no built-in devtype provides:
 
-| SuzieQ devtype | Expected shape | vJunos-switch returns |
+| SuzieQ service | What vJunos needs | Built-in devtype that has it |
 |---|---|---|
-| `junos-qfx` | `multi-routing-engine-results/[0]/...` | ❌ KeyError on bootupTimestamp |
-| `junos-ex` | `copy: junos-qfx` (same multi-RE) | ❌ KeyError on bootupTimestamp |
-| `junos-mx` | `system-uptime-information/*/...` (single-RE) | ✅ Works |
+| `device` (uptime/serial parsing) | single-RE JSON shape (no `multi-routing-engine-results` wrapper) | `junos-mx` only |
+| `lldp` (neighbor table) | `show lldp neighbors **detail** \| display json` (the summary view omits `lldp-remote-port-id`) | `junos-qfx` only |
+| Everything else | mostly identical to `junos-mx` | `junos-mx` |
 
-vJunos-switch (the vrnetlab image the lab uses to emulate EX9214) returns the **single-RE** shape, regardless of the fact that real EX9214 hardware would not. So the only built-in SuzieQ devtype whose `device` service template parses correctly is `junos-mx`. With `junos-ex` (the semantically correct choice) the `device` service raises `KeyError: 'bootupTimestamp'` on every poll cycle and `device show` stays empty - even though every other service (bgp, lldp, interfaces, evpnVni, routes, macs, arpnd) populates fine.
+Phase 5 Part A originally worked around this by setting `devtype: junos-mx` and accepting that LLDP would have empty `peerIfname` (with a Tier B fallback in the drift harness). Phase 5 Part B does it properly: a project-owned **`junos-vjunos-switch`** devtype, added to the SuzieQ service catalog at image build time by [suzieq-image/add-vjunos-switch.py](suzieq-image/add-vjunos-switch.py), running as a `RUN` step in [suzieq-image/Dockerfile](suzieq-image/Dockerfile).
 
-The `gen-inventory.py` `DEVTYPE_OVERRIDES` map encodes this: NetBox model `EX9214` -> SuzieQ devtype `junos-mx`. Comments in [gen-inventory.py](gen-inventory.py) explain the mapping inline. Upstream fix would be to add a vJunos-aware shape to `junos-ex`, or to auto-detect the wrapper at parse time - neither is tracked anywhere I could find.
+### Why a project-owned devtype, not a mutation of `junos-mx`
+
+Mutating `junos-mx` to use the LLDP detail view would pollute the meaning of the built-in devtype for any future real Juniper MX hardware in Phase 10+. The `junos-vjunos-switch` name is purely additive: stock `junos-mx`, `junos-qfx`, `junos-ex`, etc. are left byte-identical to upstream. The patcher is tested to verify this (`test_lldp_patch_does_not_mutate_junos_mx_block` and `test_preserves_upstream_devtype_blocks` in [tests/test_suzieq_patcher.py](tests/test_suzieq_patcher.py)).
+
+### Why build-time and not runtime
+
+The patcher runs ONCE inside `RUN python3 ...` at `docker compose build` time. The result is a new image layer (`evpn-lab/suzieq-patched:dev`) with the patches baked in. Container start does **nothing extra** - the upstream entrypoint is unchanged, no script runs at runtime, no entrypoint wrapper, no per-start re-application. Re-running `docker compose up -d` against the existing image is a zero-op for the patcher.
+
+Upgrade procedure: bump the `FROM` digest in `suzieq-image/Dockerfile`, run `docker compose build`, run `docker compose up -d`. The patcher re-runs against the new upstream content; if upstream restructured a yaml or Python source in a way the patcher cannot handle, the build **FAILS LOUDLY** (every patch function has a "marker missing" hard-fail). Silent masking of upstream changes is the bug class this approach exists to avoid.
+
+### What the patcher actually patches
+
+Discovered during Phase 5 Part B by grepping the upstream image for every devtype validation, dispatch, and behavioral-branch site:
+
+| Patch site | What it does | Why we need it |
+|---|---|---|
+| `config/lldp.yml` | Adds explicit `junos-vjunos-switch` block using `show lldp neighbors detail` and extracting `lldp-remote-port-id` | Makes `peerIfname` populate for LLDP rows; this is the load-bearing fix |
+| `config/{12 other yamls}` | Adds `junos-vjunos-switch: copy: <resolved-base>` | All other services share `junos-mx`'s shape; the patcher walks the `copy:` chain at PATCH time because SuzieQ's resolver only follows ONE level (so a naive `copy: junos-mx` chained-through-junos-mx-itself would fail validation) |
+| `shared/utils.py` `known_devtypes()` allowlist | Adds `'junos-vjunos-switch'` to the hardcoded list | Without this, every node init raises `ValueError("An unknown devtype...")` |
+| `node.py:1969` multi-RE wrapper list | Adds `"junos-vjunos-switch"` to `["junos-mx", "junos-qfx10k", "junos-evo"]` | `JunosNode._parse_init_dev_data_devtype` walks `multi-routing-engine-results[0]/...` for everything NOT in this list; vJunos returns single-RE shape so we must opt out of wrapper extraction |
+
+The class dispatch site `node.py:541 elif self.devtype.startswith("junos")` automatically routes `junos-vjunos-switch` to `JunosNode` because the name starts with `"junos"` - no patch needed there. Same goes for the 4 other `startswith("junos")` checks in `evpnVni.py`, `routes.py`, `service.py`, `devconfig.py`.
+
+The naming is deliberate: `junos-vjunos-switch` exactly mirrors the vrnetlab image name (`juniper_vjunos-switch`), starts with `junos` to satisfy the dispatch checks without patching them, and clearly distinguishes from real `junos-ex` hardware.
+
+### Tests
+
+[tests/test_suzieq_patcher.py](tests/test_suzieq_patcher.py) — 25 unit tests covering:
+- `resolve_base_devtype()` (the `copy:` chain walker that sidesteps SuzieQ's one-level resolver)
+- `patch_simple_copy_yaml()` (the 12 simple-case service yamls)
+- `patch_lldp_yaml()` (the load-bearing detail-view block)
+- `patch_known_devtypes()` (`shared/utils.py` allowlist)
+- `patch_node_multi_re_list()` (`node.py` single-RE wrapper list)
+- `main()` orchestration
+- Idempotency for every patch (re-running on already-patched files is a no-op)
+- "Fail loudly" guard tests for every marker (if upstream restructures, the build dies with a clear FATAL error rather than silently producing a broken image)
+- Regression guard `test_dereferences_chain_when_junos_mx_is_itself_a_copy` pinning the chain-resolution fix for the devconfig.yml / bgp.yml / fs.yml class of files where `junos-mx` is itself `copy: junos-qfx`
+
+All run in <1 second, no docker, no SuzieQ install, no network — fixture yamls in `tmp_path`.
 
 ## Deployment
 
@@ -164,7 +202,7 @@ Documented because the same potholes will trip the next operator:
 | `Unable to parse hostname env:NETBOX_URL` | SuzieQ NetBox source plugin's `url` field uses `urlparse()` directly and does NOT support `env:` syntax (only `token`/`username`/`password`/`API_KEY` do) | `gen-inventory.py` writes the literal URL at generate time |
 | Empty `device show` despite parquet files on disk | `gen-inventory.py` writes the literal URL at generate time, but the SuzieQ NetBox source uses `primary_ip4` (the loopback in this project) which is unreachable from netdevops-srv | Switched to native source generated from NetBox, using `oob_ip` |
 | `Host key is not trusted for host 172.16.18.161` for 3 of 4 devices | First device's key gets accepted into a fresh known_hosts; the rest get rejected. vJunos containers regenerate keys on every cold boot anyway | `ignore-known-hosts: true` in the device block (lab convenience; production must keep verification on) |
-| `Processing data failed for service device ... KeyError: 'bootupTimestamp'` | `junos-qfx` / `junos-ex` device template expects multi-routing-engine wrapper that vJunos-switch does not produce | Override to `junos-mx` devtype (see "Junos devtype override" section above) |
+| `Processing data failed for service device ... KeyError: 'bootupTimestamp'` | `junos-qfx` / `junos-ex` device template expects multi-routing-engine wrapper that vJunos-switch does not produce | Project-owned `junos-vjunos-switch` devtype added by build-time patcher (see "junos-vjunos-switch devtype" section); originally Phase 5 Part A worked around this with `junos-mx` but Part B did it properly |
 | `device show` empty after re-deploy even though `pd.read_parquet` returns data | `suzieq-cli` reads `~/.suzieq/suzieq-cfg.yml` (default config) which has `data-directory: ./parquet`; our config lives at `/suzieq/suzieq.cfg` | Mount `./suzieq.cfg` at BOTH `/suzieq/suzieq.cfg` AND `/home/suzieq/.suzieq/suzieq-cfg.yml` |
 | REST API returns "Connection reset by peer" | Default rest server bind address is `127.0.0.1`, not reachable through Docker port mapping | `address: 0.0.0.0` in `suzieq.cfg` rest section |
 | Port 8000 collision on `docker compose up` | NetBox already runs on 8000 on the same VM | Host port mapped to 8443 instead |

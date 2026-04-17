@@ -75,19 +75,27 @@ TAG = "suzieq"
 # `device_type.model` field. First match wins. Add entries here when
 # new device types appear in netbox-data.yml.
 #
-# The ex9214/qfx -> junos-mx entry is the override documented at
-# the top of this file. Do NOT change it to junos-ex without first
-# verifying that vJunos-switch returns a multi-RE wrapper in
-# `show system uptime | display json` - it does not on the pinned
-# vrnetlab image (juniper_vjunos-switch:23.2R1.14).
+# Devtype naming:
+#   - junos-vjunos-switch: a project-owned devtype added by the build-time
+#     patcher in suzieq-image/add-junos-vjunos-switch.py. Combines
+#     junos-mx's `device` service template (single-routing-engine
+#     JSON shape that vJunos-switch produces) with junos-qfx's
+#     `lldp` service template (detail view that includes the peer
+#     port id). Required because no built-in SuzieQ devtype matches
+#     this combination of upstream services. The patched image is
+#     built from suzieq-image/Dockerfile and used by all three
+#     suzieq services in docker-compose.yml.
+#   - junos-mx: real Juniper MX devices. Built-in upstream devtype,
+#     unmodified. Phase 10+ would route real MX hardware here.
+#   - eos: Arista cEOS, Phase 10 (commented placeholder below).
 DEVTYPE_OVERRIDES = [
     # (model substring, suzieq devtype, reason)
-    ("ex9214",  "junos-mx", "vJunos-switch returns single-RE JSON"),
-    ("qfx",     "junos-mx", "vJunos-switch / vQFX single-RE JSON"),
-    ("mx",      "junos-mx", "real Juniper MX, native fit"),
-    ("srx",     "junos-mx", "Junos SRX, single-RE shape"),
+    ("ex9214", "junos-vjunos-switch", "vJunos-switch lab device, project-owned devtype"),
+    ("qfx",    "junos-vjunos-switch", "vQFX containers also need the junos-vjunos-switch devtype"),
+    ("mx",     "junos-mx",      "real Juniper MX, native upstream devtype"),
+    ("srx",    "junos-mx",      "Junos SRX, single-RE shape"),
     # Phase 10 cEOS will need its own entry once added:
-    # ("ceos",  "eos",      "Arista cEOS lab container"),
+    # ("ceos", "eos",            "Arista cEOS lab container"),
 ]
 
 

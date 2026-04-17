@@ -37,9 +37,31 @@
 
 services:
   sq-poller:
-    # PIN ME: replace <DIGEST> with the sha256:... value from the
-    # `docker image inspect` step above. Do NOT merge with :latest.
-    image: netenglabs/suzieq@sha256:6e4e955ae0ca214af975d0278e16f7d4e193685369fdefb92c563a60fc3d5472
+    # All three suzieq services run from a thin child image,
+    # evpn-lab/suzieq-patched:dev, built locally from
+    # ./suzieq-image/Dockerfile. The child image is FROM the
+    # digest-pinned upstream netenglabs/suzieq image and runs
+    # add-vjunos-switch.py at BUILD TIME (not runtime) to add a
+    # `vjunos-switch` devtype to the SuzieQ service catalog. See
+    # suzieq-image/Dockerfile and add-vjunos-switch.py for the
+    # full rationale; in short: vJunos-switch needs an unusual
+    # mix of upstream junos-mx and junos-qfx service templates
+    # that no built-in devtype provides, and forking a new
+    # devtype name is cleaner than mutating the built-ins.
+    #
+    # Build is declared on sq-poller only; sq-coalescer and
+    # sq-rest-server reference the same image: tag and pick up
+    # the built artifact from the local docker daemon.
+    #
+    # Upgrade: bump the FROM digest in suzieq-image/Dockerfile
+    # then `docker compose build && docker compose up -d`. The
+    # patcher script re-runs against the new upstream content
+    # and FAILS LOUDLY if upstream restructured the yamls in a
+    # way it cannot handle - that is the intended behavior.
+    build:
+      context: ./suzieq-image
+      dockerfile: Dockerfile
+    image: evpn-lab/suzieq-patched:dev
     container_name: sq-poller
     restart: unless-stopped
     # Image entrypoint is /bin/bash with no Cmd, so we override
@@ -90,7 +112,7 @@ services:
 
   sq-coalescer:
     # Same digest as sq-poller. Two services from one image.
-    image: netenglabs/suzieq@sha256:6e4e955ae0ca214af975d0278e16f7d4e193685369fdefb92c563a60fc3d5472
+    image: evpn-lab/suzieq-patched:dev
     container_name: sq-coalescer
     restart: unless-stopped
     # `--run-once` on sq-coalescer is a BOOLEAN flag (presence =
@@ -120,7 +142,7 @@ services:
 
   sq-rest-server:
     # Same digest as sq-poller. Three services from one image.
-    image: netenglabs/suzieq@sha256:6e4e955ae0ca214af975d0278e16f7d4e193685369fdefb92c563a60fc3d5472
+    image: evpn-lab/suzieq-patched:dev
     container_name: sq-rest-server
     restart: unless-stopped
     # `--no-https` is a CLI flag on the pinned digest, NOT a config

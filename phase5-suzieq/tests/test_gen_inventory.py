@@ -34,21 +34,31 @@ map_devtype = gen_inventory.map_devtype
 # ---------------------------------------------------------------------------
 
 class TestDevtypeMap:
-    def test_ex9214_maps_to_junos_mx_NOT_junos_ex(self):
-        """REGRESSION GUARD. Do not change to junos-ex without first
-        verifying that vJunos-switch returns a multi-routing-engine
-        wrapper in `show system uptime | display json`. It does not
-        on the pinned vrnetlab image. See README "Junos devtype
-        override" and gen-inventory.py DEVTYPE_OVERRIDES comment."""
-        assert map_devtype("EX9214") == "junos-mx"
+    def test_ex9214_maps_to_vjunos_switch(self):
+        """REGRESSION GUARD. EX9214 in this lab is vJunos-switch
+        emulation, NOT a real EX. The project-owned junos-vjunos-switch
+        devtype is added by the build-time patcher in
+        suzieq-image/add-junos-vjunos-switch.py and combines junos-mx's
+        device service (single-RE JSON) with junos-qfx's lldp
+        service (detail view, has port id). Do not change to
+        junos-mx (would lose the LLDP detail view) or junos-ex
+        (would lose the single-RE device parsing). See
+        README 'junos-vjunos-switch devtype' for the full background."""
+        assert map_devtype("EX9214") == "junos-vjunos-switch"
 
-    def test_qfx_family_also_maps_to_junos_mx(self):
-        """vQFX containers (Phase 10 dc2-arista may use real Arista
-        cEOS, but if anyone reintroduces vQFX they need this)."""
-        assert map_devtype("QFX5120-32C") == "junos-mx"
-        assert map_devtype("qfx10002-60c") == "junos-mx"
+    def test_qfx_family_maps_to_vjunos_switch(self):
+        """vQFX containers (if anyone reintroduces them) share
+        vJunos-switch's behavior - same vrnetlab origin, same
+        single-RE device JSON, same need for the project-owned
+        junos-vjunos-switch devtype rather than the upstream junos-qfx."""
+        assert map_devtype("QFX5120-32C") == "junos-vjunos-switch"
+        assert map_devtype("qfx10002-60c") == "junos-vjunos-switch"
 
     def test_real_mx_maps_to_junos_mx(self):
+        """Real Juniper MX hardware (not vJunos) uses the upstream
+        junos-mx devtype unmodified - the patcher leaves it alone
+        precisely so a future Phase 10+ MX is not affected by the
+        junos-vjunos-switch overlay."""
         assert map_devtype("MX204") == "junos-mx"
 
     def test_srx_maps_to_junos_mx(self):
@@ -97,7 +107,7 @@ class TestGenerateLabShape:
 
     def test_single_source_for_single_namespace_devtype_combo(self, lab_inv):
         assert len(lab_inv["sources"]) == 1
-        assert lab_inv["sources"][0]["name"] == "dc1-junos-mx"
+        assert lab_inv["sources"][0]["name"] == "dc1-junos-vjunos-switch"
 
     def test_all_four_devices_present_in_source(self, lab_inv):
         hosts = lab_inv["sources"][0]["hosts"]
@@ -110,11 +120,14 @@ class TestGenerateLabShape:
             "ssh://172.16.18.163",
         ]
 
-    def test_devices_block_uses_junos_mx_devtype(self, lab_inv):
+    def test_devices_block_uses_vjunos_switch_devtype(self, lab_inv):
         """The override regression guard, but at the inventory
-        level rather than the function level."""
+        level rather than the function level. EX9214 -> junos-vjunos-switch
+        is the project's documented mapping; the patched suzieq image
+        is what makes junos-vjunos-switch a valid devtype at the SuzieQ
+        side."""
         assert len(lab_inv["devices"]) == 1
-        assert lab_inv["devices"][0]["devtype"] == "junos-mx"
+        assert lab_inv["devices"][0]["devtype"] == "junos-vjunos-switch"
 
     def test_devices_block_has_ignore_known_hosts_true(self, lab_inv):
         """vJunos containers regenerate keys on every cold boot.
@@ -149,16 +162,18 @@ class TestGenerateGroupingFanout:
         assert len(inv["sources"]) == 2
 
     def test_one_site_two_devtypes_makes_two_sources(self):
-        """Hypothetical: dc1 with both vJunos and a real MX."""
+        """Hypothetical: dc1 with both a vJunos lab device AND a
+        real Juniper MX. vJunos-switch maps to junos-vjunos-switch
+        (project-owned devtype) while MX204 maps to junos-mx
+        (upstream devtype). Two distinct devtypes -> two sources."""
         devices = [
             fake_nb_device("dc1-leaf1", "EX9214", "10.1.0.1", "dc1"),
             fake_nb_device("dc1-mx-edge", "MX204", "10.1.0.99", "dc1"),
         ]
         inv = yaml.safe_load(generate(devices))
-        # Both map to junos-mx, so they actually collapse to one
-        # source - which is correct behavior. Verify that.
-        assert len(inv["sources"]) == 1
-        assert len(inv["sources"][0]["hosts"]) == 2
+        assert len(inv["sources"]) == 2
+        source_names = sorted(s["name"] for s in inv["sources"])
+        assert source_names == ["dc1-junos-mx", "dc1-junos-vjunos-switch"]
 
     def test_site_slug_is_lowercased(self):
         devices = [
