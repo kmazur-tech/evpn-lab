@@ -125,7 +125,7 @@ bash smoke-tests.sh
 
 2. **Data-plane / failover (~18 checks)** use `ping_test()` → `docker inspect -f '{{.State.Pid}}' clab-dc1-<host>` → `nsenter -t $PID -n ping ...`. Both `docker inspect` and `nsenter` require the Docker daemon AND the target containers to be on the **local** machine. They silently fail (every ping reports FAIL) from any host that isn't the containerlab host.
 
-**Running from elsewhere wraps it via SSH** — never try to replicate Docker into your dev box. From a Phase 3 / Phase 6 orchestrator:
+**Running from elsewhere wraps it via SSH** - never try to replicate Docker into your dev box. From a Phase 3 / Phase 6 orchestrator:
 
 ```bash
 source ../../evpn-lab-env/env.sh   # picks up CLAB_HOST + CLAB_SSH_KEY

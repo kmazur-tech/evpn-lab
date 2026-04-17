@@ -244,7 +244,7 @@ The fabric uses a deterministic, NetBox-driven RT scheme so that Phase 3 Nornir 
 | L3 VRF | RD | `<router_id>:<L3VNI>` (e.g. `10.1.0.3:5000`) |
 | L3 VRF | RT | `target:<overlay_asn>:<L3VNI>` (e.g. `target:65000:5000`) |
 | L2 MAC-VRF | RD | `<router_id>:<tenant_id>` (e.g. `10.1.0.3:1`) |
-| L2 MAC-VRF | RT | `target:<overlay_asn>:<L3VNI>` — **same as L3 VRF** for the same tenant |
+| L2 MAC-VRF | RT | `target:<overlay_asn>:<L3VNI>` - **same as L3 VRF** for the same tenant |
 
 L2 and L3 share the same RT for the same tenant: a tenant's MAC routes and IP-prefix routes import together. For multi-tenant separation later, the L2 RT can be split off with an offset (e.g. `target:65000:25000` = "L2 layer of L3VNI 5000").
 
@@ -265,7 +265,7 @@ rt    = f"target:{overlay_asn}:{l3vni}"       # target:65000:5000
 
 **Wildcard / range community for fabric-wide ops**
 
-Junos extended-community wildcards use POSIX `.` for any single character. The community `target:65000:5...` matches the entire 5000-5999 L3VNI range, so a single regex community can be used for fabric-wide policies that apply to "any tenant in this fabric." It's defined in the configs as `FABRIC-TENANT-RT-RANGE` for this purpose. NetBox does not currently model this — it lives only in the policy-options stanza.
+Junos extended-community wildcards use POSIX `.` for any single character. The community `target:65000:5...` matches the entire 5000-5999 L3VNI range, so a single regex community can be used for fabric-wide policies that apply to "any tenant in this fabric." It's defined in the configs as `FABRIC-TENANT-RT-RANGE` for this purpose. NetBox does not currently model this - it lives only in the policy-options stanza.
 
 ### VRFs
 

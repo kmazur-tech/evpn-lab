@@ -85,7 +85,7 @@ The naming is deliberate: `junos-vjunos-switch` exactly mirrors the vrnetlab ima
 
 ### Tests
 
-[tests/test_suzieq_patcher.py](tests/test_suzieq_patcher.py) — 25 unit tests covering:
+[tests/test_suzieq_patcher.py](tests/test_suzieq_patcher.py) - 25 unit tests covering:
 - `resolve_base_devtype()` (the `copy:` chain walker that sidesteps SuzieQ's one-level resolver)
 - `patch_simple_copy_yaml()` (the 12 simple-case service yamls)
 - `patch_lldp_yaml()` (the load-bearing detail-view block)
@@ -96,7 +96,7 @@ The naming is deliberate: `junos-vjunos-switch` exactly mirrors the vrnetlab ima
 - "Fail loudly" guard tests for every marker (if upstream restructures, the build dies with a clear FATAL error rather than silently producing a broken image)
 - Regression guard `test_dereferences_chain_when_junos_mx_is_itself_a_copy` pinning the chain-resolution fix for the devconfig.yml / bgp.yml / fs.yml class of files where `junos-mx` is itself `copy: junos-qfx`
 
-All run in <1 second, no docker, no SuzieQ install, no network — fixture yamls in `tmp_path`.
+All run in <1 second, no docker, no SuzieQ install, no network - fixture yamls in `tmp_path`.
 
 ## Deployment
 
@@ -249,11 +249,11 @@ The lab rolls its own thin Python harness (Parts B/C/D) for three reasons: it's 
 
 ## Part B-min: NetBox-vs-Suzieq drift harness (DONE)
 
-The killer use case for Phase 5: catches the class of bugs that neither Phase 2 smoke nor Phase 4 Batfish can see — drift between what NetBox SAYS the network is and what the network actually IS, in real time.
+The killer use case for Phase 5: catches the class of bugs that neither Phase 2 smoke nor Phase 4 Batfish can see - drift between what NetBox SAYS the network is and what the network actually IS, in real time.
 
 ### Architecture
 
-A **sibling container** (`drift`) in [docker-compose.yml](docker-compose.yml), built from [drift/Dockerfile](drift/Dockerfile). Slim `python:3.11-slim` base + `pandas` + `pyarrow` + `pynetbox`. **Does NOT inherit from `netenglabs/suzieq`** — reads the parquet store directly via pyarrow hive partitioning, never imports the suzieq python package. Saves ~600 MB image size and decouples the drift harness from suzieq base image upgrade cadence.
+A **sibling container** (`drift`) in [docker-compose.yml](docker-compose.yml), built from [drift/Dockerfile](drift/Dockerfile). Slim `python:3.11-slim` base + `pandas` + `pyarrow` + `pynetbox`. **Does NOT inherit from `netenglabs/suzieq`** - reads the parquet store directly via pyarrow hive partitioning, never imports the suzieq python package. Saves ~600 MB image size and decouples the drift harness from suzieq base image upgrade cadence.
 
 The container mounts the `suzieq_parquet` docker volume **read-only** and the `drift/` source code as a separate read-only mount so iteration during development does not need an image rebuild. Invoked as a one-shot CLI:
 
@@ -274,7 +274,7 @@ Strict separation so the unit tests are dependency-light:
 | [drift/diff.py](drift/diff.py) | `pandas`, dataclasses | pure structured comparison, the comparison core |
 | [drift/cli.py](drift/cli.py) | all of the above | I/O orchestration only |
 
-`test_drift_diff.py` and `test_drift_cli.py` import nothing heavier than `pandas` and use hand-built dicts as fixtures for both intent and state. `test_drift_state.py` writes tiny real parquet files into a `tmp_path` fixture (hermetic, no SuzieQ container needed). `test_drift_intent.py` uses a small `FakeNb` test double (~50 lines) that returns hand-built objects shaped like `pynetbox.Record` — not a mock, a real read-only stub class.
+`test_drift_diff.py` and `test_drift_cli.py` import nothing heavier than `pandas` and use hand-built dicts as fixtures for both intent and state. `test_drift_state.py` writes tiny real parquet files into a `tmp_path` fixture (hermetic, no SuzieQ container needed). `test_drift_intent.py` uses a small `FakeNb` test double (~50 lines) that returns hand-built objects shaped like `pynetbox.Record` - not a mock, a real read-only stub class.
 
 ### Drift dimensions (4)
 
@@ -298,7 +298,7 @@ Discovered during Part B bring-up against vJunos-switch 23.2R1.14: `show lldp ne
 | **A** (strict) | LLDP row has both `peerHostname` AND `peerIfname` | Compare canonical `(devA, ifaceA) <-> (devB, ifaceB)` against NetBox cable graph. Catches interface-level miscabling within a device pair. |
 | **B** (degraded) | `peerHostname` present, `peerIfname` empty | Falls back to checking that the LLDP row reports the right peer DEVICE; cannot verify the peer interface. **Emits a warning** so the operator knows the check is degraded. |
 
-On the vJunos lab today every LLDP cable matches at Tier B and produces 4 warnings. A real fabric with EOS / IOS-XR / NX-OS would match at Tier A and produce zero warnings on a clean network. The Tier B fallback still catches **device-pair miscabling** — if a cable physically connects A to C while NetBox says A to B, that's still an error in either tier.
+On the vJunos lab today every LLDP cable matches at Tier B and produces 4 warnings. A real fabric with EOS / IOS-XR / NX-OS would match at Tier A and produce zero warnings on a clean network. The Tier B fallback still catches **device-pair miscabling** - if a cable physically connects A to C while NetBox says A to B, that's still an error in either tier.
 
 ### Output contract
 
@@ -324,13 +324,13 @@ JSON (default, for Phase 6 CI):
 }
 ```
 
-Exit codes — the contract Phase 6 CI relies on:
+Exit codes - the contract Phase 6 CI relies on:
 
 | Code | Meaning |
 |---|---|
 | 0 | No error-severity drift (warnings allowed) |
 | 1 | One or more error-severity drifts found (Phase 6 stage 11 soft-fails per `PROJECT_PLAN.md:200`) |
-| 2 | Tooling error (NetBox unreachable, parquet path missing). Phase 6 should distinguish this from "drift found" — the second is a real failure of the harness itself. |
+| 2 | Tooling error (NetBox unreachable, parquet path missing). Phase 6 should distinguish this from "drift found" - the second is a real failure of the harness itself. |
 
 ### Verification (run on netdevops-srv 2026-04-07)
 
@@ -362,11 +362,11 @@ Same module shape, four new dimensions covering EVPN VNI presence, overlay-via-u
 
 Originally the patcher defaulted to `copy: junos-mx` for all simple-copy services with a chain resolver to walk junos-mx -> junos-qfx for the 7 services where junos-mx was itself a copy. Live verification of Part B-full revealed three real problems with that default:
 
-1. **`macs.yml`** — junos-mx uses `show bridge mac-table` (an MX-only command, the bridge table is not present on EX/QFX/vJunos switches). junos-qfx uses `show ethernet-switching table detail` which works on vJunos. With the original default, the macs table was empty.
+1. **`macs.yml`** - junos-mx uses `show bridge mac-table` (an MX-only command, the bridge table is not present on EX/QFX/vJunos switches). junos-qfx uses `show ethernet-switching table detail` which works on vJunos. With the original default, the macs table was empty.
 
-2. **`routes.yml`** — junos-mx uses `show route protocol direct` (the documented MX scale workaround for full-Internet RIBs - returns ONLY direct/connected routes). junos-qfx uses `show route` + `show evpn ip-prefix-database` (full RIB + EVPN learned). With the original default, the routes table had 26 connected-only entries; switching to junos-qfx took it to **86 rows** including bgp/evpn/vpn protocols.
+2. **`routes.yml`** - junos-mx uses `show route protocol direct` (the documented MX scale workaround for full-Internet RIBs - returns ONLY direct/connected routes). junos-qfx uses `show route` + `show evpn ip-prefix-database` (full RIB + EVPN learned). With the original default, the routes table had 26 connected-only entries; switching to junos-qfx took it to **86 rows** including bgp/evpn/vpn protocols.
 
-3. **`evpnVni.yml`** — junos-mx is **completely absent** upstream. The patcher saw no junos-mx text and skipped the file, leaving suzieq with no evpnVni collector at all.
+3. **`evpnVni.yml`** - junos-mx is **completely absent** upstream. The patcher saw no junos-mx text and skipped the file, leaving suzieq with no evpnVni collector at all.
 
 The clean architecture, validated empirically: **`junos-qfx` is REAL in every Junos service yaml upstream** (12 of 12). junos-mx has its own real definition in only 4/12 services, and 3 of those 4 (arpnd, macs, routes) are exactly the services where junos-mx is the **wrong** choice for vJunos. So:
 

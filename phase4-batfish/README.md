@@ -36,10 +36,10 @@ The Phase 2 smoke suite (~76 checks) covers the runtime side: actual BGP converg
 
 These are real Junos features that Batfish either doesn't model at all or models so partially that running the question gives misleading results:
 
-- **EVPN Type-2 MAC/IP route propagation, Type-3 inclusive multicast, Type-5 IP prefix routes** — pybatfish's [VXLAN and EVPN](https://batfish.readthedocs.io/en/latest/notebooks/vxlan_evpn.html) docs mention partial support; the active development is on Cisco NX-OS, with Junos catch-up tracked in [batfish#5036](https://github.com/batfish/batfish/issues/5036).
-- **ESI-LAG, designated forwarder election** — runtime EVPN concepts not in Batfish's model.
-- **BFD timers and convergence** — not modeled.
-- **`mac-vrf` instance VLAN scope** — Batfish doesn't track VLAN definitions inside `routing-instances ... mac-vrf { vlans { ... } }`. This is the root cause of the `IGNORED_REF_STRUCT_TYPES = {"vlan"}` filter and the `IGNORED_INIT_ISSUE_PATTERNS` list in `questions.py`. Confirmed via [batfish#7289](https://github.com/batfish/batfish/issues/7289).
+- **EVPN Type-2 MAC/IP route propagation, Type-3 inclusive multicast, Type-5 IP prefix routes** - pybatfish's [VXLAN and EVPN](https://batfish.readthedocs.io/en/latest/notebooks/vxlan_evpn.html) docs mention partial support; the active development is on Cisco NX-OS, with Junos catch-up tracked in [batfish#5036](https://github.com/batfish/batfish/issues/5036).
+- **ESI-LAG, designated forwarder election** - runtime EVPN concepts not in Batfish's model.
+- **BFD timers and convergence** - not modeled.
+- **`mac-vrf` instance VLAN scope** - Batfish doesn't track VLAN definitions inside `routing-instances ... mac-vrf { vlans { ... } }`. This is the root cause of the `IGNORED_REF_STRUCT_TYPES = {"vlan"}` filter and the `IGNORED_INIT_ISSUE_PATTERNS` list in `questions.py`. Confirmed via [batfish#7289](https://github.com/batfish/batfish/issues/7289).
 
 If Batfish ever adds full EVPN/Junos modeling (it's an active area), the Phase 4 ignore lists in `questions.py` are the first thing to revisit.
 
@@ -220,7 +220,7 @@ When a device is decommissioned:
     - dc1-leaf2
 ```
 
-The differential layer is **informational only** — exit code is unaffected by what it finds. Phase 6's PR-comment bot consumes the JSON output (`--format json` adds a `diffs` field to the top-level payload) and posts it as the "what does this PR change?" report on the PR.
+The differential layer is **informational only** - exit code is unaffected by what it finds. Phase 6's PR-comment bot consumes the JSON output (`--format json` adds a `diffs` field to the top-level payload) and posts it as the "what does this PR change?" report on the PR.
 
 ### JSON output (for CI)
 

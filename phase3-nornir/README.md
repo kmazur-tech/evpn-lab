@@ -38,7 +38,7 @@ This is the **golden-file testing pattern** ([Nautobot Golden Config](https://do
 - Phase 2 baselines have hand-written ordering and per-device random-salt password hashes (one-shot Junos-generated)
 - Phase 3 expected/ has Junos canonical ordering and the deterministic `$6$evpnlab1$` hash from env
 
-**Semantic validation** of intent (does this BGP session converge? are these prefixes reachable? do these ACLs block control plane?) is NOT done by the byte-diff regression gate — that's **Phase 4 (Batfish)** territory. The byte-diff catches structural template drift; Batfish will catch semantic intent drift.
+**Semantic validation** of intent (does this BGP session converge? are these prefixes reachable? do these ACLs block control plane?) is NOT done by the byte-diff regression gate - that's **Phase 4 (Batfish)** territory. The byte-diff catches structural template drift; Batfish will catch semantic intent drift.
 
 ## Layout
 
@@ -151,7 +151,7 @@ Both must pass before NAPALM is called. The regression gate normalizes salted-ha
 
 NAPALM `compare_config` is honest: it shows full encrypted-password changes in its diff output (verified empirically against the live fabric - both old and new hash values appear in the diff stanza for `[edit system root-authentication]`). The reason placeholder values would be dangerous is NOT that NAPALM hides them, but that NAPALM faithfully commits whatever bytes the renderer hands it. The on-disk guard's job is to make sure those bytes are valid before NAPALM ever sees them.
 
-If you add a new template that emits a secret field, you MUST extend the guard's shape regex (or sentinel list) to validate it. See [feedback_never_normalize_secrets_into_deploy](../../../.claude/projects/c--Users-tasior-Projects-evpn-lab/memory/feedback_never_normalize_secrets_into_deploy.md) for the incident postmortem and the corrected technical narrative.
+If you add a new template that emits a secret field, you MUST extend the guard's shape regex (or sentinel list) to validate it. The guard exists because diff normalizers (which strip salted-hash noise so the regression gate can compare configs cleanly) must never touch the file on disk - the bytes NAPALM commits have to be the real values, and the guard catches bad bytes before NAPALM ever sees them.
 
 ## Tests
 
@@ -200,7 +200,7 @@ These are deliberate Phase 3 simplifications, not bugs. Each is scoped to a spec
 
 `templates/junos/routing_instances.j2` renders a single `EVPN-VXLAN` MAC-VRF instance and indexes `host.tenants[0]` for the route-distinguisher's `tenant_id` and for the `vrf-import` / `vrf-export` policy names. This works because the Phase 3 lab has exactly one tenant (TENANT-1).
 
-The pydantic `HostData.tenants` list shape already supports multiple tenants — the limitation is **in this template only**. Phase 7 (multi-tenant) will replace `host.tenants[0]` with explicit iteration in one of two ways:
+The pydantic `HostData.tenants` list shape already supports multiple tenants - the limitation is **in this template only**. Phase 7 (multi-tenant) will replace `host.tenants[0]` with explicit iteration in one of two ways:
 
 - **(a)** one `mac-vrf` instance per tenant (`EVPN-VXLAN-<TENANT>` blocks)
 - **(b)** a single `mac-vrf` instance carrying all tenants' VNIs and importing/exporting every tenant route-target
@@ -221,7 +221,7 @@ Documented above in the "Secrets and credential material" section. The vault-bac
 
 ### Same hash for root and admin accounts
 
-`deploy.py` calls `derive_login_hash()` once and assigns the same value to both `junos_root_hash` and `junos_admin_hash`. Both accounts therefore use the same plaintext password (`TestLabPass1` in the lab). The CIS Junos benchmark requires unique credentials per account, so Phase 8 (CIS/PCI-DSS hardening) will split this into `JUNOS_ROOT_PASSWORD` and `JUNOS_ADMIN_PASSWORD` env vars and derive two distinct hashes. The `system.j2` template already takes the two hashes as separate variables — the change is one-line in `deploy.py`.
+`deploy.py` calls `derive_login_hash()` once and assigns the same value to both `junos_root_hash` and `junos_admin_hash`. Both accounts therefore use the same plaintext password (`TestLabPass1` in the lab). The CIS Junos benchmark requires unique credentials per account, so Phase 8 (CIS/PCI-DSS hardening) will split this into `JUNOS_ROOT_PASSWORD` and `JUNOS_ADMIN_PASSWORD` env vars and derive two distinct hashes. The `system.j2` template already takes the two hashes as separate variables - the change is one-line in `deploy.py`.
 
 ### N+1 NetBox API queries during enrich
 
@@ -231,14 +231,14 @@ The Phase 10 plan documents the GraphQL refactor (one query per device, ~10x fas
 
 ### No retry/timeout on pynetbox calls
 
-If NetBox is briefly unreachable during an enrich run, the entire Nornir task fails immediately. No retry loop, no configurable timeout. Acceptable for the lab where NetBox is on a local VM. **Phase 6 (CI) will need this** — flaky CI runs against a remote NetBox would be hard to debug. The fix is a `requests.Session` with an `HTTPAdapter` retry policy mounted onto `nb.http_session`. ~10 line change, defer to Phase 6 alongside vcrpy cassettes.
+If NetBox is briefly unreachable during an enrich run, the entire Nornir task fails immediately. No retry loop, no configurable timeout. Acceptable for the lab where NetBox is on a local VM. **Phase 6 (CI) will need this** - flaky CI runs against a remote NetBox would be hard to debug. The fix is a `requests.Session` with an `HTTPAdapter` retry policy mounted onto `nb.http_session`. ~10 line change, defer to Phase 6 alongside vcrpy cassettes.
 
 ### No template integration test (Jinja semantics)
 
-The `tests/` suite covers helpers, normalizer, stanza extraction, deploy guard, transform, and the LAG system-id formula — but does NOT render full templates against fixture data. Right now templates are validated only by the golden-file byte-diff against `expected/`, which catches structural drift but not semantic bugs (e.g. a template that emits valid Junos syntax but the wrong route-target).
+The `tests/` suite covers helpers, normalizer, stanza extraction, deploy guard, transform, and the LAG system-id formula - but does NOT render full templates against fixture data. Right now templates are validated only by the golden-file byte-diff against `expected/`, which catches structural drift but not semantic bugs (e.g. a template that emits valid Junos syntax but the wrong route-target).
 
-**Phase 4 (Batfish)** is the structured semantic-validation layer. As a cheap intermediate step, **Phase 6** could add one fixture-based test per top-level template that asserts a few key stanzas appear in the rendered output — that would catch the "wrong RT for a new tenant" class of bug without needing NetBox or Batfish.
+**Phase 4 (Batfish)** is the structured semantic-validation layer. As a cheap intermediate step, **Phase 6** could add one fixture-based test per top-level template that asserts a few key stanzas appear in the rendered output - that would catch the "wrong RT for a new tenant" class of bug without needing NetBox or Batfish.
 
 ### `vpn-apply-export` on the spine OVERLAY group is intentionally absent
 
-External reviewers occasionally flag this as missing. It's not a bug — see [phase2-fabric/DESIGN.md "vpn-apply-export on the spine OVERLAY group - rejected"](../phase2-fabric/DESIGN.md). Short version: `vpn-apply-export` is an L3VPN-era knob that is a no-op on `family evpn signaling` on a route reflector (the spine has no routing-instances and no `vrf-export` policy to apply). The legitimate underlying concern (RR sending traffic the recipient discards) is real at multi-tenant scale; the correct mechanism is BGP Route Target Constrain (RFC 4684 / Junos `family route-target`), which is overkill for 1 tenant on 2 leaves and adds an address family the smoke suite would have to validate. Revisit when the lab grows past 4 tenants on 4+ leaves.
+External reviewers occasionally flag this as missing. It's not a bug - see [phase2-fabric/DESIGN.md "vpn-apply-export on the spine OVERLAY group - rejected"](../phase2-fabric/DESIGN.md). Short version: `vpn-apply-export` is an L3VPN-era knob that is a no-op on `family evpn signaling` on a route reflector (the spine has no routing-instances and no `vrf-export` policy to apply). The legitimate underlying concern (RR sending traffic the recipient discards) is real at multi-tenant scale; the correct mechanism is BGP Route Target Constrain (RFC 4684 / Junos `family route-target`), which is overkill for 1 tenant on 2 leaves and adds an address family the smoke suite would have to validate. Revisit when the lab grows past 4 tenants on 4+ leaves.

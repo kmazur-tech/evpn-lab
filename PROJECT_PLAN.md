@@ -194,7 +194,7 @@ Phase 3 landed `phase3-nornir/tests/` (60 pure-function unit tests, ~2 sec, no e
   5. **On-disk deploy guard** - `assert_safe_to_deploy()` on every rendered config. Hard fail = block merge.
   6. **Batfish Validate** - offline analysis of generated configs + differential analysis
   7. **Batfish Results -> PR Comment** - bot posts to PR what will change (new BGP sessions, modified ACLs, affected prefixes)
-  8. **Deploy** - containerlab up + Nornir `--commit` (optional, `workflow_dispatch` on **self-hosted runner ON the lab server** - smoke needs Docker local, see [reference_smoke_runs_on_lab_server](../../.claude/projects/c--Users-tasior-Projects-evpn-lab/memory/reference_smoke_runs_on_lab_server.md))
+  8. **Deploy** - containerlab up + Nornir `--commit` (optional, `workflow_dispatch` on **self-hosted runner ON the lab server**; the smoke suite reaches into Docker network namespaces via `nsenter`, so it must run on the host where containerlab/Docker live, not a remote CI worker)
   9. **Smoke gate** - run `phase2-fabric/smoke-tests.sh` from the same self-hosted runner (~2 min). Hard fail = block merge.
   10. **Commit-confirm second stage** - if smoke passes, the workflow ALSO calls `napalm_confirm_commit` to clear the rollback timer; if smoke fails or the stage doesn't run, Junos auto-rolls back at the `revert_in` deadline. This is the architectural fail-safe that complements the pre-deploy gates.
   11. **Suzieq drift check** - NetBox-vs-state diff (Phase 5 Python harness). Soft fail = warn.
@@ -204,7 +204,7 @@ Phase 3 landed `phase3-nornir/tests/` (60 pure-function unit tests, ~2 sec, no e
 
 ### Secret material in CI
 
-Phase 3 reads `JUNOS_LOGIN_PASSWORD`, `JUNOS_LOGIN_SALT`, `JUNOS_SSH_USER`, `JUNOS_SSH_PASSWORD`, `NETBOX_TOKEN` from a shell env file outside the repo. CI must inject the same env vars from GitHub Actions encrypted secrets (or, for production, a vault-backed entry script — see `phase3-nornir/README.md` "Secrets and credential material" section for the vault wrapper pattern). Never commit secrets to the repo, never pass them as workflow inputs.
+Phase 3 reads `JUNOS_LOGIN_PASSWORD`, `JUNOS_LOGIN_SALT`, `JUNOS_SSH_USER`, `JUNOS_SSH_PASSWORD`, `NETBOX_TOKEN` from a shell env file outside the repo. CI must inject the same env vars from GitHub Actions encrypted secrets (or, for production, a vault-backed entry script - see `phase3-nornir/README.md` "Secrets and credential material" section for the vault wrapper pattern). Never commit secrets to the repo, never pass them as workflow inputs.
 
 Result: every change to NetBox/templates/code is automatically validated through unit -> render -> diff -> guard -> Batfish -> (optional) deploy + smoke. PRs include an impact analysis report. Failed deploys self-correct via commit-confirmed auto-rollback. The Phase 3 test foundation extends into a full integration suite mocked against vcrpy/double drivers so CI runs in seconds without external dependencies.
 
@@ -323,7 +323,7 @@ Phase 11 takes a different bet: **four explicit tiers of action, narrow allowlis
 
 #### Tier 1: Add / update (non-destructive)
 
-The Phase 3 `populate.py` path, **explicitly named** as the non-destructive mode. No new entry point — `python populate.py` continues to work as today — but the README and the script's banner make it explicit that this mode never deletes anything and only updates the small set of fields where Phase 1 + Phase 3 already added per-field patches (site custom_fields, VLAN names, lo0 IP VRF assignment).
+The Phase 3 `populate.py` path, **explicitly named** as the non-destructive mode. No new entry point - `python populate.py` continues to work as today - but the README and the script's banner make it explicit that this mode never deletes anything and only updates the small set of fields where Phase 1 + Phase 3 already added per-field patches (site custom_fields, VLAN names, lo0 IP VRF assignment).
 
 If you need to update a field outside that allowlist, you have two documented paths:
 - Edit in NetBox UI (faster, auditable via NetBox journal)
@@ -343,7 +343,7 @@ A new entry point: `python phase11-lifecycle/prune.py <class>`. Removes objects 
 | BGP neighbor (when modeled as NetBox object) | Reverses Phase 3 enrich derivation | Drop a stale peer from a fabric link |
 | L2VPN VLAN termination | Reverses Phase 3 prep step 14e | Remove a VLAN from a tenant's MAC-VRF |
 
-Anything NOT in this list — devices, cables, prefixes, VRFs, sites, custom fields, anycast gateway IPs, lo0 interfaces — is **explicitly out of scope for prune** and requires Tier 4 or manual NetBox UI action.
+Anything NOT in this list - devices, cables, prefixes, VRFs, sites, custom fields, anycast gateway IPs, lo0 interfaces - is **explicitly out of scope for prune** and requires Tier 4 or manual NetBox UI action.
 
 How prune works:
 - **Diff-driven**: takes a yaml stanza (or explicit object IDs) and computes "objects in NetBox of this class that are not in yaml"
@@ -398,7 +398,7 @@ A separate path for **permanently** removing a **whole device** or a **whole fab
 A typical decommission flow uses Tier 3 first - drain the device, do nothing destructive while drained to verify the peer takes the load cleanly, then run decommission to remove it from NetBox and the rendered configs. This way the irreversible step (NetBox delete) only happens after the reversible step (drain) has proved the topology survives without it.
 
 Steps for device decommission:
-1. **Dependency scan**: walk every NetBox object that references the target device — interfaces, IPs, cables, BGP sessions on peer devices, L2VPN terminations, journal entries. Produce a structured tree.
+1. **Dependency scan**: walk every NetBox object that references the target device - interfaces, IPs, cables, BGP sessions on peer devices, L2VPN terminations, journal entries. Produce a structured tree.
 2. **Impact preview**: show which Phase 3 templates and which Phase 2 smoke checks would change/fail if this device disappears. Reuses the Phase 3 enrich path against the post-decommission yaml.
 3. **Plan output**: for every NetBox object that would be deleted, show "delete X because Y references Z". Like a Terraform destroy plan but read-only against the running fabric.
 4. **Explicit confirmation**: typed device name, not just `--yes`.
@@ -439,17 +439,17 @@ These are the things a full reconciler would do that Phase 11 explicitly does NO
 Phase 6 CI gains one optional stage:
 - `lifecycle-plan` runs `prune.py --plan`, `maintenance.py --plan`, and `decommission.py --plan` on PRs that touch the `phase11-lifecycle/` paths. Posts the plan as a PR comment. Never auto-applies.
 
-The Phase 6 deploy pipeline does NOT auto-trigger on lifecycle changes — they're explicit operator invocations, not part of the PR-merge-deploys-everything loop.
+The Phase 6 deploy pipeline does NOT auto-trigger on lifecycle changes - they're explicit operator invocations, not part of the PR-merge-deploys-everything loop.
 
 ### Result
 
 `python phase3-nornir/deploy.py` continues to mean "make the fabric match NetBox intent" for the additive case. Phase 11 adds three more verbs to the project's vocabulary:
 
-- `prune` — narrow, allowlisted, planned, never blind, never combined with device push
-- `drain` / `restore` — temporary, reversible BGP/EVPN traffic steering for safe firmware upgrades, line-card swaps, and other operator-driven maintenance windows. Pre-flight gates on peer health, post-restore gates on full Phase 2 smoke.
-- `decommission` — single device or link, dependency-scanned, typed confirmation, snapshot-then-apply. Typically runs AFTER a successful drain has proved the topology survives without the device.
+- `prune` - narrow, allowlisted, planned, never blind, never combined with device push
+- `drain` / `restore` - temporary, reversible BGP/EVPN traffic steering for safe firmware upgrades, line-card swaps, and other operator-driven maintenance windows. Pre-flight gates on peer health, post-restore gates on full Phase 2 smoke.
+- `decommission` - single device or link, dependency-scanned, typed confirmation, snapshot-then-apply. Typically runs AFTER a successful drain has proved the topology survives without the device.
 
-All three are deliberately bounded so the showcase story is **"controlled day-2 operations"** not **"full reconciler with hidden edge cases"**. The lab demonstrates that production lifecycle work is broken into explicit, reviewable steps — not magic.
+All three are deliberately bounded so the showcase story is **"controlled day-2 operations"** not **"full reconciler with hidden edge cases"**. The lab demonstrates that production lifecycle work is broken into explicit, reviewable steps - not magic.
 
 ---
 
