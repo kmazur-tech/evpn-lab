@@ -168,6 +168,7 @@ Documented because the same potholes will trip the next operator:
 | `device show` empty after re-deploy even though `pd.read_parquet` returns data | `suzieq-cli` reads `~/.suzieq/suzieq-cfg.yml` (default config) which has `data-directory: ./parquet`; our config lives at `/suzieq/suzieq.cfg` | Mount `./suzieq.cfg` at BOTH `/suzieq/suzieq.cfg` AND `/home/suzieq/.suzieq/suzieq-cfg.yml` |
 | REST API returns "Connection reset by peer" | Default rest server bind address is `127.0.0.1`, not reachable through Docker port mapping | `address: 0.0.0.0` in `suzieq.cfg` rest section |
 | Port 8000 collision on `docker compose up` | NetBox already runs on 8000 on the same VM | Host port mapped to 8443 instead |
+| `sq-poller` reports `(unhealthy)` even though polling and parquet writes are working fine | Two bugs in the original parquet-based healthcheck: (a) wrong case `sqpoller` vs actual `sqPoller`, and (b) every coalescer cycle deletes raw files after compaction (confirmed at `pq_coalesce.py:71`) so the dir would be empty for ~minutes per hour, false-flapping the check | Switched to a `pgrep -f sq-poller` liveness check that mirrors the coalescer's pattern. Process alive = healthy |
 
 ## Production note (not lab guidance)
 
@@ -176,7 +177,19 @@ The lab cuts corners that production deployments should not:
 - **Dedicated read-only user.** Lab reuses Phase 3's `JUNOS_SSH_USER` / `JUNOS_SSH_PASSWORD`. Production must create a dedicated user (e.g. `suzieq-ro`) bound to a Junos login class restricted to `view` permissions only. SuzieQ never needs configuration mode and never needs to commit anything.
 - **AAA rate-limiting.** Lab uses local users so the `max-cmd-pipeline`, `retries-on-auth-fail`, and `per-cmd-auth` knobs in `suzieq.cfg` are protective rather than load-bearing. Production with TACACS+ or RADIUS must tune these against the AAA backend's rate limits - upstream SuzieQ ships a "Rate Limiting AAA Server Requests" document with the specific guidance.
 - **Sizing.** Single worker, single namespace is correct here (4 devices). Upstream rule of thumb is "<= 40 devices per worker" and "workers <= namespaces"; multi-DC and multi-region deployments need a worker per namespace and possibly multiple workers per large namespace.
-- **Coalescer storage budget.** Default `coalescer.period: 1h` with the archive directory enabled keeps weeks of history for 4 devices in well under a GB. Production at hundreds of devices needs an explicit retention policy and a sized parquet volume.
+- **Coalescer storage budget.** Measured on the lab 2026-04-07 with `coalescer.period: 1h` and the archive directory enabled:
+  - Live working set: ~150 MB peak (the 1h raw-buffer fills to ~120 MB before compaction, then drops back to ~30 MB)
+  - Coalesced state tables (bgp/lldp/device/interfaces/routes): ~5-10 MB/day - grows only when state changes
+  - Coalesced poll-stats (`sqPoller`): ~5 MB/day - grows linearly with poll cycles
+  - Archive directory (`.tar.bz2` of pre-compacted raw files): ~20-30 MB/day - bz2 compression on poll-stats is excellent
+  - **Lab steady-state: ~30-40 MB/day total. 30 days ~= 1 GB. 1 year ~= 12 GB.**
+  - On netdevops-srv (51 GB free at last measurement) this leaves multi-year headroom for the 4-device lab.
+  - **There is no built-in retention.** sq-coalescer compacts and deletes raw files (confirmed in `pq_coalesce.py:71` `os.remove(x)` after the tarball write), but the archive `.tar.bz2` files in `/suzieq/archive` accumulate forever. For long-running deployments, add a cron on netdevops-srv to enforce a retention window:
+    ```
+    # /etc/cron.daily/suzieq-archive-prune (chmod 755)
+    docker exec sq-poller find /suzieq/archive -name '_archive-*.tar.bz2' -mtime +30 -delete
+    ```
+  - Production at hundreds of devices scales the daily growth roughly linearly (40+ devices = 300-400 MB/day) and needs the retention cron from day one plus a sized parquet volume on a dedicated disk.
 - **REST TLS.** See the banner above. `--no-https` is a lab convenience, not a production posture.
 - **Host key verification.** Lab uses `ignore-known-hosts: true` because vJunos containers regenerate SSH keys on every cold boot. Production must keep verification on and provision known_hosts via configuration management.
 - **Static inventory regeneration.** Re-run `gen-inventory.py` and restart the poller after device adds/removes in NetBox. The proper fix is upstream - a SuzieQ PR adding `address-source: oob_ip|primary_ip4` to the NetBox source plugin - so that we can drop the script and use the native dynamic source.
