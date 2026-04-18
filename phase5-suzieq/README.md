@@ -394,9 +394,9 @@ SERVICE_BASE_OVERRIDES = {"device.yml": "junos-mx"}  # the only one needed
 
 | Check | Expected | Got |
 |---|---|---|
-| Clean state, all 8 dimensions | exit 0, 0 drifts | ✅ |
-| Inject fake VLAN with vni=99099 in NetBox | 2 drifts (one per leaf), exit 1 | ✅ `[ERR] evpn_vni dc1-leaf1:vni99099` + `dc1-leaf2:vni99099` |
-| Cleanup, re-run | exit 0, 0 drifts | ✅ |
+| Clean state, all 8 dimensions | exit 0, 0 drifts | OK |
+| Inject fake VLAN with vni=99099 in NetBox | 2 drifts (one per leaf), exit 1 | OK `[ERR] evpn_vni dc1-leaf1:vni99099` + `dc1-leaf2:vni99099` |
+| Cleanup, re-run | exit 0, 0 drifts | OK |
 
 ### Test count growth across the parts
 

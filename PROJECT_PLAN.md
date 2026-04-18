@@ -528,7 +528,7 @@ Suzieq: continuous state monitor + NetBox drift check
     ├── DRIFT -> warn (cron-driven, not deploy-blocking)
     │
     ▼ in-spec
-✅ Fabric matches intent
+OK Fabric matches intent
 ```
 
 The diagram above is the **default add/update flow**: PR -> CI -> render -> validate -> deploy -> verify. It's PR-driven and runs on every merge.
@@ -564,7 +564,7 @@ python phase3-nornir/deploy.py --commit
 phase2-fabric/smoke-tests.sh on lab server
     │
     ▼ PASS
-✅ Lifecycle change complete
+OK Lifecycle change complete
 ```
 
 Two-step intent: NetBox mutation and device push are NEVER combined in one command. The operator always has a chance to inspect the rendered config delta after the NetBox change, before any device sees the result.

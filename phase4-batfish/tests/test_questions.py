@@ -45,7 +45,7 @@ class _FakeQ:
 
 
 class _FakeQNamespace:
-    """Stand-in for bf.q.* — every question name returns a _FakeQ
+    """Stand-in for bf.q.* - every question name returns a _FakeQ
     constructor that yields the canned df for that question."""
     def __init__(self, frames: dict):
         self._frames = frames

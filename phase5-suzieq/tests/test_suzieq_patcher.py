@@ -247,15 +247,13 @@ apply:
 
 class TestSimpleCopyPatch:
     def test_default_base_is_junos_qfx(self, tmp_path):
-        """Default base for the simple-copy patch is junos-qfx
-        (the canonical Junos base in upstream - REAL in every
-        Junos service yaml). The earlier patcher version defaulted
-        to junos-mx with a chain resolver, but the user pushed back
-        pointing out that junos-qfx is semantically closer for
-        vJunos-switch (which IS architecturally a switch). The
-        live verification confirmed: routes table went from 26
-        connected-only rows to 86 rows including bgp/evpn/vpn
-        protocols once routes was switched to junos-qfx."""
+        """Default base for the simple-copy patch is junos-qfx,
+        the canonical Junos base in upstream (real in every Junos
+        service yaml). vJunos-switch is architecturally a switch,
+        so junos-qfx is semantically closer than junos-mx. Live
+        verification: routes table went from 26 connected-only
+        rows to 86 rows (bgp/evpn/vpn) once routes resolved to
+        junos-qfx instead of junos-mx."""
         bgp = tmp_path / "bgp.yml"
         bgp.write_text(UPSTREAM_BGP_YML)
         patcher.patch_simple_copy_yaml(bgp)

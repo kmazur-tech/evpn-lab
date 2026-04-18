@@ -435,15 +435,11 @@ class TestCollectLoopbackRoutes:
                     interfaces=[], ip_addresses=[])
         intent = collect(nb, "dc1")
 
-        # Valid pairs (both directions counted):
+        # 5 valid device pairs * 2 directions = 10 entries:
         #   spine1<->leaf1, spine1<->leaf2,
         #   spine2<->leaf1, spine2<->leaf2,
         #   leaf1<->leaf2
-        # = 4*2 + 1*2 = 10 entries (but each pair has 2 directions)
-        # Let me count: 4 pairs * 2 directions each + 1 pair * 2
-        # = 10 entries.
-        # FORBIDDEN: spine1<->spine2 (both directions = 2 entries)
-        # So total should be 12 - 2 = 10
+        # spine1<->spine2 is excluded by the Clos rule.
         assert len(intent.loopback_routes) == 10
 
         # Specifically: no spine -> spine entry
