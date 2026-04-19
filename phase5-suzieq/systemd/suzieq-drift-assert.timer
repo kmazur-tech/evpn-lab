@@ -1,0 +1,55 @@
+[Unit]
+# Timer driver for suzieq-drift-assert.service.
+#
+# Runs the Part C assertions every 5 minutes. The interval is a
+# deliberate compromise:
+#   - short enough to catch transient BGP flap / pfxRx=0 windows
+#     before they self-heal and disappear unnoticed
+#   - long enough that a single slow poller cycle does not cause
+#     cascading "falling behind" false positives
+#   - aligned with the upstream Suzieq default service period
+#     (60s for most services), so every 5-minute assertion run
+#     reads ~5 fresh poll cycles of data
+#
+# Increase the interval for production if 5 minutes is noisier
+# than the operator can triage. Decrease only after measuring
+# poller load on the netdevops-srv CPU - running assertions
+# every 30s on a 4-device lab is cheap; on a 40-device lab it
+# might matter.
+#
+# Edit `OnCalendar` below OR (preferred) use a drop-in at
+# /etc/systemd/system/suzieq-drift-assert.timer.d/override.conf:
+#
+#   [Timer]
+#   OnCalendar=
+#   OnCalendar=*:0/2      # every 2 minutes
+#
+# The empty first line clears any prior values so the override
+# replaces instead of appending.
+
+Description=Suzieq Part C assertions timer (every 5 minutes)
+Requires=suzieq-drift-assert.service
+
+[Timer]
+# Fire 2 minutes after boot so the stack has time to come up.
+OnBootSec=2min
+
+# Every 5 minutes thereafter.
+OnUnitActiveSec=5min
+
+# Align to wall-clock 5-minute boundaries so the journal is
+# easy to correlate with other monitoring (Grafana, NetBox
+# change events, etc.). AccuracySec=30s allows systemd to
+# batch timers within 30s for CPU/wake efficiency.
+OnCalendar=*:0/5
+AccuracySec=30s
+
+# Persistent=true means if the machine was asleep past a
+# scheduled tick, systemd runs the unit once when it wakes up.
+# Harmless for one-shot assertions; useful after reboots.
+Persistent=true
+
+Unit=suzieq-drift-assert.service
+
+[Install]
+WantedBy=timers.target

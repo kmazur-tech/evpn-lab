@@ -37,6 +37,7 @@ import pynetbox
 from .intent import collect as collect_intent
 from .state import collect as collect_state, DEFAULT_PARQUET_DIR
 from .diff import compare, Drift, SEVERITY_ERROR, SEVERITY_WARNING
+from .assertions import run_all as run_all_assertions
 
 
 EXIT_OK            = 0
@@ -69,39 +70,77 @@ def parse_args(argv=None):
     fmt.add_argument("--json", action="store_const", const="json", dest="format")
     fmt.add_argument("--human", action="store_const", const="human", dest="format")
     p.set_defaults(format="json")
+    p.add_argument(
+        "--mode", default=os.environ.get("DRIFT_MODE", "drift"),
+        choices=("drift", "assertions", "all"),
+        help=(
+            "What to run: "
+            "'drift' = NetBox-vs-SuzieQ intent diff (Part B, default - "
+            "needs NetBox); "
+            "'assertions' = state-only invariants via the assertions "
+            "package (Part C - no NetBox access needed, suitable for "
+            "systemd-timer scheduling); "
+            "'all' = both, combined output"
+        ),
+    )
     return p.parse_args(argv)
 
 
 def run(args) -> int:
     """Main run loop. Returns the process exit code. Split out from
     main() so tests can drive run() with hand-built args without
-    parsing argv."""
-    if not args.netbox_url or not args.netbox_token:
-        print(
-            "ERROR: NETBOX_URL and NETBOX_TOKEN must be set (env or --flags)",
-            file=sys.stderr,
-        )
-        return EXIT_TOOLING_ERROR
+    parsing argv.
 
-    try:
-        nb = pynetbox.api(args.netbox_url, token=args.netbox_token)
-    except Exception as e:  # pynetbox raises in unpredictable ways
-        print(f"ERROR: NetBox connection failed: {e}", file=sys.stderr)
-        return EXIT_TOOLING_ERROR
-
-    try:
-        intent = collect_intent(nb, args.namespace)
-    except Exception as e:
-        print(f"ERROR: NetBox intent collection failed: {e}", file=sys.stderr)
-        return EXIT_TOOLING_ERROR
-
+    Three modes:
+      drift       = Part B NetBox-vs-state diff. Needs NetBox creds.
+      assertions  = Part C state-only invariant checks. Skips
+                    NetBox entirely - suitable for systemd-timer
+                    scheduling because it has no external
+                    credential dependency.
+      all         = both, combined into one output record.
+    """
+    # State is always needed regardless of mode.
     try:
         state = collect_state(args.namespace, args.parquet_dir)
     except Exception as e:
         print(f"ERROR: SuzieQ state read failed: {e}", file=sys.stderr)
         return EXIT_TOOLING_ERROR
 
-    drifts = compare(intent, state)
+    drifts: List[Drift] = []
+
+    if args.mode in ("drift", "all"):
+        # NetBox is required for intent collection.
+        if not args.netbox_url or not args.netbox_token:
+            print(
+                "ERROR: NETBOX_URL and NETBOX_TOKEN must be set for "
+                "mode={} (env or --flags)".format(args.mode),
+                file=sys.stderr,
+            )
+            return EXIT_TOOLING_ERROR
+        try:
+            nb = pynetbox.api(args.netbox_url, token=args.netbox_token)
+        except Exception as e:
+            print(f"ERROR: NetBox connection failed: {e}", file=sys.stderr)
+            return EXIT_TOOLING_ERROR
+        try:
+            intent = collect_intent(nb, args.namespace)
+        except Exception as e:
+            print(f"ERROR: NetBox intent collection failed: {e}", file=sys.stderr)
+            return EXIT_TOOLING_ERROR
+        drifts.extend(compare(intent, state))
+
+    if args.mode in ("assertions", "all"):
+        # Pure state-only check - no NetBox needed. This is the
+        # mode the systemd timer runs because it has zero external
+        # dependencies beyond the local parquet store.
+        try:
+            drifts.extend(run_all_assertions(state))
+        except Exception as e:
+            print(f"ERROR: assertion run failed: {e}", file=sys.stderr)
+            return EXIT_TOOLING_ERROR
+
+    # Sort for stable output regardless of mode
+    drifts.sort(key=lambda d: (d.dimension, d.subject))
     emit(drifts, args.namespace, args.format)
 
     if any(d.severity == SEVERITY_ERROR for d in drifts):

@@ -175,6 +175,70 @@ class TestCollect:
         assert state.lldp.empty
         assert state.bgp.empty
 
+    def test_bgp_phantom_vrf_rows_dropped(self, tmp_path):
+        """REGRESSION GUARD for the phantom-vrf bug discovered live
+        2026-04-11 during Part C assertion verification.
+
+        Junos emits each BGP peer TWICE in `show bgp neighbor |
+        display json`: once with vrf='default' (the real routing-
+        instance view) and once with vrf='' (the 'main instance'
+        view). The SuzieQ engine disambiguates these via
+        `np.where(origPeer != '', origPeer, peer)` and only returns
+        the real row.
+
+        Our direct pyarrow read path bypasses the engine, so BEFORE
+        the cleanup hook was added we kept BOTH rows and the
+        drop_duplicates(vrf-in-PK) picked whichever came last in
+        sort order. During session transitions the phantom empty-
+        vrf row would lag behind the real row, producing false
+        positive 'NotEstd' state reports from assertions while
+        suzieq-cli was correctly reporting Established.
+
+        The cleanup hook in state._cleanup_bgp_phantom_rows drops
+        the empty-vrf rows entirely."""
+        # Write a paired-row fixture: same (hostname, peer), same
+        # timestamp, different vrf.
+        _write_table(tmp_path, "bgp", "dc1", "dc1-leaf1", pd.DataFrame([
+            {"vrf": "default", "peer": "10.1.0.1",
+             "state": "Established", "timestamp": 1700000000000},
+            {"vrf": "", "peer": "10.1.0.1",
+             "state": "NotEstd", "timestamp": 1700000000000},
+        ]))
+        df = read_table("bgp", "dc1", str(tmp_path),
+                        pk=("namespace", "hostname", "vrf", "peer"))
+        # Only the vrf="default" row should survive
+        assert len(df) == 1
+        assert df.iloc[0]["state"] == "Established"
+        assert df.iloc[0]["vrf"] == "default"
+
+    def test_bgp_phantom_cleanup_handles_all_empty_vrf(self, tmp_path):
+        """Edge case: every row has vrf='' (unlikely but possible
+        during poller first-cycle or a SuzieQ Junos parser bug).
+        The cleanup must leave the empty DataFrame intact rather
+        than crashing."""
+        _write_table(tmp_path, "bgp", "dc1", "dc1-leaf1", pd.DataFrame([
+            {"vrf": "", "peer": "10.1.0.1",
+             "state": "Idle", "timestamp": 1700000000000},
+        ]))
+        df = read_table("bgp", "dc1", str(tmp_path),
+                        pk=("namespace", "hostname", "vrf", "peer"))
+        assert df.empty
+
+    def test_bgp_cleanup_preserves_non_empty_vrfs(self, tmp_path):
+        """Multi-VRF routing: a leaf with peers in vrf='default' AND
+        vrf='TENANT-1' should keep BOTH rows. The cleanup only
+        drops EMPTY vrf, not non-default ones."""
+        _write_table(tmp_path, "bgp", "dc1", "dc1-leaf1", pd.DataFrame([
+            {"vrf": "default", "peer": "10.1.0.1",
+             "state": "Established", "timestamp": 1700000000000},
+            {"vrf": "TENANT-1", "peer": "10.10.10.1",
+             "state": "Established", "timestamp": 1700000000000},
+        ]))
+        df = read_table("bgp", "dc1", str(tmp_path),
+                        pk=("namespace", "hostname", "vrf", "peer"))
+        assert len(df) == 2
+        assert set(df["vrf"]) == {"default", "TENANT-1"}
+
     def test_reads_from_both_coalesced_and_raw_dirs(self, tmp_path):
         """The poller writes to <table>/ and the coalescer compacts
         to coalesced/<table>/ then deletes raw. Right after a

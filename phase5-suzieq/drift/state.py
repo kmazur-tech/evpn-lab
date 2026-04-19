@@ -42,10 +42,12 @@ import pyarrow.dataset as ds
 # suzieq_parquet docker volume read-only at this path.
 DEFAULT_PARQUET_DIR = "/suzieq/parquet"
 
-# Tables we read for Part B (min + full). Order matches intent.py
-# and diff.py dimension order.
+# Tables we read. Order matches intent.py, diff.py and
+# assertions/ usage. sqPoller is the meta-health table - its rows
+# describe the poller itself, not the fabric.
 TABLES = ("device", "interfaces", "lldp", "bgp",
-          "evpnVni", "routes", "macs", "arpnd")
+          "evpnVni", "routes", "macs", "arpnd",
+          "sqPoller")
 
 
 @dataclass
@@ -64,6 +66,8 @@ class FabricState:
     routes:     pd.DataFrame = field(default_factory=pd.DataFrame)
     macs:       pd.DataFrame = field(default_factory=pd.DataFrame)
     arpnd:      pd.DataFrame = field(default_factory=pd.DataFrame)
+    # Part C addition: poller self-health table
+    sq_poller:  pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 def collect(namespace: str, parquet_dir: str = DEFAULT_PARQUET_DIR) -> FabricState:
@@ -89,7 +93,49 @@ def collect(namespace: str, parquet_dir: str = DEFAULT_PARQUET_DIR) -> FabricSta
                         pk=("namespace", "hostname", "vlan", "macaddr")),
         arpnd=read_table("arpnd", namespace, parquet_dir,
                          pk=("namespace", "hostname", "ipAddress")),
+        sq_poller=read_table("sqPoller", namespace, parquet_dir,
+                             pk=("namespace", "hostname", "service")),
     )
+
+
+def _cleanup_bgp_phantom_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """BGP-specific cleanup: drop rows where `vrf` is empty.
+
+    Junos reports each BGP peer TWICE in `show bgp neighbor | display
+    json`: once with `vrf="default"` (the real routing-instance view)
+    and once with `vrf=""` (the "global" / main-instance view of the
+    same peer). The empty-vrf row is a phantom - it duplicates the
+    real row's (hostname, peer) identity but reports transient state
+    during session flaps. Keeping both rows breaks the latest-row-
+    per-PK dedup because our PK uses vrf.
+
+    The upstream SuzieQ engine disambiguates these rows via a
+    `np.where(origPeer != "", origPeer, peer)` step in
+    `engines/pandas/bgp.py:_get_peer_matched_df`. Rather than
+    replicate that full pipeline, we drop the empty-vrf rows
+    directly - the effect is the same for our use case (we want
+    one row per real session) and the code is local.
+
+    Discovered live 2026-04-11: after a fault injection +
+    restoration, suzieq-cli reported all 16 sessions Established
+    but the raw pyarrow read + drop_duplicates returned 4 NotEstd
+    rows. Root cause was that raw parquet had paired rows at
+    identical timestamps - (vrf='default', Established) and
+    (vrf='', NotEstd) - and the dedup with vrf in the PK kept
+    both.
+    """
+    if df.empty or "vrf" not in df.columns:
+        return df
+    # Treat pandas NaN, None, and "" all as phantom.
+    mask = df["vrf"].notna() & (df["vrf"].astype(str) != "")
+    return df[mask].reset_index(drop=True)
+
+
+# Per-table cleanup hooks. Called after concat+namespace-filter but
+# BEFORE drop_duplicates so cleaned-up tables dedup correctly.
+_TABLE_CLEANUP = {
+    "bgp": _cleanup_bgp_phantom_rows,
+}
 
 
 def read_table(
@@ -136,6 +182,15 @@ def read_table(
         df = df[df["namespace"] == namespace]
     if df.empty:
         return df.reset_index(drop=True)
+
+    # Per-table cleanup (e.g. drop phantom rows that the SuzieQ
+    # engine filters but our raw pyarrow read path picks up).
+    # Applied BEFORE dedup so the dedup operates on clean rows.
+    cleanup = _TABLE_CLEANUP.get(table)
+    if cleanup is not None:
+        df = cleanup(df)
+        if df.empty:
+            return df.reset_index(drop=True)
 
     # view='latest' equivalent: keep the most recent row per PK
     if pk and "timestamp" in df.columns:

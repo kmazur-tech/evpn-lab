@@ -1,0 +1,57 @@
+[Unit]
+# Phase 5 Part C: continuous SuzieQ state assertions.
+#
+# One-shot oneshot unit that runs the drift harness in
+# `--mode assertions`. Needs no NetBox credentials - assertions
+# are state-only invariants that only read the local parquet
+# volume via the drift sibling container.
+#
+# Installed on netdevops-srv alongside the Suzieq stack. Pair
+# with suzieq-drift-assert.timer for scheduled execution (see
+# README "Part C: systemd timer deployment").
+#
+# Intentionally depends on docker.service: if Docker is down
+# the unit fails loudly rather than silently skipping.
+
+Description=Suzieq Part C assertions (one-shot)
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+# WorkingDirectory must be where docker-compose.yml lives.
+# Operator picks this at deploy time - default is /opt/suzieq,
+# override via a drop-in (/etc/systemd/system/suzieq-drift-assert.service.d/
+# override.conf) if the stack lives elsewhere.
+WorkingDirectory=/opt/suzieq
+
+# Environment: the Suzieq stack's env vars must be available to
+# docker compose at command time. The drift container itself
+# does NOT need NetBox creds in assertions mode, but docker
+# compose still substitutes ${NETBOX_URL} / ${NETBOX_TOKEN} /
+# ${SUZIEQ_API_KEY} in docker-compose.yml if they are referenced
+# there - so we source the same env file the operator uses for
+# `docker compose up`. Pointing at /opt/evpn-lab-env/env.sh is
+# the convention; override via drop-in if different.
+EnvironmentFile=/opt/evpn-lab-env/env.sh
+
+# The actual command. --mode assertions skips NetBox entirely
+# and runs only state-only invariants. --human produces readable
+# output in the systemd journal (operators inspect it via
+# `journalctl -u suzieq-drift-assert.service`). CI would use
+# --json to a file with a drop-in ExecStart override.
+ExecStart=/usr/bin/docker compose run --rm drift --mode assertions --human
+
+# Non-zero exit = assertion failure. systemd marks the unit as
+# failed and `systemctl status suzieq-drift-assert.service` shows
+# the failure. The timer will retry on the next scheduled run.
+# SuccessExitStatus is empty (only 0 is a success) because
+# assertion failures MUST be visible as unit failures.
+
+# stdout/stderr -> journal so `journalctl -u suzieq-drift-assert`
+# shows the drift report even on successful runs.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

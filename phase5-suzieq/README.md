@@ -408,11 +408,227 @@ SERVICE_BASE_OVERRIDES = {"device.yml": "junos-mx"}  # the only one needed
 
 The 53 new tests in B-full break down as: 1 patcher test rewrite + 2 new patcher tests (inverted defaults + override + evpnVni-no-junos-mx fixture), 11 intent collector tests (4 new collector classes + Clos rule guard), 1 state test for the new tables, 16 diff tests (4 new dimension classes), and a small number of cross-cutting test updates. All run in <2 seconds, no docker, no network, no SuzieQ install.
 
-## What lands in Parts C / D
+## Part C: strict assertions + systemd timer (DONE)
+
+State-only invariant checks that run continuously via a systemd timer, complementary to the one-shot drift harness. The drift harness answers "does NetBox intent match state?" Assertions answer "does state satisfy these invariants?", require **no NetBox credentials**, and are meant for unattended scheduling.
+
+### Non-overlap rule (non-negotiable)
+
+Every assertion must answer a question Phase 2 smoke CANNOT answer. Phase 2 smoke runs once at deploy; assertions run continuously. The three angles that qualify:
+
+1. **Continuous state** — is this still true *now*, between deploys?
+2. **Property drift** — has a measurable property (e.g. pfxRx) left its valid range since the last check?
+3. **Self-health** — is the harness itself keeping up?
+
+Assertions that would read identically to a smoke-check docstring are rejected at PR review. See `drift/assertions/__init__.py` for the gate text.
+
+### The four initial assertions
+
+| Assertion | Reads | Catches | Drift doesn't catch because |
+|---|---|---|---|
+| `assert_bgp_all_established` | `bgp` table | Any session not in Established | Drift checks cable-derived sessions; this checks every session SuzieQ sees (including overlay iBGP to loopbacks not modeled as NetBox cables) |
+| `assert_bgp_pfx_rx_positive` | `bgp` table | Established but `pfxRx=0` (flap + mid-converge, policy filter, peer announcing nothing) | Drift only checks `state==Established` |
+| `assert_vtep_remote_count` | `evpnVni` table | L2 VNI with no remote VTEPs (EVPN Type-3 discovery broken) | Drift checks `state==up`, not discovery |
+| `assert_poll_health` | `sqPoller` table | Poller falling behind (`pollExcdPeriodCount > 0`) | Drift has no opinion about the harness itself |
+
+All four are **pure state-only** - none read NetBox. The assertion mode is therefore safe to run from a systemd timer that has no NetBox credential.
+
+### The `remoteVtepCnt` vs `remoteVtepList` gotcha
+
+`suzieq-cli evpnVni show` exposes a `remoteVtepCnt` column. **That column is computed at query time by the SuzieQ engine** from the raw `remoteVtepList` column. It does not exist in the parquet file. The drift state reader uses direct pyarrow reads that bypass the engine, so the assertion must compute the count itself via `len(row["remoteVtepList"])`.
+
+Discovered live on 2026-04-11: the first live run of `assert_vtep_remote_count` fired 4 false positives on a clean fully-converged fabric because the assertion was reading the non-existent `remoteVtepCnt` column and defaulting to 0. Fix + regression guard pinned in `test_assertions_vtep.py::test_l2_vni_with_missing_column_is_error`.
+
+### CLI `--mode` flag
+
+`drift/cli.py` now supports three modes:
+
+```bash
+docker compose run --rm drift --mode drift      # Part B: NetBox-vs-state diff (default)
+docker compose run --rm drift --mode assertions # Part C: state-only invariants, NO NetBox needed
+docker compose run --rm drift --mode all        # both, combined output
+```
+
+The `assertions` mode skips NetBox entirely - verified by `test_assertions_mode_skips_netbox_entirely` which monkeypatches `collect_intent` and asserts it's never called. That's what makes the mode safe for a systemd timer without a NetBox token in the environment.
+
+Exit codes unchanged: 0 clean, 1 failure, 2 tooling error.
+
+### systemd timer
+
+Two unit files ship in `phase5-suzieq/systemd/`:
+
+| File | Role |
+|---|---|
+| `suzieq-drift-assert.service` | `Type=oneshot` unit that runs `docker compose run --rm drift --mode assertions --human` from `WorkingDirectory=/opt/suzieq`. Reads `EnvironmentFile=/opt/evpn-lab-env/env.sh`. stdout/stderr -> journal. Non-zero exit marks the unit as failed. |
+| `suzieq-drift-assert.timer` | `OnCalendar=*:0/5` (every 5 min) + `OnBootSec=2min` + `Persistent=true`. Fires the `.service` unit. |
+
+Install on netdevops-srv:
+
+```bash
+sudo cp phase5-suzieq/systemd/suzieq-drift-assert.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now suzieq-drift-assert.timer
+systemctl status suzieq-drift-assert.timer        # shows next scheduled run
+journalctl -u suzieq-drift-assert.service -n 50   # last run's output
+```
+
+Override the schedule (e.g. every 2 minutes) via drop-in:
+
+```bash
+sudo systemctl edit suzieq-drift-assert.timer
+# Enter:
+#   [Timer]
+#   OnCalendar=
+#   OnCalendar=*:0/2
+```
+
+### Live verification 2026-04-11
+
+| Scenario | Expected | Result |
+|---|---|---|
+| Clean fabric, `--mode assertions` | 0 drifts, exit 0 | ✅ |
+| Inject `spine1 ge-0/0/0 disable` | BGP assertions fire | ✅ 4 `assert_bgp_established` + 1 `assert_bgp_pfx_rx` (leaf2→spine1 EVPN session still Established but withdraw not propagated) |
+| Restore interface, wait for reconvergence | 0 drifts, exit 0 | ✅ (see commit description) |
+
+The negative case is interesting because it demonstrated BOTH the `assert_bgp_established` and `assert_bgp_pfx_rx` assertions firing on the same fault, each catching a different symptom. A session that had dropped to NotEstd on the affected ends, and a peer session that stayed Established briefly but with pfxRx=0 because the withdraw-all hadn't propagated yet.
+
+## Recreating this phase on a different environment
+
+The instructions below are the complete recipe for reproducing the Phase 5 stack (Parts A + B + C) on a different host. They assume a Linux VM with Docker and a reachable NetBox.
+
+### Prerequisites
+
+| Requirement | Why |
+|---|---|
+| Linux host with Docker 20.10+ and Docker Compose v2 | Runs the four-container Suzieq stack + the drift sibling container |
+| ≥ 2 GB free RAM available for the Suzieq stack | Poller is the heaviest; measured ~400 MB steady-state for 4 devices |
+| ≥ 5 GB free disk for the first year | Parquet store + archive grows ~30-40 MB/day for a 4-device lab (see "Coalescer storage budget" above) |
+| NetBox 4.x instance reachable from the host | Intent source for drift. Must have the `dcim`, `ipam`, `vpn` APIs. |
+| SSH reachability from the host to every fabric device | Suzieq polls via SSH. Lab uses `admin/TestLabPass1` local users; production must use a dedicated read-only user. |
+| Python 3.10+ on the workstation that generates `inventory.yml` | `gen-inventory.py` uses stdlib urllib + pynetbox |
+| systemd (for Part C timer) | Optional; without it assertions run on demand only |
+
+### NetBox data model requirements
+
+The drift harness depends on these NetBox objects existing. Phase 1's `populate.py` creates them all for the lab; adapt to your environment:
+
+| NetBox object | Custom fields | Used by |
+|---|---|---|
+| `dcim.tag` named `suzieq` | — | `gen-inventory.py` filter; every device to be polled must have this tag |
+| `dcim.device` | `primary_ip4` = loopback, `oob_ip` = mgmt | drift `loopback_route` dimension + inventory generation |
+| `dcim.interface` | `cable` property set for fabric P2P links | drift `lldp_topology` + `bgp_session` dimensions |
+| `ipam.ip_address` with role `anycast` | — | drift `peer_irb_arp` dimension (excluded from leaf-local IP list) |
+| `ipam.vlan` | `vni` (int) for L2 VNIs | drift `evpn_vni` dimension |
+| `ipam.vrf` | `l3vni` (int), `anycast_mac` (str), `tenant_id` (int) | drift `evpn_vni` + `anycast_mac` dimensions |
+| `vpn.l2vpn` (type `vxlan-evpn`) + terminations on VLANs | — | L2VPN -> VLAN binding for tenant VLAN enumeration |
+
+If any of the custom fields above are missing, the corresponding drift dimension silently emits no intent for that resource (not an error). Running `python gen-inventory.py 2>&1` and checking for `WARNING` lines is a quick sanity check.
+
+### Environment variables
+
+These live in a single file outside the repo (the project convention is `../evpn-lab-env/env.sh`). The operator sources it before any `docker compose` command. Required:
+
+```bash
+# SSH credentials used by Suzieq poller
+export JUNOS_SSH_USER=admin
+export JUNOS_SSH_PASSWORD=TestLabPass1
+
+# NetBox API
+export NETBOX_URL=http://your-netbox:8000
+export NETBOX_TOKEN=your-netbox-api-token
+
+# Suzieq REST API access key (any string, rotate periodically)
+export SUZIEQ_API_KEY=$(openssl rand -hex 32)
+```
+
+### One-time setup
+
+```bash
+# 1. Copy the phase5-suzieq/ directory to the host (e.g. /opt/suzieq/)
+scp -r phase5-suzieq/* operator@host:/opt/suzieq/
+
+# 2. Create a dedicated env file outside the repo (never commit)
+sudo mkdir -p /opt/evpn-lab-env/
+sudo vi /opt/evpn-lab-env/env.sh     # paste the exports above
+
+# 3. (One-time) Permissions on the parquet volume. The suzieq
+# container runs as uid 1000; fresh docker volumes are root-owned.
+sudo docker volume create suzieq_parquet
+sudo docker volume create suzieq_archive
+sudo docker run --user root -v suzieq_parquet:/parquet -v suzieq_archive:/archive \
+  --rm --entrypoint /bin/bash netenglabs/suzieq@sha256:6e4e955a... \
+  -c "chown -R 1000:1000 /parquet /archive"
+
+# 4. Build the patched Suzieq image (adds the junos-vjunos-switch
+# devtype at BUILD TIME - see "junos-vjunos-switch devtype" section
+# above for the full story).
+cd /opt/suzieq/
+source /opt/evpn-lab-env/env.sh
+sudo docker compose build sq-poller
+
+# 5. Tag the fabric devices with `suzieq` in NetBox (or let Phase 1
+# populate.py do it via `netbox-data.yml`).
+
+# 6. Generate the Suzieq inventory from NetBox
+python gen-inventory.py > inventory.yml
+grep devtype inventory.yml   # sanity check: junos-vjunos-switch for EX9214
+
+# 7. Bring the stack up
+sudo docker compose up -d
+
+# 8. Verify per the "Verification gate" section above
+```
+
+### Deploy Part C systemd timer
+
+```bash
+# 9. Install and enable the timer
+sudo cp /opt/suzieq/systemd/suzieq-drift-assert.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now suzieq-drift-assert.timer
+
+# Verify
+systemctl status suzieq-drift-assert.timer
+journalctl -u suzieq-drift-assert.service -n 20
+```
+
+### Regenerating the inventory after a fabric change
+
+Any time a device is added/removed in NetBox or the `suzieq` tag is applied/removed, re-run from the workstation:
+
+```bash
+source evpn-lab-env/env.sh
+python phase5-suzieq/gen-inventory.py > inventory.yml
+scp inventory.yml operator@host:/opt/suzieq/inventory.yml
+ssh operator@host "cd /opt/suzieq && docker compose restart sq-poller"
+```
+
+The inventory file is deliberately NOT generated in-container because the container has no NetBox credentials of its own.
+
+### What to change for a non-vJunos deployment
+
+If the fabric uses real hardware (QFX, EX, MX) instead of vJunos-switch:
+
+1. **Remove the `junos-vjunos-switch` devtype mapping** from `gen-inventory.py` and map `EX9214` (or whatever model) directly to the stock upstream `junos-qfx` / `junos-mx` devtype. The build-time patcher in `suzieq-image/Dockerfile` becomes optional at that point - you can use the upstream `netenglabs/suzieq` image directly if you don't need the patch.
+2. **Verify `show system uptime | display json` on one of the devices** returns the multi-RE-wrapped shape (`multi-routing-engine-results/[0]/...`) that the stock `junos-qfx` device service template expects. If it does, use `junos-qfx`. If it returns single-RE shape like vJunos does, use `junos-mx` (or run the patcher unchanged).
+3. **LLDP detail view works on real Junos** without any patching (both `junos-qfx` and the patcher's `junos-vjunos-switch` use `show lldp neighbors detail`), so no adjustment needed.
+4. **For non-Junos vendors** (Arista EOS, Cisco NX-OS/IOS-XR, Cumulus): change the devtype mapping in `gen-inventory.py::DEVTYPE_OVERRIDES` to the appropriate upstream devtype. The drift harness and assertions are vendor-neutral - they read the same column names from the SuzieQ tables regardless of which NOS populated them.
+
+### Troubleshooting checklist
+
+In the order you should check when something doesn't work:
+
+1. `docker compose ps` — all four services up (sq-poller, sq-coalescer, sq-rest-server, drift)
+2. `docker exec sq-poller suzieq-cli device show` — 4 rows, status=alive. If 0 rows, the NetBox tag is missing or `oob_ip` is wrong.
+3. `docker exec sq-poller suzieq-cli bgp show` — 16 rows, all Established. If not, fabric itself has a problem - unrelated to Suzieq.
+4. `docker compose run --rm drift --mode assertions --human` — expected output on a clean fabric is `namespace=<ns>: no drift`.
+5. `journalctl -u suzieq-drift-assert.service -n 50` — the timer's last run. If "unit failed" shows up, tail the journal to see which assertion fired.
+6. `docker exec sq-poller cat /tmp/sq-poller-0.log | tail -50` — poller-side errors (SSH auth failures, command timeouts).
+
+## What lands in Part D
 
 | Part | Scope |
 |---|---|
-| C | Strict assertions, gated by a non-overlap rule against Phase 2 smoke |
-| D | Time-window queries via pyarrow over the parquet history |
+| D | Time-window queries via pyarrow over the parquet history (BGP flap count, route count delta, MAC mobility, VTEP appear/disappear) |
 
-Both use the same drift sibling container - no new infrastructure, no new venvs, just more code in `drift/`.
+Uses the same drift sibling container - no new infrastructure, no new venvs, just more code in `drift/timeseries/`.
