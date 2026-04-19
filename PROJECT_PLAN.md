@@ -142,7 +142,7 @@ Suzieq = runtime monitor (cron, dashboards, alerts).
 
 Scope:
 - Suzieq collector container in docker-compose, polling all DC1 devices via SSH every 60s, persisting to its Parquet store
-- **NetBox-versus-Suzieq diff layer** - the killer use case:
+- **NetBox-versus-Suzieq diff layer** - the central capability of this phase:
   - Pull intent from NetBox API (devices, interfaces, BGP sessions, VLANs, VNIs, expected LLDP topology)
   - Pull state from Suzieq tables (`bgp`, `lldp`, `interfaces`, `evpnVni`, `routes`, `macs`)
   - Diff and report drift: missing BGP session, LLDP neighbor change vs NetBox cabling, VLAN-to-VNI mismatch, unexpected loopback advertised, etc.

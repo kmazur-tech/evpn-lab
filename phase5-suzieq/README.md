@@ -249,7 +249,7 @@ The lab rolls its own thin Python harness (Parts B/C/D) for three reasons: it's 
 
 ## Part B-min: NetBox-vs-Suzieq drift harness (DONE)
 
-The killer use case for Phase 5: catches the class of bugs that neither Phase 2 smoke nor Phase 4 Batfish can see - drift between what NetBox SAYS the network is and what the network actually IS, in real time.
+Catches the class of bugs that neither Phase 2 smoke nor Phase 4 Batfish can see: drift between what NetBox says the network is and what the network actually is, in real time.
 
 ### Architecture
 
