@@ -22,7 +22,7 @@ phase3-nornir/build/
 # Reference configs (company-specific, not for public repo)
 config-temp/
 
-# Claude Code
+# Local tooling
 .claude/
 
 # OS
