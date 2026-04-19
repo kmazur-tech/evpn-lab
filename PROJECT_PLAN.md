@@ -453,6 +453,89 @@ All three are deliberately bounded so the showcase story is **"controlled day-2 
 
 ---
 
+## Phase 12 - AI Copilot for Runtime Operations
+
+Phase 12 adds an LLM-backed assistant scoped **strictly to operating the running fabric**. It is not a code generator, not a repo refactorer, and never an auto-applier of changes. It exists to help a human operator triage faster and propose better-evidenced changes during real day-2 incidents.
+
+The phase has two parts. Part A is read-only. Part B is read-write to the repo, but **only when the work is triggered by a runtime event**, and **always behind human review** via an isolated PR.
+
+### Why this is bounded the way it is
+
+The earlier phases worked hard to build a safe deploy pipeline (Phase 3 commit-confirmed + golden files, Phase 4 Batfish offline checks, Phase 5 drift harness, Phase 11 explicit lifecycle tiers). The fastest way to undermine that is to let an LLM author changes the human pipeline never sees, or to let "while we're here" repo cleanup creep in under the AI banner. Phase 12 is structured so the AI is a **narrator and proposer over runtime state**, never an author of project work.
+
+### Part A - Runtime read-only (narrator + explainer)
+
+In scope:
+- Triage of smoke-test / Batfish / Suzieq failures on an already-deployed fabric, with hypothesis ranking and citations to the failing check + suspected config line.
+- Explainers over live state: "what is this device's role", "what does this routing-instance do", grounded in the rendered config pulled from the device or from the last deploy artifact.
+- Natural-language Suzieq queries ("which leaves lost a VTEP in the last hour") translated into Suzieq calls; results returned to the operator.
+- Drift narration: given a row from the Phase 5 drift harness, explain what changed and what it likely means.
+- Blast-radius read-out for a proposed human change (read-only - describes which devices re-render, which Batfish checks are sensitive, which smoke checks cover the path; does NOT author the change).
+- Postmortem drafter from a timeline + logs + Suzieq snapshots.
+- Onboarding helper for anyone touching the lab for the first time.
+
+Out of scope for Part A:
+- Any write to the repo, NetBox, or a device.
+- Any proposal of a config diff (that's Part B).
+- Any work driven by "let's improve the codebase" rather than "the fabric is doing X".
+
+Architecture:
+- Lives in its own directory, imports from Phases 3-5 read-only (Suzieq client, Batfish results loader, smoke-test JSON parser). Exports nothing back.
+- No write credentials. Suzieq read, Batfish read, SSH `show`-only on devices (or consumes already-collected snapshots, which is even safer).
+- Runs on netdevops-srv alongside the other runtime services.
+- Outputs go to terminal / chat / log file. Never to a file in the repo, never to a device.
+
+### Part B - Runtime-triggered repo proposals (always human-reviewed)
+
+Part B extends the assistant to **propose** repo changes (NetBox data, Jinja templates, DESIGN.md, NETBOX_DATA_MODEL.md, or a config diff for context). Every proposal must satisfy all of the following or it is not produced:
+
+1. **Runtime trigger**: the work is triggered by a runtime event (failed check, drift row, incident, capacity request) and cites the specific evidence (Suzieq snapshot, Batfish failure, smoke-test JSON, drift-harness row). No evidence -> no proposal. "While we're here, the Jinja could be tidier" is explicitly not a runtime trigger and is rejected.
+2. **Round-tripped through the existing pipeline before a human sees it**: render -> Batfish -> golden-file diff -> smoke (in a sibling clab when it's a config change). If the proposal can't survive the Phase 3-5 gauntlet, the human is not asked to review it. This protects the operator's time and keeps the AI honest.
+3. **Delivered as an isolated branch + PR**, never as a working-tree edit. The human review gate only works if the proposal arrives in its own reviewable unit and cannot be swept into an unrelated commit.
+4. **Logged**: every Part B suggestion (accepted, rejected, modified) is recorded with its triggering evidence. After a month of runtime use, the log answers whether Part B is earning its keep or generating plausible noise.
+
+Hard rules for Part B:
+- **Never auto-merged, never auto-applied to a device.** The Phase 3 commit-confirmed flow remains the only path to a device.
+- **No proposals against Phase 3-5 code itself** (Nornir tasks, render scripts, Batfish checks, smoke tests, drift harness, gen-inventory). Those are tools, not runtime state. If they're wrong, that's a human-driven dev task, not a Phase 12 output.
+- **DESIGN.md / NETBOX_DATA_MODEL.md edits are proposed only when the runtime contradicts the doc**, not when the AI thinks the doc could be clearer.
+- **No proposals invent NetBox schema fields or Junos knobs.** Every proposal cites a file path + line that already exists. If it can't cite, it's hallucinating and is dropped.
+- **Single proposal per runtime trigger.** The assistant does not bundle "while I was looking at this, I also noticed".
+- **No reverse reconciliation.** Translating ad-hoc NetBox UI edits back into yaml PRs is explicitly out of scope. That work is repo development driven by a UI change, not by a runtime event, and it belongs to whoever maintains the data model - not to the runtime copilot.
+
+### Module boundaries
+
+Heavy dependencies (LLM SDK, pynetbox, pyarrow/Suzieq client, Batfish client) live in **one thin boundary module** per external system. The agent's pure decision logic consumes plain dataclasses and stays free of vendor imports, so the bulk of the test suite runs in milliseconds without spinning up any client. This mirrors the Phase 5 drift-harness pattern where most tests never import the heavy libs.
+
+### LLM SDK integration
+
+The phase uses the Anthropic SDK as a regular runtime dependency, with four rules:
+
+1. **Build-time over runtime**: pin the SDK and any prompt-template assets at image build time, not pulled fresh on every invocation.
+2. **Verify live before formalizing**: before a prompt is checked in as a fixture, it has to demonstrate the intended behavior against a real captured runtime artifact. No speculative prompts.
+3. **Research touchpoints upfront**: tool-use schemas, token limits, and rate-limit behavior are mapped before the integration is wired in, not discovered at incident time.
+4. **No upstream namespace pollution**: the assistant's code lives entirely under `phase12-ai/`; no monkey-patching of the SDK, Suzieq, Batfish, or Nornir modules.
+
+### Secrets
+
+The Anthropic API key is supplied via the `ANTHROPIC_API_KEY` environment variable, sourced from the same out-of-repo secret store the rest of the lab uses (mirrors the Phase 3 env-driven login hash pattern). The key never appears in repo files, container images, or rendered configs. The Phase 12 container refuses to start if the variable is unset.
+
+### Tests
+
+`phase12-ai/tests/`:
+- Fixture-based tests: every prompt / agent ships with tests in this phase, not deferred.
+- Part A: golden-file tests for triage output on a captured set of smoke / Batfish / Suzieq failure fixtures. The agent must cite evidence; tests assert the citation is present and points to a real fixture line.
+- Part A: NL -> Suzieq query tests against a frozen parquet snapshot.
+- Part B: the round-trip gate is itself the test - a proposal that fails render / Batfish / golden / smoke must be suppressed, and there's a test asserting that a deliberately-broken proposal is suppressed.
+- Part B: an "improve the templates" prompt with no runtime trigger must be rejected by the trigger gate. Negative test.
+- Part B: a proposal touching Phase 3-5 code must be rejected. Negative test.
+- Proposal log schema test: every logged entry has triggering evidence + outcome.
+
+### Result
+
+Phase 12 gives the lab an AI copilot that helps during real incidents and capacity work, without ever becoming an unreviewed author. The split is clean: **AI reads runtime state and explains it (Part A); AI proposes runtime-triggered repo changes that the existing Phase 3-5 pipeline must accept before a human reviews them (Part B); humans and the existing pipeline remain the only path from intent to device.**
+
+---
+
 ## Repository Structure (target)
 
 ```
