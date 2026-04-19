@@ -83,8 +83,16 @@ def collect(namespace: str, parquet_dir: str = DEFAULT_PARQUET_DIR) -> FabricSta
                               pk=("namespace", "hostname", "ifname")),
         lldp=read_table("lldp", namespace, parquet_dir,
                         pk=("namespace", "hostname", "ifname")),
+        # PK matches SuzieQ's bgp schema (config/schema/bgp.avsc):
+        # (namespace, hostname, vrf, peer, afi, safi). A single peer
+        # has one row PER AFI/SAFI - e.g. an overlay peer has
+        # l2vpn/evpn AND the underlay peer has ipv4/unicast. The
+        # earlier 4-field PK was collapsing distinct AFI/SAFI rows
+        # silently and was independently wrong regardless of the
+        # phantom-row issue.
         bgp=read_table("bgp", namespace, parquet_dir,
-                       pk=("namespace", "hostname", "vrf", "peer")),
+                       pk=("namespace", "hostname", "vrf",
+                           "peer", "afi", "safi")),
         evpn_vnis=read_table("evpnVni", namespace, parquet_dir,
                              pk=("namespace", "hostname", "vni")),
         routes=read_table("routes", namespace, parquet_dir,
@@ -99,35 +107,82 @@ def collect(namespace: str, parquet_dir: str = DEFAULT_PARQUET_DIR) -> FabricSta
 
 
 def _cleanup_bgp_phantom_rows(df: pd.DataFrame) -> pd.DataFrame:
-    """BGP-specific cleanup: drop rows where `vrf` is empty.
+    """BGP-specific cleanup: drop rows where vrf, afi, OR safi is empty.
 
-    Junos reports each BGP peer TWICE in `show bgp neighbor | display
-    json`: once with `vrf="default"` (the real routing-instance view)
-    and once with `vrf=""` (the "global" / main-instance view of the
-    same peer). The empty-vrf row is a phantom - it duplicates the
-    real row's (hostname, peer) identity but reports transient state
-    during session flaps. Keeping both rows breaks the latest-row-
-    per-PK dedup because our PK uses vrf.
+    ## What these phantom rows actually are
 
-    The upstream SuzieQ engine disambiguates these rows via a
-    `np.where(origPeer != "", origPeer, peer)` step in
-    `engines/pandas/bgp.py:_get_peer_matched_df`. Rather than
-    replicate that full pipeline, we drop the empty-vrf rows
-    directly - the effect is the same for our use case (we want
-    one row per real session) and the code is local.
+    Verified live 2026-04-11 against vJunos 23.2R1.14 and the
+    SuzieQ bgp service yaml:
 
-    Discovered live 2026-04-11: after a fault injection +
-    restoration, suzieq-cli reported all 16 sessions Established
-    but the raw pyarrow read + drop_duplicates returned 4 NotEstd
-    rows. Root cause was that raw parquet had paired rows at
-    identical timestamps - (vrf='default', Established) and
-    (vrf='', NotEstd) - and the dedup with vrf in the PK kept
-    both.
+      - Junos `show bgp neighbor | display json` returns EXACTLY
+        ONE entry per peer - not two. Each entry has
+        peer-cfg-rti=master and peer-fwd-rti=master. The earlier
+        "Junos emits each peer twice" theory was WRONG.
+
+      - SuzieQ's Junos bgp normalize pipeline runs TWO commands:
+          * `show bgp summary | display json` extracts vrf (with
+            fallback "default") and iterates bgp-rib per AFI/SAFI
+          * `show bgp neighbor | display json` extracts state and
+            many per-session fields, but does NOT extract vrf or
+            afi or safi in its normalize spec at all
+
+      - During steady state, the suzieq engine merges the two
+        command outputs into one row per (vrf, peer, afi, safi)
+        with all fields populated. The coalescer keeps the merged
+        rows and deletes the raw rows.
+
+      - During BGP session state transitions (fault -> recovery),
+        the pipeline writes partial-view rows to raw parquet
+        before the merge completes. These partial rows have
+        empty vrf/afi/safi and state=NotEstd. They are visible
+        to direct pyarrow reads (which bypass the engine merge)
+        but NOT to suzieq-cli (which runs the engine pipeline).
+
+      - The rows are therefore a SuzieQ pipeline artifact, not a
+        Junos artifact. They exist only until the next coalescer
+        run compacts them, at which point the engine-level
+        merge drops them and the coalesced directory has only
+        clean merged rows.
+
+    ## Why the PK alone is not enough
+
+    SuzieQ's bgp schema PK per config/schema/bgp.avsc is
+    (namespace, hostname, vrf, peer, afi, safi). The state.py
+    read_table() call now uses exactly that PK (fixed in the
+    same commit that added this docstring). But a correct PK
+    only helps when rows collide - the phantom rows have
+    DISTINCT (empty) afi/safi and therefore distinct PK values,
+    so they survive drop_duplicates regardless. We have to drop
+    them explicitly.
+
+    ## What we drop
+
+    Any row where vrf, afi, OR safi is empty / NaN / None.
+    An empty-AFI or empty-vrf BGP row is semantically
+    meaningless (a BGP session is always in a routing instance
+    and always negotiates a specific AFI/SAFI), so dropping
+    these rows is correct - not a workaround.
+
+    ## History
+
+    First attempt (the commit before this one) dropped only
+    empty-vrf rows and explained the pairing as "Junos emits
+    each peer twice." The user correctly pushed back that
+    Junos does NOT in fact emit each peer twice - the rows are
+    a SuzieQ pipeline transient, not a Junos duplicate. This
+    cleanup and the accompanying test comments are now
+    consistent with the verified mechanism.
     """
-    if df.empty or "vrf" not in df.columns:
+    if df.empty:
         return df
-    # Treat pandas NaN, None, and "" all as phantom.
-    mask = df["vrf"].notna() & (df["vrf"].astype(str) != "")
+    # Treat pandas NaN, None, and "" all as phantom for any of
+    # the three structural fields. If a row is missing any one
+    # of vrf/afi/safi it is a partial-view row and not usable.
+    mask = pd.Series(True, index=df.index)
+    for col in ("vrf", "afi", "safi"):
+        if col not in df.columns:
+            continue
+        mask &= df[col].notna() & (df[col].astype(str) != "")
     return df[mask].reset_index(drop=True)
 
 

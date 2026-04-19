@@ -433,11 +433,31 @@ Assertions that would read identically to a smoke-check docstring are rejected a
 
 All four are **pure state-only** - none read NetBox. The assertion mode is therefore safe to run from a systemd timer that has no NetBox credential.
 
-### The `remoteVtepCnt` vs `remoteVtepList` gotcha
+### Gotcha 1: `remoteVtepCnt` vs `remoteVtepList`
 
 `suzieq-cli evpnVni show` exposes a `remoteVtepCnt` column. **That column is computed at query time by the SuzieQ engine** from the raw `remoteVtepList` column. It does not exist in the parquet file. The drift state reader uses direct pyarrow reads that bypass the engine, so the assertion must compute the count itself via `len(row["remoteVtepList"])`.
 
 Discovered live on 2026-04-11: the first live run of `assert_vtep_remote_count` fired 4 false positives on a clean fully-converged fabric because the assertion was reading the non-existent `remoteVtepCnt` column and defaulting to 0. Fix + regression guard pinned in `test_assertions_vtep.py::test_l2_vni_with_missing_column_is_error`.
+
+### Gotcha 2: partial-view BGP rows during session transitions
+
+First-run analysis of this bug was wrong — the user pushed back with a correct challenge and I had to re-investigate. The corrected explanation:
+
+**Junos emits each BGP peer exactly ONCE** in `show bgp neighbor | display json` (verified directly against vJunos 23.2R1.14 — 4 peers, 4 entries, each with `peer-cfg-rti: master` and `peer-fwd-rti: master`). The earlier "Junos emits each peer twice" theory was wrong.
+
+The real mechanism: **SuzieQ's Junos bgp normalize pipeline runs two commands**:
+- `show bgp summary | display json` — extracts `vrf` (with fallback `"default"`) and iterates `bgp-rib/[*]` per AFI/SAFI
+- `show bgp neighbor | display json` — extracts `state` and many per-session fields, but does NOT extract vrf or afi or safi in its normalize spec at all
+
+In steady state, the suzieq engine merges the two command outputs into one row per `(vrf, peer, afi, safi)` with all fields populated. The coalescer keeps the merged rows. **During BGP session state transitions (fault → recovery)**, the pipeline writes partial-view rows to raw parquet before the merge completes. The partial rows have empty `vrf`, empty `afi`, empty `safi`, and `state=NotEstd`. They are visible to direct pyarrow reads (which bypass the engine merge) but NOT to `suzieq-cli` (which runs the engine pipeline).
+
+The partial rows are a SuzieQ pipeline artifact, **not** a Junos artifact. They exist only until the next coalescer run compacts them.
+
+Two independent fixes, both in `drift/state.py`:
+
+1. **Use SuzieQ's actual bgp PK** per its own schema at `config/schema/bgp.avsc`: `(namespace, hostname, vrf, peer, afi, safi)`. The earlier 4-field PK was independently wrong — a single peer has **multiple legitimate rows**, one per AFI/SAFI (e.g. an overlay peer with `l2vpn/evpn` AND the underlay peer with `ipv4/unicast`), and the short PK was silently dropping distinct AFI/SAFI rows. Regression guard: `test_bgp_pk_distinguishes_same_peer_different_afi`.
+
+2. **Drop partial-view rows** via a per-table cleanup hook (`_cleanup_bgp_phantom_rows` in `drift/state.py`). Any row where `vrf` OR `afi` OR `safi` is empty/NaN is dropped before dedup, because a BGP row missing any structural field is semantically meaningless (a session is always in a routing-instance and always negotiates a specific AFI/SAFI). Regression guards: `test_bgp_partial_view_rows_dropped`, `test_bgp_partial_view_any_empty_structural_field`, `test_bgp_cleanup_handles_all_partial`.
 
 ### CLI `--mode` flag
 

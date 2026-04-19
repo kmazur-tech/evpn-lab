@@ -57,9 +57,11 @@ def populated_parquet(tmp_path):
          "vendor": "Juniper", "status": "alive", "address": "172.16.18.162",
          "timestamp": 1700000000000},
     ]))
-    # bgp table
+    # bgp table - fixture must include afi/safi because the real
+    # SuzieQ schema PK is (ns, host, vrf, peer, afi, safi).
     _write_table(tmp_path, "bgp", "dc1", "dc1-spine1", pd.DataFrame([
         {"hostname": "dc1-spine1", "vrf": "default", "peer": "10.1.4.1",
+         "afi": "ipv4", "safi": "unicast",
          "state": "Established", "timestamp": 1700000000000},
     ]))
     return tmp_path
@@ -97,17 +99,21 @@ class TestReadTable:
         assert df.empty
 
     def test_latest_row_per_pk(self, populated_parquet):
-        """Two timestamped rows for the same (namespace, hostname,
-        peer) - the later one wins. This is the SuzieQ view='latest'
-        equivalent we re-implement in state.py."""
+        """Two timestamped rows for the same full SuzieQ PK
+        (ns, host, vrf, peer, afi, safi) - the later one wins.
+        This is the SuzieQ view='latest' equivalent we re-
+        implement in state.py."""
         _write_table(populated_parquet, "bgp", "dc1", "dc1-spine1", pd.DataFrame([
             {"hostname": "dc1-spine1", "vrf": "default", "peer": "10.1.4.1",
+             "afi": "ipv4", "safi": "unicast",
              "state": "NotEstd",       "timestamp": 1700000000000},
             {"hostname": "dc1-spine1", "vrf": "default", "peer": "10.1.4.1",
+             "afi": "ipv4", "safi": "unicast",
              "state": "Established",   "timestamp": 1700000999999},
         ]))
         df = read_table("bgp", "dc1", str(populated_parquet),
-                        pk=("namespace", "hostname", "vrf", "peer"))
+                        pk=("namespace", "hostname", "vrf",
+                            "peer", "afi", "safi"))
         # Only one row should remain after dedup, and it's the
         # later (Established) one
         assert len(df) == 1
@@ -175,69 +181,157 @@ class TestCollect:
         assert state.lldp.empty
         assert state.bgp.empty
 
-    def test_bgp_phantom_vrf_rows_dropped(self, tmp_path):
-        """REGRESSION GUARD for the phantom-vrf bug discovered live
-        2026-04-11 during Part C assertion verification.
+    def test_bgp_partial_view_rows_dropped(self, tmp_path):
+        """REGRESSION GUARD for the partial-view bug discovered
+        live 2026-04-11 during Part C assertion verification, with
+        the explanation subsequently corrected after the user
+        pointed out the earlier analysis was wrong.
 
-        Junos emits each BGP peer TWICE in `show bgp neighbor |
-        display json`: once with vrf='default' (the real routing-
-        instance view) and once with vrf='' (the 'main instance'
-        view). The SuzieQ engine disambiguates these via
-        `np.where(origPeer != '', origPeer, peer)` and only returns
-        the real row.
+        ## What actually happens
 
-        Our direct pyarrow read path bypasses the engine, so BEFORE
-        the cleanup hook was added we kept BOTH rows and the
-        drop_duplicates(vrf-in-PK) picked whichever came last in
-        sort order. During session transitions the phantom empty-
-        vrf row would lag behind the real row, producing false
-        positive 'NotEstd' state reports from assertions while
-        suzieq-cli was correctly reporting Established.
+        Verified against vJunos 23.2R1.14 and the SuzieQ bgp
+        service yaml directly:
 
-        The cleanup hook in state._cleanup_bgp_phantom_rows drops
-        the empty-vrf rows entirely."""
-        # Write a paired-row fixture: same (hostname, peer), same
-        # timestamp, different vrf.
+          1. Junos `show bgp neighbor | display json` returns
+             EXACTLY one entry per peer (not two). The earlier
+             "Junos emits each peer twice" theory was wrong.
+
+          2. SuzieQ's Junos bgp normalize pipeline runs TWO
+             commands: `show bgp summary` (extracts vrf +
+             per-AFI pfx counts) and `show bgp neighbor`
+             (extracts state + per-session fields). Neither
+             command's normalize spec extracts both vrf AND
+             state in one row.
+
+          3. In steady state the suzieq engine merges the two
+             command outputs into one row per (vrf, peer, afi,
+             safi). Coalescer keeps the merged rows.
+
+          4. During BGP session state TRANSITIONS (fault ->
+             recovery), the pipeline writes partial-view rows
+             to raw parquet before the merge completes. The
+             partial rows have empty vrf, empty afi, empty safi,
+             and state=NotEstd. They are visible to direct
+             pyarrow reads but NOT to suzieq-cli.
+
+        ## The fix
+
+        The cleanup hook drops rows where vrf, afi, OR safi is
+        empty. An empty-AFI or empty-vrf BGP row is structurally
+        meaningless (a session is always in a routing-instance
+        and always negotiates a specific AFI/SAFI), so dropping
+        them is correct. The bgp read also uses the full schema
+        PK (ns, host, vrf, peer, afi, safi) so dedup happens on
+        the same key suzieq itself uses.
+        """
         _write_table(tmp_path, "bgp", "dc1", "dc1-leaf1", pd.DataFrame([
+            # Real merged row
             {"vrf": "default", "peer": "10.1.0.1",
+             "afi": "l2vpn", "safi": "evpn",
              "state": "Established", "timestamp": 1700000000000},
+            # Partial-view row from the bgp-neighbor command
+            # only - state but no vrf/afi/safi
             {"vrf": "", "peer": "10.1.0.1",
+             "afi": "", "safi": "",
              "state": "NotEstd", "timestamp": 1700000000000},
         ]))
         df = read_table("bgp", "dc1", str(tmp_path),
-                        pk=("namespace", "hostname", "vrf", "peer"))
-        # Only the vrf="default" row should survive
+                        pk=("namespace", "hostname", "vrf",
+                            "peer", "afi", "safi"))
+        # Only the real merged row should survive
         assert len(df) == 1
         assert df.iloc[0]["state"] == "Established"
         assert df.iloc[0]["vrf"] == "default"
 
-    def test_bgp_phantom_cleanup_handles_all_empty_vrf(self, tmp_path):
-        """Edge case: every row has vrf='' (unlikely but possible
-        during poller first-cycle or a SuzieQ Junos parser bug).
-        The cleanup must leave the empty DataFrame intact rather
-        than crashing."""
+    def test_bgp_partial_view_any_empty_structural_field(self, tmp_path):
+        """Any of (vrf, afi, safi) empty is enough to drop the
+        row. Covers the case where the Junos pipeline writes a
+        row with vrf='default' but empty afi/safi (which does
+        happen during transitions - the vrf comes from the
+        summary command's fallback while afi/safi come from the
+        rib iteration that hasn't completed yet)."""
+        _write_table(tmp_path, "bgp", "dc1", "dc1-leaf1", pd.DataFrame([
+            # vrf set but afi/safi missing - still partial
+            {"vrf": "default", "peer": "10.1.0.1",
+             "afi": "", "safi": "",
+             "state": "Established", "timestamp": 1700000000000},
+            # The real merged row for the same peer
+            {"vrf": "default", "peer": "10.1.0.1",
+             "afi": "l2vpn", "safi": "evpn",
+             "state": "Established", "timestamp": 1700000000000},
+        ]))
+        df = read_table("bgp", "dc1", str(tmp_path),
+                        pk=("namespace", "hostname", "vrf",
+                            "peer", "afi", "safi"))
+        assert len(df) == 1
+        assert df.iloc[0]["afi"] == "l2vpn"
+
+    def test_bgp_cleanup_handles_all_partial(self, tmp_path):
+        """Edge case: every row is partial (unlikely but possible
+        during poller first-cycle before any summary command has
+        completed). The cleanup must leave the empty DataFrame
+        intact rather than crashing."""
         _write_table(tmp_path, "bgp", "dc1", "dc1-leaf1", pd.DataFrame([
             {"vrf": "", "peer": "10.1.0.1",
+             "afi": "", "safi": "",
              "state": "Idle", "timestamp": 1700000000000},
         ]))
         df = read_table("bgp", "dc1", str(tmp_path),
-                        pk=("namespace", "hostname", "vrf", "peer"))
+                        pk=("namespace", "hostname", "vrf",
+                            "peer", "afi", "safi"))
         assert df.empty
 
     def test_bgp_cleanup_preserves_non_empty_vrfs(self, tmp_path):
-        """Multi-VRF routing: a leaf with peers in vrf='default' AND
-        vrf='TENANT-1' should keep BOTH rows. The cleanup only
-        drops EMPTY vrf, not non-default ones."""
+        """Multi-VRF routing: a leaf with peers in vrf='default'
+        AND vrf='TENANT-1' should keep BOTH rows. The cleanup
+        only drops rows where a structural field is empty, not
+        non-default vrfs."""
         _write_table(tmp_path, "bgp", "dc1", "dc1-leaf1", pd.DataFrame([
             {"vrf": "default", "peer": "10.1.0.1",
+             "afi": "l2vpn", "safi": "evpn",
              "state": "Established", "timestamp": 1700000000000},
             {"vrf": "TENANT-1", "peer": "10.10.10.1",
+             "afi": "ipv4", "safi": "unicast",
              "state": "Established", "timestamp": 1700000000000},
         ]))
         df = read_table("bgp", "dc1", str(tmp_path),
-                        pk=("namespace", "hostname", "vrf", "peer"))
+                        pk=("namespace", "hostname", "vrf",
+                            "peer", "afi", "safi"))
         assert len(df) == 2
         assert set(df["vrf"]) == {"default", "TENANT-1"}
+
+    def test_bgp_pk_distinguishes_same_peer_different_afi(self, tmp_path):
+        """REGRESSION GUARD for the independent PK bug. SuzieQ's
+        bgp schema PK is (ns, host, vrf, peer, afi, safi). A
+        single peer IP has MULTIPLE legitimate rows - one per
+        AFI/SAFI combination. In this lab the overlay iBGP peer
+        has one l2vpn/evpn row AND the underlay eBGP peer has
+        one ipv4/unicast row at the SAME peer IP. The earlier
+        4-field PK (ns, host, vrf, peer) was collapsing distinct
+        AFI/SAFI rows silently and dropping one arbitrarily
+        based on sort stability. The full 6-field PK keeps
+        them."""
+        _write_table(tmp_path, "bgp", "dc1", "dc1-leaf1", pd.DataFrame([
+            # Overlay peer, l2vpn/evpn
+            {"vrf": "default", "peer": "10.1.0.1",
+             "afi": "l2vpn", "safi": "evpn",
+             "state": "Established", "timestamp": 1700000000000},
+            # Hypothetical second session on the same peer IP
+            # with a different AFI/SAFI. In real Junos this
+            # would be the same underlying session negotiating
+            # two families, but SuzieQ's schema PK treats them
+            # as distinct rows.
+            {"vrf": "default", "peer": "10.1.0.1",
+             "afi": "ipv4", "safi": "unicast",
+             "state": "Established", "timestamp": 1700000000000},
+        ]))
+        df = read_table("bgp", "dc1", str(tmp_path),
+                        pk=("namespace", "hostname", "vrf",
+                            "peer", "afi", "safi"))
+        assert len(df) == 2
+        assert set(zip(df["afi"], df["safi"])) == {
+            ("l2vpn", "evpn"), ("ipv4", "unicast"),
+        }
 
     def test_reads_from_both_coalesced_and_raw_dirs(self, tmp_path):
         """The poller writes to <table>/ and the coalescer compacts
