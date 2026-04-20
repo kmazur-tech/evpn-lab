@@ -26,6 +26,8 @@ import pytest
 from questions import (
     ALL_CHECKS,
     ALL_DIFFS,
+    IGNORED_INIT_ISSUE_PATTERNS,
+    IGNORED_REF_STRUCT_TYPES,
     check_bgp_sessions,
     check_init_issues,
     check_overlay_loopback_reachability,
@@ -157,6 +159,52 @@ def test_undefined_references_clean_after_filter(bf_session):
     assert r.passed
     # The vlan struct_type filter must be doing its job
     assert "false positive" in r.summary or "no undefined references" == r.summary.split(" (")[0]
+
+
+def test_ignored_init_issue_patterns_still_fire(bf_session):
+    """Every IGNORED_INIT_ISSUE_PATTERNS entry must still match at
+    least one row in the live initIssues() output. If Batfish ever
+    gains mac-vrf support (batfish#5036) and stops emitting these
+    rows, the filter is dead code; this test fires a clear
+    'pattern X is no longer fired' message so the entry can be
+    deleted instead of silently carried. Reference output:
+    tests/fixtures/raw_init_issues_2026-04-11.txt."""
+    df = bf_session.q.initIssues().answer().frame()
+    assert "Details" in df.columns, f"initIssues has no Details column: {list(df.columns)}"
+    all_details = df["Details"].astype(str).tolist()
+    unmatched = [
+        pattern for pattern in IGNORED_INIT_ISSUE_PATTERNS
+        if not any(pattern in d for d in all_details)
+    ]
+    assert not unmatched, (
+        f"IGNORED_INIT_ISSUE_PATTERNS entries no longer fire against real "
+        f"Batfish output: {unmatched}. Either Batfish fixed the underlying "
+        f"mac-vrf gap (check batfish#5036) and the filter is dead code, or "
+        f"the Phase 3 render shape changed. Regenerate the fixture via "
+        f"tests/fixtures/capture_raw_output.py and re-evaluate."
+    )
+
+
+def test_ignored_ref_struct_types_still_appear(bf_session):
+    """Companion to the init-issue check above. Every
+    IGNORED_REF_STRUCT_TYPES entry must still appear in live
+    undefinedReferences() output. If the set becomes dead, Batfish
+    closed the mac-vrf gap and the filter should be removed."""
+    df = bf_session.q.undefinedReferences().answer().frame()
+    if df.empty:
+        pytest.fail(
+            f"undefinedReferences returned no rows at all. Either Batfish "
+            f"fixed batfish#5036 (delete IGNORED_REF_STRUCT_TYPES) or the "
+            f"Phase 3 render no longer emits mac-vrf-scoped vlan references. "
+            f"Regenerate the fixture via tests/fixtures/capture_raw_output.py."
+        )
+    types_seen = set(df["Struct_Type"].astype(str))
+    unmatched = IGNORED_REF_STRUCT_TYPES - types_seen
+    assert not unmatched, (
+        f"IGNORED_REF_STRUCT_TYPES entries no longer appear in raw "
+        f"undefinedReferences: {unmatched}. Types actually seen: {types_seen}. "
+        f"If Batfish closed batfish#5036, delete these entries."
+    )
 
 
 # ----- Differential analysis -----------------------------------------
