@@ -73,12 +73,14 @@ def _frame_to_str(df: pd.DataFrame, max_rows: int = 20) -> str:
 
 # Init-issue Details substrings we ignore as known false positives.
 # Both of these are downstream effects of the SAME Batfish gap:
-# the Junos parser does not track VLAN definitions inside
-# `routing-instances ... mac-vrf { vlans { ... } }`, so VLANs
-# referenced from `family ethernet-switching` show as "no vlan-id
-# assigned" even though real Junos resolves them fine. The IRBs
-# bound to those VLANs then get deactivated as a downstream effect.
-# Same root cause as IGNORED_REF_STRUCT_TYPES = {"vlan"} above.
+# FlatJuniper_routing_instances.g4 ri_instance_type has no MAC_VRF
+# token, and ri_named_routing_instance has no `vlans` child rule,
+# so `routing-instances X { instance-type mac-vrf; vlans { VLANY {} } }`
+# never populates the VLAN symbol table. IRBs bound to those VLANs
+# then get deactivated as a downstream effect. Same root cause as
+# IGNORED_REF_STRUCT_TYPES = {"vlan"} below. Tracked upstream in
+# batfish#5036 (Juniper VXLAN support). Raw Batfish output backing
+# these exact substrings: tests/fixtures/raw_init_issues_2026-04-11.txt.
 IGNORED_INIT_ISSUE_PATTERNS = (
     "Cannot assign access vlan to interface",  # access port + VLAN binding
     "Deactivating irb",                         # IRB downstream of above
@@ -256,13 +258,16 @@ def check_bgp_edges_symmetric(bf: Session) -> CheckResult:
 
 
 # Struct types we ignore in undefined_references because Batfish's
-# Junos parser doesn't fully model where they're defined:
+# Junos parser has no grammar rule for where they're defined:
 #
-# - "vlan": VLANs defined inside `routing-instances ... mac-vrf { vlans
-#   { VLAN10 ... } }` are not tracked across the mac-vrf scope, so any
-#   `family ethernet-switching vlan members VLAN10` on an access port
-#   shows up as "undefined" even though real Junos resolves it fine.
-#   This is a Batfish EVPN-modeling gap, not a config bug.
+# - "vlan": FlatJuniper_routing_instances.g4 ri_named_routing_instance
+#   has no `vlans` child rule, and ri_instance_type has no MAC_VRF
+#   token, so `routing-instances X { instance-type mac-vrf; vlans
+#   { VLAN10 {...} } }` never calls enterS_vlans_named and VLAN10
+#   never reaches the symbol table. Any `family ethernet-switching
+#   vlan members VLAN10` then shows up as "undefined" even though
+#   real Junos resolves it fine. Tracked upstream in batfish#5036.
+#   Raw capture: tests/fixtures/raw_init_issues_2026-04-11.txt.
 IGNORED_REF_STRUCT_TYPES = {"vlan"}
 
 
