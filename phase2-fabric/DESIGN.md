@@ -328,10 +328,16 @@ These are decisions that exist purely because this is a lab on vJunos:
 - **No PFE-level BFD**, so BFD intervals cannot go below 1000ms. The
   lab uses 1000x3 (3s detection); production-class hardware would use
   300x3 (900ms) or smaller.
-- **No `vxlan-routing overlay-ecmp`** (PFE-only feature, not in
-  vJunos). Underlay ECMP works via the LOAD-BALANCE policy; the
-  overlay-ecmp knob is for VXLAN-to-VXLAN routing scale and is
-  irrelevant in this lab.
+- **No `forwarding-options vxlan-routing` hierarchy**. Verified 2026-04-11
+  on dc1-leaf1 vJunos 23.2R1.14 via `configure private; set forwarding-options
+  vxlan-routing; commit check` - the parser returns `syntax error` with
+  the caret pointing at `vxlan-routing`, meaning the entire hierarchy
+  (`overlay-ecmp`, `next-hop` scaling, `shared-tunnels`) is absent on
+  this platform, not just one leaf knob. Underlay ECMP still works via
+  the LOAD-BALANCE policy + `multipath multiple-as` (that path lives
+  under `routing-options`, unrelated). The `vxlan-routing` hierarchy is
+  for PFE-level VXLAN-to-VXLAN routing scale tuning and is irrelevant
+  in this lab regardless.
 - **No operational view of `forwarding-options storm-control-profiles`**
   on vJunos-switch (`show forwarding-options storm-control-profiles`
   and `show ethernet-switching storm-control` both return "syntax

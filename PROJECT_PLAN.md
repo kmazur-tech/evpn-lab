@@ -77,9 +77,10 @@ Scope:
 
 Production-only features (NOT testable on vJunos-switch single-RE virtual platform - documented for completeness, deferred to real hardware):
 - `nonstop-routing` and `layer2-control nonstop-bridging` (require dual RE)
-- `network-services enhanced-ip` (QFX-only)
-- `vxlan-routing overlay-ecmp` (PFE-only feature, not in vJunos)
+- `forwarding-options vxlan-routing` hierarchy (the whole hierarchy is absent from the vJunos parser - verified 2026-04-11 on dc1-leaf1 vJunos 23.2R1.14 via `configure private; set forwarding-options vxlan-routing; commit check` -> `syntax error` pointing at `vxlan-routing`. Blocks `overlay-ecmp`, `next-hop` table sizing, and `shared-tunnels` scale tuning on this platform.)
 - BFD sub-second timers (vJunos PFE-less BFD won't run faster than 1000ms)
+
+Note on `chassis network-services enhanced-ip`: previously listed here as "QFX-only / not in vJunos". Verified live 2026-04-11 that vJunos 23.2R1.14 accepts the knob at parse level (`commit check` succeeds), so the parser-level limitation claim was wrong. Runtime effect on the simulated PFE was not tested because nothing in the lab needs the feature; if a future phase requires it, verify properly there.
 
 Validated against two production EVPN-VXLAN fabrics. Earlier revisions of this lab carried `no-arp-suppression` per VLAN and a static-ARP workaround on hosts because vJunos-switch IRBs were assumed to not generate ARP replies. That assumption was wrong - the bug was `no-arp-suppression` itself, which disabled the EVPN ARP-snoop-and-reply mechanism. With ARP suppression at its Junos default (ON), leaves snoop local host ARPs into the EVPN database, originate Type-2 (MAC+IP) routes, and reply locally to gateway ARPs. Hosts learn the anycast gateway MAC dynamically without any host-side workaround.
 

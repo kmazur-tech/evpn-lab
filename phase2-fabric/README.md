@@ -52,8 +52,9 @@ Note: `proxy-macip-advertisement` is **not** supported on vJunos-switch / EX9200
 |---------|--------|--------------------------|
 | `nonstop-routing` | Requires dual-RE graceful-switchover | Enable on production devices |
 | `nonstop-bridging` | Same dual-RE dependency | Enable alongside nonstop-routing |
-| `network-services enhanced-ip` | Not supported on vjunos | Required on some QFX platforms |
-| `vxlan-routing overlay-ecmp` | Not supported on vjunos | Enables ECMP across VXLAN tunnels |
+| `forwarding-options vxlan-routing` hierarchy | Parser rejects the whole hierarchy (`set forwarding-options vxlan-routing` -> `syntax error` pointing at `vxlan-routing`, verified via `commit check` on dc1-leaf1 vJunos 23.2R1.14 2026-04-11). Means `overlay-ecmp`, `next-hop` scaling, and `shared-tunnels` tuning cannot be expressed on this platform. | Enables ECMP across VXLAN tunnels and PFE tunnel scale tuning on real QFX/MX hardware |
+
+> Note: `chassis network-services enhanced-ip` is deliberately NOT in this limitations table. It was listed here in an earlier revision, but `commit check` on dc1-leaf1 vJunos 23.2R1.14 accepts the knob (`configuration check succeeds`). Runtime effect on the simulated PFE is untested because the lab does not use the feature; a future phase that needs it should verify live.
 
 ### Virtual platform choice
 
@@ -230,4 +231,4 @@ Phase 6 CI/CD will run smoke from a self-hosted runner **on** the lab server for
 | Test | Reason |
 |------|--------|
 | nonstop-routing failover | Requires dual-RE |
-| ECMP overlay | vxlan-routing overlay-ecmp not supported |
+| ECMP overlay (vxlan-routing overlay-ecmp) | `forwarding-options vxlan-routing` hierarchy not in vJunos parser (syntax error, verified 2026-04-11) |
