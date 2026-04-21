@@ -109,7 +109,7 @@ Offline structural validation of rendered configs before they touch any device. 
 
 Scope intentionally narrowed from "everything Batfish can do" to "what Batfish models reliably on Junos". The two boundaries below are deliberate, not gaps:
 
-- **Runtime EVPN behaviors** (Type-2/3/5 propagation, ESI-LAG, DF election, BFD convergence) are owned by the Phase 2 smoke suite, which validates them on the live fabric. Batfish's Junos EVPN modeling is partial ([batfish#5036](https://github.com/batfish/batfish/issues/5036), [#7289](https://github.com/batfish/batfish/issues/7289)); duplicating Phase 2 here would add false positives without signal.
+- **Runtime EVPN behaviors** (Type-2/3/5 propagation, ESI-LAG, DF election, BFD convergence) are owned by the Phase 2 smoke suite, which validates them on the live fabric. Batfish's Junos EVPN modeling is partial - tracked upstream in [batfish#5036](https://github.com/batfish/batfish/issues/5036) (Juniper VXLAN support, still open); duplicating Phase 2 here would add false positives without signal.
 - **ACL/firewall analysis** (`testFilters` / `searchFilters` for BGP/VXLAN UDP 4789/BFD reachability) is deferred to Phase 8 (CIS/PCI-DSS hardening). The current rendered configs have zero filters, so there's nothing to analyze; the analysis becomes load-bearing once management ACLs land.
 - **Route-target consistency** is already enforced by the Phase 3 byte-exact regression gate against `phase3-nornir/expected/`. Re-checking it in Batfish would duplicate without adding signal.
 

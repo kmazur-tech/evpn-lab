@@ -1,13 +1,25 @@
 """Tests for assert_safe_to_deploy() - the on-disk pre-deploy guard.
 
-This is the safety net whose absence caused the placeholder-hash
-credential lockout. NAPALM compare_config silently passes placeholder
-hashes because Junos masks SECRET-DATA fields in diffs. The on-disk
-guard scans the rendered file independently before any NAPALM call
-and rejects sentinel strings or malformed hash shapes.
+The guard scans the rendered config file on disk for sentinel strings
+('PLACEHOLDER', 'render-time-only', '<HASH>', 'TODO', 'REPLACE_ME')
+and for encrypted-password lines that do not match the SHA-512 crypt
+shape '$6$<salt>$<86chars>'. Any match rejects the deploy before
+NAPALM is called.
 
-Each scenario here corresponds to a real failure mode that should
-NEVER reach a device.
+Context: a render bug that produces a literal placeholder in an
+encrypted-password field gets committed to the device by NAPALM the
+same way a real hash would, and once it lands on all four leaves at
+once the lab is locked out. The guard catches the bad bytes at the
+renderer layer so they never reach NAPALM.
+
+NAPALM's compare_config is honest about secret fields - it shows
+full encrypted-password changes in its diff. The guard exists
+because NAPALM faithfully commits whatever bytes the renderer
+produces, not because NAPALM hides anything; see deploy.py and
+test_napalm_diff_contract.py for the wrapper-side contract.
+
+Each scenario here is a failure mode that should never reach a
+device.
 """
 import pytest
 
