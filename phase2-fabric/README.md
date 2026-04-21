@@ -55,14 +55,11 @@ Note: `proxy-macip-advertisement` is **not** supported on vJunos-switch / EX9200
 | `network-services enhanced-ip` | Not supported on vjunos | Required on some QFX platforms |
 | `vxlan-routing overlay-ecmp` | Not supported on vjunos | Enables ECMP across VXLAN tunnels |
 
-### Alternative virtual platforms considered
+### Virtual platform choice
 
-| Platform | IRB L3 | Status | Issue |
-|----------|--------|--------|-------|
-| vjunos-switch | Works (default ARP suppression) | Active, free | - |
-| vjunos-router (vMX) | Full support | Active, free | Different config syntax (bridge-domains) |
-| vPTX (vJunosEvolved) | Partial | Active, free | Anycast MAC ignored |
-| vQFX | Full support | Abandoned | Last version ~2020 (Junos 19.4) |
+This lab uses **vjunos-switch** (the vrnetlab image `juniper_vjunos-switch:23.2R1.14`, emulating EX9214). The alternative free virtual Junos platform that is verified to work with mac-vrf EVPN-VXLAN in this project is **vjunos-router** (vMX), but its config tree uses `bridge-domains` with `routing-interface`, incompatible with the Phase 2/3 templates that emit `mac-vrf` with `vlans { l3-interface ... }`.
+
+Other Junos virtual platforms (vPTX / vJunosEvolved, vQFX) were not tested for this lab. Trade-off analyses between them are out of scope here - a future phase that actually runs one of them should document verified behavior, not secondhand claims.
 
 ## Platform-Specific Syntax (vjunos-switch)
 
