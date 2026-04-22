@@ -1,0 +1,62 @@
+[Unit]
+# Phase 5 Part D: hourly time-window summary.
+#
+# One-shot oneshot unit that runs the drift harness in
+# `--mode timeseries --window 1h --json`. Writes the resulting
+# envelope to /var/log/suzieq-drift/timeseries-latest.json so the
+# operator (or a Phase 6 log shipper) can read the most recent
+# hour's flap / churn / mac-mobility summary without re-running
+# the query.
+#
+# Same operational shape as Part C's suzieq-drift-assert.service:
+# needs no NetBox credentials, runs from the same Suzieq stack
+# directory, sources the same env file. Differences:
+#   - cadence is hourly, not 5-minute (windows are wider, results
+#     are smoother, no need for high frequency)
+#   - exit code is always 0 on a clean run; timeseries observations
+#     are not pass/fail. The unit "failing" only signals harness
+#     breakage, never a noisy fabric.
+#   - output goes to a JSON file, not just the journal, so log
+#     shippers and the next session of the operator-in-residence
+#     can read the latest report without re-running.
+
+Description=Suzieq Part D timeseries summary (one-shot, hourly)
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+
+# WorkingDirectory must be where docker-compose.yml lives.
+# Override via /etc/systemd/system/suzieq-drift-timeseries.service.d/
+# override.conf if the stack lives elsewhere.
+WorkingDirectory=/opt/suzieq
+
+# Same env file as the assertions service. The drift container
+# does not read NetBox in timeseries mode either, but docker
+# compose still substitutes ${VAR} references in compose.yml at
+# command time.
+EnvironmentFile=/opt/evpn-lab-env/env.sh
+
+# Make sure the output directory exists. RuntimeDirectory would
+# put it under /run (cleared at reboot), which we do not want -
+# the file is meant to survive a reboot so the operator returning
+# Monday morning can see Friday afternoon's last summary.
+ExecStartPre=/usr/bin/install -d -m 0755 /var/log/suzieq-drift
+
+# The actual command. --mode timeseries with --window 1h covers
+# the previous hour. JSON output is redirected to the latest
+# file. Operator can run `cat /var/log/suzieq-drift/timeseries-latest.json`
+# or `journalctl -u suzieq-drift-timeseries.service` to inspect.
+#
+# We use `bash -c` to redirect because docker compose itself does
+# not have a built-in --output flag.
+ExecStart=/bin/bash -c '/usr/bin/docker compose run --rm drift --mode timeseries --window 1h --json > /var/log/suzieq-drift/timeseries-latest.json'
+
+# stdout to journal as well so the journal has the run record
+# even though the JSON went to the file. stderr always to journal.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

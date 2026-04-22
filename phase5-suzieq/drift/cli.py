@@ -9,16 +9,20 @@ state.collect() -> diff.compare() -> output. Two output formats:
             netdevops-srv.
 
 Exit codes (the contract Phase 6 CI relies on):
-  0  no drift
-  1  drift found (Phase 6 treats this as soft-fail / warn,
-     per PROJECT_PLAN.md:200 "Soft fail = warn")
+  0  no drift (or for --mode timeseries: harness ran cleanly,
+     timeseries results are observations not pass/fail and
+     never produce a non-zero exit on their own)
+  1  drift / assertion failure found (Phase 6 treats this as
+     soft-fail / warn, per PROJECT_PLAN.md:200 "Soft fail = warn")
   2  tooling error (NetBox unreachable, parquet path missing,
-     etc.). CI should distinguish "drift found" from "harness
-     could not run" - the second is a real failure.
+     bad CLI args, etc.). CI should distinguish "drift found"
+     from "harness could not run" - the second is a real failure.
 
 Run pattern (lab):
   docker compose run --rm drift python -m drift.cli --json
   docker compose run --rm drift python -m drift.cli --human
+  docker compose run --rm drift python -m drift.cli \\
+      --mode timeseries --window 1h --human
 
 The container's docker-compose.yml mounts:
   - /suzieq/parquet (read-only) - the suzieq_parquet docker volume
@@ -29,6 +33,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from typing import List
 
@@ -38,6 +43,10 @@ from .intent import collect as collect_intent
 from .state import collect as collect_state, DEFAULT_PARQUET_DIR
 from .diff import compare, Drift, SEVERITY_ERROR, SEVERITY_WARNING
 from .assertions import run_all as run_all_assertions
+from .timeseries.partition import parse_duration
+from .timeseries.reader import TimeWindow, window_read
+from .timeseries.queries import QUERIES
+from .timeseries.envelope import build_envelope, emit_human as ts_emit_human, emit_json as ts_emit_json
 
 
 EXIT_OK            = 0
@@ -72,7 +81,7 @@ def parse_args(argv=None):
     p.set_defaults(format="json")
     p.add_argument(
         "--mode", default=os.environ.get("DRIFT_MODE", "drift"),
-        choices=("drift", "assertions", "all"),
+        choices=("drift", "assertions", "all", "timeseries"),
         help=(
             "What to run: "
             "'drift' = NetBox-vs-SuzieQ intent diff (Part B, default - "
@@ -80,10 +89,157 @@ def parse_args(argv=None):
             "'assertions' = state-only invariants via the assertions "
             "package (Part C - no NetBox access needed, suitable for "
             "systemd-timer scheduling); "
-            "'all' = both, combined output"
+            "'all' = drift+assertions, combined output; "
+            "'timeseries' = Part D time-window queries (bgp_flaps, "
+            "route_churn, mac_mobility) over the parquet history. "
+            "No NetBox needed. Use --window or --from/--to to set the "
+            "window. Output is the timeseries envelope, NOT the "
+            "drift envelope."
         ),
     )
+    p.add_argument(
+        "--window", default=None,
+        help=(
+            "Timeseries mode: window duration relative to now, e.g. "
+            "'5m', '1h', '24h', '7d'. Mutually exclusive with "
+            "--from/--to. Smallest practical resolution is 1m "
+            "(poller cadence)."
+        ),
+    )
+    p.add_argument(
+        "--from", dest="from_epoch", type=int, default=None,
+        help=(
+            "Timeseries mode: absolute window start as unix epoch "
+            "seconds. Pair with --to. Mutually exclusive with --window."
+        ),
+    )
+    p.add_argument(
+        "--to", dest="to_epoch", type=int, default=None,
+        help="Timeseries mode: absolute window end as unix epoch seconds.",
+    )
     return p.parse_args(argv)
+
+
+def resolve_window(args, now=None) -> TimeWindow:
+    """Translate the CLI window flags into a concrete TimeWindow.
+
+    Accepts EITHER --window <duration> (relative to now) OR
+    --from <epoch> --to <epoch> (absolute), but not both.
+
+    Raises ValueError on invalid combinations - the CLI catches
+    this and returns EXIT_TOOLING_ERROR with the message printed
+    to stderr.
+
+    The `now` arg is injectable so tests can pin the relative
+    window math without monkey-patching time.time.
+    """
+    has_relative = args.window is not None
+    has_absolute = args.from_epoch is not None or args.to_epoch is not None
+
+    if has_relative and has_absolute:
+        raise ValueError(
+            "--window is mutually exclusive with --from/--to; "
+            "pass exactly one form"
+        )
+
+    if has_absolute:
+        if args.from_epoch is None or args.to_epoch is None:
+            raise ValueError(
+                "--from and --to must be passed together "
+                "(both as unix epoch seconds)"
+            )
+        if args.from_epoch >= args.to_epoch:
+            raise ValueError(
+                f"--from ({args.from_epoch}) must be strictly less than "
+                f"--to ({args.to_epoch})"
+            )
+        return TimeWindow(args.from_epoch, args.to_epoch)
+
+    if has_relative:
+        seconds = parse_duration(args.window)
+        if seconds <= 0:
+            raise ValueError(f"--window must be a positive duration, got {args.window!r}")
+        if now is None:
+            now = int(time.time())
+        return TimeWindow(now - seconds, now)
+
+    raise ValueError(
+        "--mode timeseries requires either --window or --from/--to"
+    )
+
+
+def run_timeseries(args) -> int:
+    """Part D entry point. Reads the requested window for each table
+    needed by the registered queries, runs each query against its
+    WindowedTable, builds the envelope, emits, returns exit code.
+
+    Exit codes:
+      0   harness ran cleanly (timeseries results are observations,
+          not pass/fail - they never produce non-zero on their own)
+      2   tooling error (bad window args, parquet path missing)
+
+    Notably there is NO exit code 1 from this mode. The whole point
+    of timeseries queries is to surface neutral observations the
+    operator interprets in context. A flap count of 1000 in the last
+    hour is alarming, but the harness has no business deciding what
+    threshold makes a result "fail" - that's a job for assertions
+    (--mode assertions) which DO have pass/fail semantics.
+    """
+    try:
+        window = resolve_window(args)
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return EXIT_TOOLING_ERROR
+
+    # Read each distinct table once and cache, so two queries
+    # against the same table don't re-walk the parquet store.
+    tables_needed = sorted({entry.table for entry in QUERIES.values()})
+    windowed_tables = {}
+    files_read_by_table = {}
+    for table in tables_needed:
+        try:
+            wt = window_read(
+                table=table,
+                namespace=args.namespace,
+                start_epoch=window.start_epoch,
+                end_epoch=window.end_epoch,
+                parquet_dir=args.parquet_dir,
+            )
+        except Exception as e:
+            print(
+                f"ERROR: parquet read failed for table {table!r}: {e}",
+                file=sys.stderr,
+            )
+            return EXIT_TOOLING_ERROR
+        windowed_tables[table] = wt
+        files_read_by_table[table] = wt.files_read
+
+    # Run queries in registry order so the envelope output is stable.
+    results = []
+    for name, entry in QUERIES.items():
+        wt = windowed_tables[entry.table]
+        try:
+            results.append(entry.fn(wt))
+        except Exception as e:
+            print(
+                f"ERROR: query {name!r} failed: {e}",
+                file=sys.stderr,
+            )
+            return EXIT_TOOLING_ERROR
+
+    envelope = build_envelope(
+        namespace=args.namespace,
+        window=window,
+        results=results,
+        files_read_by_table=files_read_by_table,
+    )
+
+    if args.format == "json":
+        ts_emit_json(envelope)
+    else:
+        ts_emit_human(envelope)
+
+    return EXIT_OK
 
 
 def run(args) -> int:
@@ -91,15 +247,25 @@ def run(args) -> int:
     main() so tests can drive run() with hand-built args without
     parsing argv.
 
-    Three modes:
+    Four modes:
       drift       = Part B NetBox-vs-state diff. Needs NetBox creds.
       assertions  = Part C state-only invariant checks. Skips
                     NetBox entirely - suitable for systemd-timer
                     scheduling because it has no external
                     credential dependency.
-      all         = both, combined into one output record.
+      all         = drift + assertions, combined into one output record.
+      timeseries  = Part D time-window queries. Different output
+                    envelope (richer time-series shape, not the
+                    drift {result, total, passed, failed} shape).
+                    No NetBox needed.
     """
-    # State is always needed regardless of mode.
+    # Timeseries has its own collect/emit path - dispatch early so
+    # we don't pay for the latest-snapshot state read it doesn't
+    # need.
+    if args.mode == "timeseries":
+        return run_timeseries(args)
+
+    # State is always needed for drift / assertions / all modes.
     try:
         state = collect_state(args.namespace, args.parquet_dir)
     except Exception as e:

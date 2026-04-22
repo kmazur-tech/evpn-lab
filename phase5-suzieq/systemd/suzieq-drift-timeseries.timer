@@ -1,0 +1,58 @@
+[Unit]
+# Timer driver for suzieq-drift-timeseries.service.
+#
+# Runs the Part D hourly summary at the top of every hour. The
+# cadence matches Part D's natural window: a 1-hour --window
+# fired every hour gives back-to-back coverage with no overlap
+# and no gaps.
+#
+# Why 1 hour and not faster:
+#   - The coalesced parquet files are written hourly, so a more
+#     frequent cadence would just reread the same data.
+#   - Operators don't need sub-hour latency on the "what
+#     happened recently?" question - that's what Part C
+#     assertions cover (5-minute cadence, focused on invariant
+#     violations).
+#   - Cheap on netdevops-srv: one container start per hour is
+#     negligible CPU.
+#
+# Why 1 hour and not slower:
+#   - 1 hour is the natural floor of the parquet partition
+#     scheme. Hourly summaries align with file boundaries so
+#     each summary covers exactly one coalesced window.
+#   - Slower cadences (e.g. daily) would lose the
+#     "freshness" property: the file `timeseries-latest.json`
+#     should be at most ~1 hour old at any time, so an
+#     operator opening it sees recent data.
+#
+# Override via drop-in:
+#   /etc/systemd/system/suzieq-drift-timeseries.timer.d/override.conf
+#
+#   [Timer]
+#   OnCalendar=
+#   OnCalendar=*:0/30      # every 30 minutes (rarely useful)
+
+Description=Suzieq Part D timeseries summary timer (hourly)
+Requires=suzieq-drift-timeseries.service
+
+[Timer]
+# Fire 5 minutes after boot so the assertions timer (which fires
+# at 2min) has had a chance to run first and the parquet store
+# has settled.
+OnBootSec=5min
+
+# Top of every hour. Aligns the summary cadence with the
+# coalescer hourly window so each summary covers one fresh
+# coalesced file.
+OnCalendar=hourly
+AccuracySec=1min
+
+# Persistent=true means a missed run after a reboot fires once
+# on wake-up. We want this so the latest-summary file is never
+# arbitrarily stale after maintenance.
+Persistent=true
+
+Unit=suzieq-drift-timeseries.service
+
+[Install]
+WantedBy=timers.target

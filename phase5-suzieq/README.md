@@ -512,6 +512,139 @@ sudo systemctl edit suzieq-drift-assert.timer
 
 The negative case is interesting because it demonstrated BOTH the `assert_bgp_established` and `assert_bgp_pfx_rx` assertions firing on the same fault, each catching a different symptom. A session that had dropped to NotEstd on the affected ends, and a peer session that stayed Established briefly but with pfxRx=0 because the withdraw-all hadn't propagated yet.
 
+## Part D: time-window queries (DONE)
+
+Where Part B/C answer "what is the current state right now?", Part D answers "what happened over a window?". Same parquet store, different read pattern: read the historical snapshots over a time window and aggregate per-event metrics, instead of collapsing to `view='latest'`.
+
+Three queries ship in the initial set, all running over the existing parquet history with no new infrastructure:
+
+| Query | Reads | Answers |
+|---|---|---|
+| `bgp_flaps` | `bgp` table | How many BGP session state transitions happened in the window, per `(host, vrf, peer, afi, safi)`? Counts row-to-row state changes in the polled snapshots, NOT the per-row `numChanges` counter (which can reset and counts events between polls that the harness can't see anyway). |
+| `route_churn` | `routes` table | Per `(host, vrf)`: how many distinct prefixes were touched in the window, and how many of those received >1 update (the "churned" subset)? Decomposed into `prefixes_touched` / `churned_prefixes` / `total_changes` so a clean window with no events shows zero churn even if the absolute route count is unchanged. |
+| `mac_mobility` | `macs` table | Which MACs appeared on more than one distinct `(host, oif, remoteVtepIp)` during the window? Catches L2 moves between leaves, port flaps, and EVPN Type-2 advertisement migrations. |
+
+### Architecture
+
+`drift/timeseries/` mirrors `drift/`'s module-import-boundary rule:
+
+```
+drift/timeseries/
+  partition.py     pure: filename parsing + directory walking + duration parsing
+  reader.py        the ONLY pyarrow import in the package
+  queries/
+    __init__.py    QUERIES registry + TimeseriesResult dataclass
+    bgp_flaps.py
+    route_delta.py
+    mac_mobility.py
+  envelope.py      JSON shape (no pandas, no pyarrow imports needed at test time)
+```
+
+Tests for the query layer never import pyarrow — they build inline DataFrame fixtures and pass them to query functions. This is the same pattern that keeps `test_drift_diff.py` cheap.
+
+### Windowing strategy
+
+Coalesced parquet files are named `sqc-h1-0-<start_epoch>-<end_epoch>.parquet` where the two epochs encode the exact 1-hour window the file covers. Reader pre-filters files by name epoch, then filters rows inside the matching files by the row-level `timestamp` column (millisecond epoch). Raw uncoalesced files (the current hour's data) are always included and filtered only by row timestamp.
+
+The smallest practically-useful window is **1 minute** — that's the poller cadence, so anything narrower returns at most one snapshot per session. Sub-minute windows are accepted but documented as low-resolution.
+
+### CLI
+
+```bash
+# Last hour, JSON envelope to stdout (Phase 6 / log-shipper format)
+docker compose run --rm drift --mode timeseries --window 1h --json
+
+# Last 5 minutes, human-readable to terminal
+docker compose run --rm drift --mode timeseries --window 5m --human
+
+# Absolute window for replay or debugging
+docker compose run --rm drift --mode timeseries \
+  --from 1775904896 --to 1775908496 --json
+```
+
+`--window` and `--from/--to` are mutually exclusive — the CLI rejects bad combinations with a tooling-error exit code.
+
+### Exit code semantics
+
+Timeseries observations are **never pass/fail**. Even with 1000 BGP flaps in the result, `--mode timeseries` exits 0. The whole point of the mode is to surface neutral observations the operator interprets in context — a fabric mid-maintenance window has lots of flaps and that's expected. Pass/fail is the job of `--mode assertions`.
+
+The only non-zero exit code timeseries can produce is `2` (tooling error): bad window arguments, parquet read failure, or a query crash.
+
+This is pinned by `test_returns_zero_even_when_flaps_detected` and `test_json_envelope_has_timeseries_shape_not_drift_shape`.
+
+### JSON envelope
+
+Different shape from the drift/assertions envelope. Stable contract for Phase 6:
+
+```json
+{
+  "namespace": "dc1",
+  "generated_at": "2026-04-11T12:34:56+00:00",
+  "window": {
+    "start_epoch": 1775904896,
+    "end_epoch":   1775908496,
+    "start_iso":   "2026-04-11T11:34:56+00:00",
+    "end_iso":     "2026-04-11T12:34:56+00:00",
+    "duration_seconds": 3600
+  },
+  "queries": [
+    {
+      "name":       "bgp_flaps",
+      "table":      "bgp",
+      "files_read": 3,
+      "summary":    {"total_flaps": 4, "sessions_with_flaps": 1, "sessions_seen": 16},
+      "rows":       [
+        {"hostname": "dc1-leaf1", "vrf": "default", "peer": "10.0.0.2",
+         "afi": "ipv4", "safi": "unicast",
+         "flap_count": 4, "snapshots": 12,
+         "first_state": "established", "last_state": "established"}
+      ]
+    },
+    { "name": "route_churn", ... },
+    { "name": "mac_mobility", ... }
+  ]
+}
+```
+
+`files_read=N` with `rows=[]` distinguishes "the window had files but every row was filtered" (a quiet window) from "no files at all" (e.g. namespace doesn't exist, parquet path wrong). The drift envelope's `{result, total, passed, failed, drifts}` fields are deliberately absent — a future merger of the two output paths would lose that distinction.
+
+### systemd timer
+
+Same pattern as Part C, slower cadence. Two unit files in `phase5-suzieq/systemd/`:
+
+| File | Role |
+|---|---|
+| `suzieq-drift-timeseries.service` | `Type=oneshot` unit that runs `docker compose run --rm drift --mode timeseries --window 1h --json` and redirects stdout to `/var/log/suzieq-drift/timeseries-latest.json`. Same `WorkingDirectory=/opt/suzieq` and `EnvironmentFile=/opt/evpn-lab-env/env.sh` as the assertions service. |
+| `suzieq-drift-timeseries.timer` | `OnCalendar=hourly` + `OnBootSec=5min` + `Persistent=true`. Aligns the summary cadence with the coalescer's hourly file boundary. |
+
+Install on netdevops-srv alongside the Part C units:
+
+```bash
+sudo cp phase5-suzieq/systemd/suzieq-drift-timeseries.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now suzieq-drift-timeseries.timer
+systemctl list-timers suzieq-drift-*                          # next scheduled runs
+cat /var/log/suzieq-drift/timeseries-latest.json | jq .       # last summary
+journalctl -u suzieq-drift-timeseries.service -n 50           # run history
+```
+
+The hourly cadence is the natural floor of the parquet partition scheme — a more frequent timer would just reread the same coalesced files and produce identical output. Override via `systemctl edit suzieq-drift-timeseries.timer` if a different cadence is needed.
+
+### Why "touched/churned" instead of an absolute route delta
+
+The natural framing of `route_churn` is "how did the route count change between window start and window end?". Answering it cleanly requires snapshots at exactly the window's start AND end, which we don't have — the parquet store has poll-cadence snapshots and a query window starts at an arbitrary time that almost never aligns with one. The "touched/churned" decomposition sidesteps the alignment problem by counting only what's observable inside the window.
+
+There's a second reason: an absolute delta of zero is consistent with both "nothing happened" AND "100 routes flapped through the same state and ended up identical". The churn count distinguishes the two — operators looking for "did anything go wrong with route propagation in the last hour?" get a more useful answer.
+
+### Why count BGP state transitions instead of using `numChanges`
+
+`numChanges` is a per-row counter the device increments on each session state change. Two reasons we don't use it directly for flap counting:
+
+1. **It resets when the daemon restarts.** A reset between two snapshots produces a negative delta and the naive max-min approach silently undercounts.
+2. **It counts changes the harness cannot see.** A session that flaps and recovers between two polls bumps `numChanges` but produces no visible state change in the polled snapshots. The metric we want is "what state transitions did the harness OBSERVE?" — that's what an operator can correlate against assertions output and logs. The device's internal counter is invisible to the rest of the alerting pipeline.
+
+Counting row-to-row state transitions in the polled snapshots gives us the operator-observable answer. It is conservative — fast flaps that complete inside one poll cycle are missed — but that's correct: if the harness can't see it, an alert on it would be unfounded.
+
 ## Recreating this phase on a different environment
 
 The instructions below are the complete recipe for reproducing the Phase 5 stack (Parts A + B + C) on a different host. They assume a Linux VM with Docker and a reachable NetBox.
