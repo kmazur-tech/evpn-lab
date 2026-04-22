@@ -248,13 +248,19 @@ else
   fail "leaf2 ae0 LACP: not distributing"
 fi
 
-# BFD sessions
-BFD_UP=$(junos_cmd $LEAF1_IP "show bfd session" | grep -c "Up" 2>/dev/null | tail -1 || echo "0")
-if [ "$BFD_UP" -gt 0 ]; then
+# BFD sessions - shallow count. Section 8 (validate_leaf) does the
+# deep per-session Up + diag=None check; this is just an early
+# failure signal. vJunos 23.2R1.14 produces 4 BFD sessions per
+# leaf (2 single-hop underlay to each spine P2P, 2 multihop to
+# each spine loopback for the overlay). Floor is set to >= 2 to
+# match validate_leaf() so Section 1 and Section 8 cannot disagree.
+# awk '$2=="Up"' pins the state column explicitly instead of the
+# looser 'grep -c Up' that would match 'Up' anywhere on a line.
+BFD_UP=$(junos_cmd $LEAF1_IP "show bfd session" | awk '$2=="Up"' | wc -l)
+if [ "$BFD_UP" -ge 2 ]; then
   pass "leaf1 BFD sessions up: $BFD_UP"
 else
-  # BFD may not show on vjunos, skip gracefully
-  echo "  SKIP: leaf1 BFD (may not be active on vjunos)"
+  fail "leaf1 BFD: $BFD_UP sessions Up (expected >= 2)"
 fi
 
 # LLDP neighbors
