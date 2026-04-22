@@ -244,7 +244,7 @@ The lab rolls its own thin Python harness (Parts B/C/D) for three reasons: it's 
 ## Junos-specific notes
 
 - **MX route-table scale issue** does not apply - the lab runs vJunos-switch (EX-class), and the upstream SuzieQ MX route caveat (only direct routes gathered to mitigate JSON parse latency on full Internet tables) is not in the failure surface.
-- **Devtype semantics vs JSON shape**: see "Junos devtype override" above. The lab uses EX9214 semantics but `junos-mx` SuzieQ devtype because that is the only built-in template whose `device` service parses vJunos-switch's JSON correctly.
+- **Devtype semantics vs JSON shape**: see the ["`junos-vjunos-switch` devtype"](#junos-vjunos-switch-devtype-project-owned-added-at-image-build-time) section above. The lab uses EX9214 semantics with the project-owned `junos-vjunos-switch` SuzieQ devtype, added at image build time by the patcher. The `device` service under that devtype inherits from the `junos-mx` template via `SERVICE_BASE_OVERRIDES` because vJunos returns the single-RE JSON shape that `junos-mx`'s uptime parser expects.
 - **MAC table EVPN vs VPLS** - SuzieQ treats Junos MAC entries with EVPN-VXLAN encapsulation correctly out of the box. Worth knowing if Phase 10 ever introduces a Junos MX with classic VPLS for comparison.
 
 ## Part B-min: NetBox-vs-Suzieq drift harness (DONE)

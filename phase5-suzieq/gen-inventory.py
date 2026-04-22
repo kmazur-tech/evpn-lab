@@ -19,35 +19,34 @@ What this script HARDCODES (and why):
     - transport: ssh           Junos lab is SSH-only; Phase 10 with
                                cEOS will need a per-platform map
     - devtype mapping          See DEVTYPE_OVERRIDES below: vJunos
-                               needs a JSON-shape-driven override
+                               maps to the project-owned
+                               `junos-vjunos-switch` devtype added at
+                               image build time by add-vjunos-switch.py
 
-DEVTYPE OVERRIDE (the "why junos-mx instead of junos-ex" question):
+DEVTYPE MAPPING (the "what devtype does vJunos use" question):
 
-    SuzieQ ships device.yml templates per devtype. The `device`
-    service (model/version/serial/uptime collector) issues
-    `show system uptime | display json` and parses the result.
+    The lab maps NetBox device_type.model='EX9214' to the
+    project-owned SuzieQ devtype `junos-vjunos-switch`, which is
+    added to the SuzieQ service catalog at IMAGE BUILD TIME by
+    suzieq-image/add-vjunos-switch.py. See the "junos-vjunos-switch
+    devtype" section in phase5-suzieq/README.md for the full story.
 
-    SuzieQ devtype       JSON shape it expects
-    ---------------      -----------------------------------------
-    junos-qfx            multi-routing-engine-results/[0]/...
-    junos-ex             copy of junos-qfx (same multi-RE shape)
-    junos-mx             system-uptime-information/* (single-RE)
-    junos-es             copy of junos-mx
-    junos-qfx10k         copy of junos-mx
-    junos-evo            copy of junos-mx
+    Why a project-owned devtype and not a built-in: vJunos-switch
+    needs an unusual mix of upstream service templates:
 
-    vJunos-switch (which the lab uses to emulate EX9214) returns
-    the SINGLE-RE shape - the same shape junos-mx expects. So even
-    though semantically the lab device is EX-class, the only
-    SuzieQ devtype whose `device` template parses correctly is
-    junos-mx (or any of its `copy:` aliases). With junos-ex the
-    `device` service raises KeyError: 'bootupTimestamp' on every
-    poll cycle and `device show` stays empty.
+      - `device`  service: junos-mx shape (single-RE uptime JSON,
+                           no multi-routing-engine-results wrapper)
+      - `lldp`    service: junos-qfx shape (detail view, has
+                           lldp-remote-port-id)
+      - everything else:   junos-qfx shape (REAL in 12/12 Junos
+                           service yamls upstream)
 
-    The mapping below applies this override and is documented in
-    phase5-suzieq/README.md "Junos devtype override". Upstream
-    fix would be to add a vJunos-aware shape to junos-ex, or to
-    auto-detect the wrapper at parse time - tracked nowhere yet.
+    No built-in SuzieQ devtype matches this combination. The
+    patcher's SERVICE_BASE_OVERRIDES = {"device.yml": "junos-mx"}
+    expresses the one override needed; everything else inherits
+    from junos-qfx via `copy:`. DEVTYPE_OVERRIDES at the top of
+    this file is the source of truth for the NetBox-model to
+    SuzieQ-devtype mapping.
 
 Trade-off vs SuzieQ's native NetBox source: device adds/removes in
 NetBox don't propagate live - re-run this script and `docker compose
