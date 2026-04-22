@@ -1,8 +1,11 @@
 # Phase 2 - Runtime Requirements
 
 Tools required on the **containerlab host** (the machine running the lab,
-not the workstation editing the configs). For this project that's the
-lab server documented in `memory/reference_lab_server.md`.
+not the workstation editing the configs). Any Linux host with Docker +
+containerlab + the packages below will do; a dedicated bare-metal box
+with hardware KVM is recommended for vJunos images because they need
+real CPU virtualisation (the vrnetlab build wraps the emulator in
+qemu and expects `/dev/kvm`).
 
 ## Required packages
 
@@ -32,7 +35,11 @@ Loaded into local Docker registry on the lab server:
 |-------|--------|
 | `vrnetlab/juniper_vjunos-switch:23.2R1.14` | Built from vrnetlab + Juniper free download |
 
-See `memory/project_containerlab_state.md` for the build procedure.
+Built from the upstream [vrnetlab](https://github.com/hellt/vrnetlab) repo
+plus a Juniper vJunos-switch image download (free, registration required).
+The build procedure is standard vrnetlab: drop the qcow2 image into the
+appropriate subdirectory, run `make`, push to your local Docker registry.
+No project-specific steps.
 
 ## Required environment variables (containerlab deploy time)
 
