@@ -54,7 +54,7 @@ An automated EVPN-VXLAN data center fabric built with Infrastructure as Code pri
 | [pynetbox](https://github.com/netbox-community/pynetbox) | Idempotent NetBox population via Python |
 | [Nornir](https://nornir.readthedocs.io/) | Configuration rendering and deployment |
 | [Batfish](https://www.batfish.org/) | Pre-deployment config validation |
-| [Suzieq](https://suzieq.readthedocs.io/) | Post-deployment state validation (planned) |
+| [Suzieq](https://suzieq.readthedocs.io/) | Continuous state observation + drift detection |
 | Juniper Junos | Network OS (EVPN-VXLAN, ERB, ESI-LAG) |
 | Arista EOS | Multi-vendor DC2 extension (planned) |
 
@@ -66,13 +66,14 @@ An automated EVPN-VXLAN data center fabric built with Infrastructure as Code pri
 | 2 | [EVPN+VXLAN+ESI-LAG Fabric](phase2-fabric/) | Done |
 | 3 | [Nornir IaC Framework](phase3-nornir/) | Done |
 | 4 | [Batfish Pre-Deployment Validation](phase4-batfish/) | Done |
-| 5 | Suzieq Post-Deployment Validation | Planned |
+| 5 | [Suzieq Continuous State + Drift Detection](phase5-suzieq/) | Done |
 | 6 | GitHub Actions CI/CD Pipeline | Planned |
 | 7 | Forwarding Scale + Convergence Tuning | Planned |
 | 8 | CIS/PCI-DSS Hardening | Planned |
 | 9 | gNMI Streaming Telemetry | Planned |
 | 10 | Multi-DC DCI (Arista cEOS) | Planned |
 | 11 | Controlled Lifecycle Operations | Planned |
+| 12 | AI Copilot for Runtime Operations | Planned |
 
 See [PROJECT_PLAN.md](PROJECT_PLAN.md) for detailed scope of each phase.
 
