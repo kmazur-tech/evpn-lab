@@ -354,3 +354,119 @@ class TestCollect:
         df = read_table("device", "dc1", str(tmp_path),
                         pk=("namespace", "hostname"))
         assert set(df["hostname"]) == {"dc1-spine1", "dc1-leaf1"}
+
+
+# ---------------------------------------------------------------------------
+# TABLE_REGISTRY contract
+# ---------------------------------------------------------------------------
+#
+# The table registry is the single source of truth for which SuzieQ
+# tables we read, their primary keys, the FabricState field they
+# land in, and any per-table cleanup hook. These tests pin the
+# registry's shape and the invariants a future contributor must
+# preserve when adding a new table.
+
+from drift.state import FabricState, TABLE_REGISTRY, TABLES, TableSpec  # noqa: E402
+
+
+class TestTableRegistry:
+    def test_registry_is_non_empty(self):
+        assert len(TABLE_REGISTRY) >= 9
+
+    def test_every_spec_has_required_fields(self):
+        for spec in TABLE_REGISTRY:
+            assert isinstance(spec, TableSpec)
+            assert spec.name
+            assert isinstance(spec.pk, tuple) and len(spec.pk) >= 2
+            assert spec.state_attr
+            # cleanup may be None - that's fine
+
+    def test_tables_alias_derived_from_registry(self):
+        """TABLES tuple must be derived from TABLE_REGISTRY so
+        they can't drift. A manual edit to TABLES would fail this."""
+        assert TABLES == tuple(spec.name for spec in TABLE_REGISTRY)
+
+    def test_every_state_attr_maps_to_a_fabricstate_field(self):
+        """Every registry entry's state_attr must correspond to an
+        actual field on FabricState. Catches the class of bug where
+        a contributor adds a new table to the registry but forgets
+        to add the matching field to the dataclass - silent failure
+        otherwise, because setattr on a non-existent attribute
+        just adds it as an instance attr and diff.py never finds it."""
+        state = FabricState(namespace="dc1")
+        for spec in TABLE_REGISTRY:
+            assert hasattr(state, spec.state_attr), (
+                f"FabricState has no field {spec.state_attr!r} "
+                f"(table {spec.name!r})"
+            )
+            # Default must be an empty DataFrame so first-cycle
+            # runs don't crash.
+            assert isinstance(getattr(state, spec.state_attr), pd.DataFrame)
+
+    def test_bgp_spec_has_six_field_pk(self):
+        """Regression guard for the schema-correct BGP PK. SuzieQ's
+        bgp.avsc declares (namespace, hostname, vrf, peer, afi,
+        safi) - an earlier 4-field PK was silently collapsing
+        distinct AFI/SAFI rows."""
+        bgp_spec = next(s for s in TABLE_REGISTRY if s.name == "bgp")
+        assert bgp_spec.pk == (
+            "namespace", "hostname", "vrf", "peer", "afi", "safi"
+        )
+
+    def test_bgp_spec_has_cleanup_hook(self):
+        """The BGP partial-view row filter must be in the registry,
+        not inlined in collect(). Verifies the cleanup hook is
+        attached to the right table."""
+        bgp_spec = next(s for s in TABLE_REGISTRY if s.name == "bgp")
+        assert bgp_spec.cleanup is not None
+        # And the hook is actually a function the user expects
+        assert bgp_spec.cleanup.__name__ == "_cleanup_bgp_phantom_rows"
+
+    def test_only_bgp_has_cleanup_in_current_registry(self):
+        """Pinning the current shape. If a future contributor adds
+        a cleanup to another table, they should update this test
+        with intent, not drift past it by accident."""
+        tables_with_cleanup = [
+            s.name for s in TABLE_REGISTRY if s.cleanup is not None
+        ]
+        assert tables_with_cleanup == ["bgp"]
+
+    def test_collect_uses_the_registry(self, populated_parquet):
+        """Smoke test: collect() reads every table in the registry
+        and sets the right FabricState field on each. This is the
+        end-to-end check that the refactor didn't lose any tables."""
+        state = collect("dc1", str(populated_parquet))
+        # Every spec's state_attr should be a non-None DataFrame
+        # (may be empty for tables the fixture doesn't populate).
+        for spec in TABLE_REGISTRY:
+            attr = getattr(state, spec.state_attr)
+            assert isinstance(attr, pd.DataFrame), (
+                f"{spec.state_attr} is not a DataFrame after collect()"
+            )
+
+
+class TestReadTableCleanupDispatch:
+    """The read_table() call path honors cleanup hooks from both
+    the registry (implicit) and explicit kwargs."""
+
+    def test_explicit_cleanup_overrides_registry(self, tmp_path):
+        """Passing cleanup=<func> explicitly should override the
+        registry. This is what collect() does with spec.cleanup."""
+        called = {"count": 0}
+
+        def marker_cleanup(df):
+            called["count"] += 1
+            return df.iloc[0:0]  # drop all rows
+
+        _write_table(tmp_path, "device", "dc1", "dc1-x", pd.DataFrame([
+            {"hostname": "dc1-x", "model": "a", "version": "b",
+             "vendor": "c", "status": "alive", "address": "1.1.1.1",
+             "timestamp": 1000},
+        ]))
+        df = read_table(
+            "device", "dc1", str(tmp_path),
+            pk=("namespace", "hostname"),
+            cleanup=marker_cleanup,
+        )
+        assert called["count"] == 1
+        assert df.empty  # the marker cleanup dropped everything

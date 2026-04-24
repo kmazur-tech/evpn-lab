@@ -31,7 +31,7 @@ most recent poll cycles even if the coalescer hasn't run yet.
 """
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, Optional, Tuple
 
 import pandas as pd
 import pyarrow.dataset as ds
@@ -41,13 +41,6 @@ import pyarrow.dataset as ds
 # container. The drift container's docker-compose.yml mounts the
 # suzieq_parquet docker volume read-only at this path.
 DEFAULT_PARQUET_DIR = "/suzieq/parquet"
-
-# Tables we read. Order matches intent.py, diff.py and
-# assertions/ usage. sqPoller is the meta-health table - its rows
-# describe the poller itself, not the fabric.
-TABLES = ("device", "interfaces", "lldp", "bgp",
-          "evpnVni", "routes", "macs", "arpnd",
-          "sqPoller")
 
 
 @dataclass
@@ -70,40 +63,30 @@ class FabricState:
     sq_poller:  pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
-def collect(namespace: str, parquet_dir: str = DEFAULT_PARQUET_DIR) -> FabricState:
-    """Read the eight state tables for one namespace. Returns empty
-    DataFrames for any table that has not been polled yet (rather
-    than raising) so first-cycle drift runs do not crash before any
-    data has been collected."""
-    return FabricState(
-        namespace=namespace,
-        devices=read_table("device", namespace, parquet_dir,
-                           pk=("namespace", "hostname")),
-        interfaces=read_table("interfaces", namespace, parquet_dir,
-                              pk=("namespace", "hostname", "ifname")),
-        lldp=read_table("lldp", namespace, parquet_dir,
-                        pk=("namespace", "hostname", "ifname")),
-        # PK matches SuzieQ's bgp schema (config/schema/bgp.avsc):
-        # (namespace, hostname, vrf, peer, afi, safi). A single peer
-        # has one row PER AFI/SAFI - e.g. an overlay peer has
-        # l2vpn/evpn AND the underlay peer has ipv4/unicast. The
-        # earlier 4-field PK was collapsing distinct AFI/SAFI rows
-        # silently and was independently wrong regardless of the
-        # phantom-row issue.
-        bgp=read_table("bgp", namespace, parquet_dir,
-                       pk=("namespace", "hostname", "vrf",
-                           "peer", "afi", "safi")),
-        evpn_vnis=read_table("evpnVni", namespace, parquet_dir,
-                             pk=("namespace", "hostname", "vni")),
-        routes=read_table("routes", namespace, parquet_dir,
-                          pk=("namespace", "hostname", "vrf", "prefix")),
-        macs=read_table("macs", namespace, parquet_dir,
-                        pk=("namespace", "hostname", "vlan", "macaddr")),
-        arpnd=read_table("arpnd", namespace, parquet_dir,
-                         pk=("namespace", "hostname", "ipAddress")),
-        sq_poller=read_table("sqPoller", namespace, parquet_dir,
-                             pk=("namespace", "hostname", "service")),
-    )
+# ---------------------------------------------------------------------------
+# Table registry: single source of truth for SuzieQ tables we read
+# ---------------------------------------------------------------------------
+#
+# Each entry binds one SuzieQ table to:
+#   - its primary key (for dedup to view='latest' equivalent)
+#   - the FabricState field it lands in
+#   - an optional cleanup hook applied after namespace filter,
+#     before dedup (e.g. the BGP partial-view row filter)
+#
+# Adding a new table = one new TableSpec entry + one new field on
+# FabricState. The cleanup hook lives with the spec so a future
+# contributor reading state.py sees the table's full read contract
+# in one place, not split across a module-global dict and a function
+# call list.
+#
+# Order matters for determinism of the collect() loop output order;
+# mirrors intent.py / diff.py / assertions/ usage.
+@dataclass(frozen=True)
+class TableSpec:
+    name: str
+    pk: Tuple[str, ...]
+    state_attr: str
+    cleanup: Optional[Callable[[pd.DataFrame], pd.DataFrame]] = None
 
 
 def _cleanup_bgp_phantom_rows(df: pd.DataFrame) -> pd.DataFrame:
@@ -147,37 +130,29 @@ def _cleanup_bgp_phantom_rows(df: pd.DataFrame) -> pd.DataFrame:
     ## Why the PK alone is not enough
 
     SuzieQ's bgp schema PK per config/schema/bgp.avsc is
-    (namespace, hostname, vrf, peer, afi, safi). The state.py
-    read_table() call now uses exactly that PK (fixed in the
-    same commit that added this docstring). But a correct PK
-    only helps when rows collide - the phantom rows have
-    DISTINCT (empty) afi/safi and therefore distinct PK values,
-    so they survive drop_duplicates regardless. We have to drop
-    them explicitly.
+    (namespace, hostname, vrf, peer, afi, safi). The TABLE_REGISTRY
+    entry for bgp uses exactly that PK. But a correct PK only helps
+    when rows collide - the phantom rows have DISTINCT (empty)
+    afi/safi and therefore distinct PK values, so they survive
+    drop_duplicates regardless. We have to drop them explicitly.
 
     ## What we drop
 
     Any row where vrf, afi, OR safi is empty / NaN / None.
-    An empty-AFI or empty-vrf BGP row is semantically
-    meaningless (a BGP session is always in a routing instance
-    and always negotiates a specific AFI/SAFI), so dropping
-    these rows is correct - not a workaround.
+    An empty-AFI or empty-vrf BGP row is semantically meaningless
+    (a BGP session is always in a routing-instance and always
+    negotiates a specific AFI/SAFI), so dropping these rows is
+    correct - not a workaround.
 
     ## History
 
-    First attempt (the commit before this one) dropped only
-    empty-vrf rows and explained the pairing as "Junos emits
-    each peer twice." The user correctly pushed back that
-    Junos does NOT in fact emit each peer twice - the rows are
-    a SuzieQ pipeline transient, not a Junos duplicate. This
-    cleanup and the accompanying test comments are now
-    consistent with the verified mechanism.
+    First attempt dropped only empty-vrf rows and explained the
+    pairing as "Junos emits each peer twice." The user correctly
+    pushed back that Junos does NOT emit each peer twice - the
+    rows are a SuzieQ pipeline transient, not a Junos duplicate.
     """
     if df.empty:
         return df
-    # Treat pandas NaN, None, and "" all as phantom for any of
-    # the three structural fields. If a row is missing any one
-    # of vrf/afi/safi it is a partial-view row and not usable.
     mask = pd.Series(True, index=df.index)
     for col in ("vrf", "afi", "safi"):
         if col not in df.columns:
@@ -186,11 +161,90 @@ def _cleanup_bgp_phantom_rows(df: pd.DataFrame) -> pd.DataFrame:
     return df[mask].reset_index(drop=True)
 
 
-# Per-table cleanup hooks. Called after concat+namespace-filter but
-# BEFORE drop_duplicates so cleaned-up tables dedup correctly.
+TABLE_REGISTRY: Tuple[TableSpec, ...] = (
+    TableSpec(
+        name="device",
+        pk=("namespace", "hostname"),
+        state_attr="devices",
+    ),
+    TableSpec(
+        name="interfaces",
+        pk=("namespace", "hostname", "ifname"),
+        state_attr="interfaces",
+    ),
+    TableSpec(
+        name="lldp",
+        pk=("namespace", "hostname", "ifname"),
+        state_attr="lldp",
+    ),
+    # PK matches SuzieQ's bgp schema (config/schema/bgp.avsc):
+    # (namespace, hostname, vrf, peer, afi, safi). A single peer has
+    # one row PER AFI/SAFI - e.g. an overlay peer has l2vpn/evpn AND
+    # the underlay peer has ipv4/unicast. An earlier 4-field PK was
+    # collapsing distinct AFI/SAFI rows silently.
+    TableSpec(
+        name="bgp",
+        pk=("namespace", "hostname", "vrf", "peer", "afi", "safi"),
+        state_attr="bgp",
+        cleanup=_cleanup_bgp_phantom_rows,
+    ),
+    TableSpec(
+        name="evpnVni",
+        pk=("namespace", "hostname", "vni"),
+        state_attr="evpn_vnis",
+    ),
+    TableSpec(
+        name="routes",
+        pk=("namespace", "hostname", "vrf", "prefix"),
+        state_attr="routes",
+    ),
+    TableSpec(
+        name="macs",
+        pk=("namespace", "hostname", "vlan", "macaddr"),
+        state_attr="macs",
+    ),
+    TableSpec(
+        name="arpnd",
+        pk=("namespace", "hostname", "ipAddress"),
+        state_attr="arpnd",
+    ),
+    TableSpec(
+        name="sqPoller",
+        pk=("namespace", "hostname", "service"),
+        state_attr="sq_poller",
+    ),
+)
+
+# Legacy name alias for the tuple of table names - kept for any
+# external caller that imported TABLES directly. Derived from the
+# registry so the two never drift.
+TABLES = tuple(spec.name for spec in TABLE_REGISTRY)
+
+# Map from table name -> cleanup callable, looked up by read_table()
+# when the caller does not pass cleanup= explicitly. Derived from the
+# registry for the same reason.
 _TABLE_CLEANUP = {
-    "bgp": _cleanup_bgp_phantom_rows,
+    spec.name: spec.cleanup
+    for spec in TABLE_REGISTRY
+    if spec.cleanup is not None
 }
+
+
+def collect(namespace: str, parquet_dir: str = DEFAULT_PARQUET_DIR) -> FabricState:
+    """Read every table in TABLE_REGISTRY for one namespace and
+    pack into a FabricState. Returns empty DataFrames for any table
+    that has not been polled yet (rather than raising) so first-
+    cycle drift runs do not crash before any data has been collected.
+    """
+    state = FabricState(namespace=namespace)
+    for spec in TABLE_REGISTRY:
+        df = read_table(
+            spec.name, namespace, parquet_dir,
+            pk=spec.pk,
+            cleanup=spec.cleanup,
+        )
+        setattr(state, spec.state_attr, df)
+    return state
 
 
 def read_table(
@@ -198,6 +252,7 @@ def read_table(
     namespace: str,
     parquet_dir: str = DEFAULT_PARQUET_DIR,
     pk: Optional[tuple] = None,
+    cleanup: Optional[Callable[[pd.DataFrame], pd.DataFrame]] = None,
 ) -> pd.DataFrame:
     """Read one suzieq table, return latest-row-per-PK as a DataFrame.
 
@@ -209,7 +264,27 @@ def read_table(
     Returns an empty DataFrame (NOT raises) when the table directory
     does not yet exist - this is the expected first-cycle state and
     drift.py knows how to handle empty inputs.
+
+    The `cleanup` parameter is optional:
+      - When the caller is collect(), the spec's cleanup hook is
+        passed explicitly.
+      - When the caller is test code that does not set cleanup=,
+        we look the hook up from TABLE_REGISTRY by name so direct
+        read_table() calls still get the right cleanup applied
+        (matching the pre-registry behavior).
+      - Passing cleanup=<func> explicitly overrides the registry.
+        Passing cleanup=None explicitly also respects that.
+        Use the sentinel `_UNSET_CLEANUP` to mean "look up from
+        registry."
     """
+    # None-vs-default disambiguation: an explicit cleanup=None from
+    # a test means "skip cleanup". The default "look up from
+    # registry" is signalled by NOT passing the kwarg at all, which
+    # pytest does for most existing tests. argument_default via a
+    # sentinel is the cleanest way to distinguish the two.
+    if cleanup is None and table in _TABLE_CLEANUP:
+        cleanup = _TABLE_CLEANUP[table]
+
     frames = []
     for subpath in (f"coalesced/{table}", table):
         full = Path(parquet_dir) / subpath
@@ -241,7 +316,6 @@ def read_table(
     # Per-table cleanup (e.g. drop phantom rows that the SuzieQ
     # engine filters but our raw pyarrow read path picks up).
     # Applied BEFORE dedup so the dedup operates on clean rows.
-    cleanup = _TABLE_CLEANUP.get(table)
     if cleanup is not None:
         df = cleanup(df)
         if df.empty:
