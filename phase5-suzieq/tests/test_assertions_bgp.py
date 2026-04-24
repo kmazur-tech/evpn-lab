@@ -132,3 +132,33 @@ class TestBgpPfxRxPositive:
         ])
         out = assert_bgp_pfx_rx_positive(state)
         assert len(out) == 1
+
+
+# ---------------------------------------------------------------------------
+# Category regression guard
+# ---------------------------------------------------------------------------
+
+class TestAssertionCategory:
+    """Pin that BGP assertions emit the control_plane category.
+
+    A future refactor that accidentally changes the category (or
+    forgets to pass it) would break Phase 6 category-based filters.
+    """
+
+    def test_assert_bgp_all_established_category(self):
+        state = _state([
+            {"hostname": "dc1-leaf1", "vrf": "default", "peer": "10.1.4.0",
+             "state": "Idle", "afi": "ipv4", "safi": "unicast", "pfxRx": 0},
+        ])
+        out = assert_bgp_all_established(state)
+        assert len(out) == 1
+        assert out[0].category == "control_plane"
+
+    def test_assert_bgp_pfx_rx_positive_category(self):
+        state = _state([
+            {"hostname": "dc1-leaf1", "vrf": "default", "peer": "10.1.4.0",
+             "state": "Established", "afi": "ipv4", "safi": "unicast", "pfxRx": 0},
+        ])
+        out = assert_bgp_pfx_rx_positive(state)
+        assert len(out) == 1
+        assert out[0].category == "control_plane"

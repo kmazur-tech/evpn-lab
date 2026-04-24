@@ -48,20 +48,51 @@ from .state import FabricState
 SEVERITY_ERROR = "error"      # CI should soft-fail (warn loudly, do not block merge per Phase 6 plan)
 SEVERITY_WARNING = "warning"  # CI should log
 
+# Drift categories. A coarser axis than dimension: a Phase 6 consumer
+# can filter/prioritize by category without having to enumerate every
+# dimension name. Each diff function in this module and each assertion
+# in drift/assertions/ picks exactly one category per emitted Drift.
+CATEGORY_INVENTORY    = "inventory"     # device presence, interface admin state
+CATEGORY_TOPOLOGY     = "topology"      # LLDP cabling
+CATEGORY_CONTROL_PLANE = "control_plane" # BGP sessions, underlay reachability
+CATEGORY_OVERLAY      = "overlay"       # EVPN VNIs, anycast MAC, VTEP discovery
+CATEGORY_ARP_ND       = "arp_nd"        # ARP / ND / Type-2 advertisements
+CATEGORY_META         = "meta"          # harness self-health (sqPoller)
+
+_VALID_CATEGORIES = {
+    CATEGORY_INVENTORY,
+    CATEGORY_TOPOLOGY,
+    CATEGORY_CONTROL_PLANE,
+    CATEGORY_OVERLAY,
+    CATEGORY_ARP_ND,
+    CATEGORY_META,
+}
+
 
 @dataclass
 class Drift:
     dimension: str
     severity: str
+    category: str          # one of CATEGORY_* constants
     subject: str           # human-readable identifier ("dc1-leaf1", "dc1-spine1:ge-0/0/0", "10.1.4.0<->10.1.4.1")
     detail: str            # one-line explanation
     intent: Optional[Dict[str, Any]] = None
     state:  Optional[Dict[str, Any]] = None
 
+    def __post_init__(self):
+        # Loud failure if a caller passes an unknown category. Typos
+        # in category strings would silently break Phase 6 filtering,
+        # so enforce the allowlist at construction time.
+        if self.category not in _VALID_CATEGORIES:
+            raise ValueError(
+                f"Drift category {self.category!r} not in {sorted(_VALID_CATEGORIES)}"
+            )
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "dimension": self.dimension,
             "severity": self.severity,
+            "category": self.category,
             "subject": self.subject,
             "detail": self.detail,
             "intent": self.intent,
@@ -110,6 +141,7 @@ def _diff_devices(intent_devs: List[DeviceIntent], state_df: pd.DataFrame) -> Li
             out.append(Drift(
                 dimension="device_presence",
                 severity=SEVERITY_ERROR,
+                category=CATEGORY_INVENTORY,
                 subject=d.name,
                 detail="modeled in NetBox (status={}) but not seen by SuzieQ".format(d.status),
                 intent=asdict(d),
@@ -120,6 +152,7 @@ def _diff_devices(intent_devs: List[DeviceIntent], state_df: pd.DataFrame) -> Li
         out.append(Drift(
             dimension="device_presence",
             severity=SEVERITY_WARNING,
+            category=CATEGORY_INVENTORY,
             subject=hostname,
             detail="seen by SuzieQ but not tagged 'suzieq' in NetBox dc1 site",
             intent=None,
@@ -160,6 +193,7 @@ def _diff_interfaces(
             out.append(Drift(
                 dimension="interface_admin",
                 severity=SEVERITY_WARNING,
+                category=CATEGORY_INVENTORY,
                 subject=f"{ii.device}:{ii.name}",
                 detail="modeled in NetBox but not in SuzieQ interface table",
                 intent=asdict(ii),
@@ -174,6 +208,7 @@ def _diff_interfaces(
             out.append(Drift(
                 dimension="interface_admin",
                 severity=SEVERITY_ERROR,
+                category=CATEGORY_INVENTORY,
                 subject=f"{ii.device}:{ii.name}",
                 detail=(
                     f"admin state drift: NetBox enabled={ii.enabled}, "
@@ -276,6 +311,7 @@ def _diff_lldp(intent_cables: List[Cable], state_df: pd.DataFrame) -> List[Drift
             out.append(Drift(
                 dimension="lldp_topology",
                 severity=SEVERITY_WARNING,
+                category=CATEGORY_TOPOLOGY,
                 subject=f"{cable.a.device}:{cable.a.interface}<->{cable.b.device}:{cable.b.interface}",
                 detail=(
                     "LLDP peer device matches but peer interface is unknown "
@@ -295,6 +331,7 @@ def _diff_lldp(intent_cables: List[Cable], state_df: pd.DataFrame) -> List[Drift
         out.append(Drift(
             dimension="lldp_topology",
             severity=SEVERITY_ERROR,
+            category=CATEGORY_TOPOLOGY,
             subject=f"{cable.a.device}:{cable.a.interface}<->{cable.b.device}:{cable.b.interface}",
             detail="NetBox cable not present in SuzieQ LLDP neighbor table",
             intent={
@@ -359,6 +396,7 @@ def _diff_bgp(
                 out.append(Drift(
                     dimension="bgp_session",
                     severity=SEVERITY_ERROR,
+                    category=CATEGORY_CONTROL_PLANE,
                     subject=f"{local_dev}({local_ip})->{peer_ip}",
                     detail="cable-derived BGP session not present in SuzieQ bgp table",
                     intent=asdict(s),
@@ -370,6 +408,7 @@ def _diff_bgp(
                 out.append(Drift(
                     dimension="bgp_session",
                     severity=SEVERITY_ERROR,
+                    category=CATEGORY_CONTROL_PLANE,
                     subject=f"{local_dev}({local_ip})->{peer_ip}",
                     detail=f"BGP session not Established: state={row.get('state')!r}",
                     intent=asdict(s),
@@ -406,6 +445,7 @@ def _diff_evpn_vnis(intent_vnis: List[VniIntent], state_df: pd.DataFrame) -> Lis
             out.append(Drift(
                 dimension="evpn_vni",
                 severity=SEVERITY_ERROR,
+                category=CATEGORY_OVERLAY,
                 subject=f"{v.device}:vni{v.vni}",
                 detail=f"{v.vni_type} VNI {v.vni} expected on {v.device} but evpnVni table is empty",
                 intent=asdict(v),
@@ -427,6 +467,7 @@ def _diff_evpn_vnis(intent_vnis: List[VniIntent], state_df: pd.DataFrame) -> Lis
             out.append(Drift(
                 dimension="evpn_vni",
                 severity=SEVERITY_ERROR,
+                category=CATEGORY_OVERLAY,
                 subject=f"{v.device}:vni{v.vni}",
                 detail=f"{v.vni_type} VNI {v.vni} expected on {v.device} but not in SuzieQ evpnVni table",
                 intent=asdict(v),
@@ -438,6 +479,7 @@ def _diff_evpn_vnis(intent_vnis: List[VniIntent], state_df: pd.DataFrame) -> Lis
             out.append(Drift(
                 dimension="evpn_vni",
                 severity=SEVERITY_ERROR,
+                category=CATEGORY_OVERLAY,
                 subject=f"{v.device}:vni{v.vni}",
                 detail=f"{v.vni_type} VNI {v.vni} on {v.device} not up: state={row.get('state')!r}",
                 intent=asdict(v),
@@ -470,6 +512,7 @@ def _diff_loopback_routes(
             out.append(Drift(
                 dimension="loopback_route",
                 severity=SEVERITY_ERROR,
+                category=CATEGORY_CONTROL_PLANE,
                 subject=f"{r.observer_device}->{r.target_device}({r.prefix})",
                 detail=f"routes table empty - cannot verify {r.target_device} loopback reachability from {r.observer_device}",
                 intent=asdict(r),
@@ -495,6 +538,7 @@ def _diff_loopback_routes(
             out.append(Drift(
                 dimension="loopback_route",
                 severity=SEVERITY_ERROR,
+                category=CATEGORY_CONTROL_PLANE,
                 subject=f"{r.observer_device}->{r.target_device}({r.prefix})",
                 detail=f"{r.observer_device} has no /32 route to {r.target_device}'s loopback {r.prefix}",
                 intent=asdict(r),
@@ -528,6 +572,7 @@ def _diff_anycast_macs(
             out.append(Drift(
                 dimension="anycast_mac",
                 severity=SEVERITY_ERROR,
+                category=CATEGORY_OVERLAY,
                 subject=f"{m.device}:vlan{m.vlan}({m.anycast_mac})",
                 detail=f"anycast MAC {m.anycast_mac} expected on {m.device} vlan{m.vlan} but macs table is empty",
                 intent=asdict(m),
@@ -552,6 +597,7 @@ def _diff_anycast_macs(
             out.append(Drift(
                 dimension="anycast_mac",
                 severity=SEVERITY_ERROR,
+                category=CATEGORY_OVERLAY,
                 subject=f"{m.device}:vlan{m.vlan}({m.anycast_mac})",
                 detail=f"anycast MAC {m.anycast_mac} not in {m.device} mac table for vlan {m.vlan}",
                 intent=asdict(m),
@@ -584,6 +630,7 @@ def _diff_peer_irb_arp(
             out.append(Drift(
                 dimension="peer_irb_arp",
                 severity=SEVERITY_ERROR,
+                category=CATEGORY_ARP_ND,
                 subject=f"{a.observer_device}->{a.target_device}({a.target_ip})",
                 detail=f"arpnd table empty - cannot verify peer IRB resolution",
                 intent=asdict(a),
@@ -605,6 +652,7 @@ def _diff_peer_irb_arp(
             out.append(Drift(
                 dimension="peer_irb_arp",
                 severity=SEVERITY_ERROR,
+                category=CATEGORY_ARP_ND,
                 subject=f"{a.observer_device}->{a.target_device}({a.target_ip})",
                 detail=f"{a.observer_device} has no ARP entry for peer {a.target_device}'s IRB IP {a.target_ip}",
                 intent=asdict(a),

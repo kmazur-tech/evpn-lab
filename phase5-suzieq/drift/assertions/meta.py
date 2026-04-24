@@ -26,7 +26,7 @@ its own schedule.
 """
 from typing import List
 
-from ..diff import Drift, SEVERITY_ERROR, SEVERITY_WARNING
+from ..diff import Drift, SEVERITY_ERROR, SEVERITY_WARNING, CATEGORY_META
 from ..state import FabricState
 
 
@@ -52,6 +52,7 @@ def assert_poll_health(state: FabricState) -> List[Drift]:
         out.append(Drift(
             dimension="assert_poll_health",
             severity=SEVERITY_WARNING,
+            category=CATEGORY_META,
             subject="sqPoller.schema",
             detail=(
                 "sqPoller table has no pollExcdPeriodCount column - "
@@ -81,6 +82,7 @@ def assert_poll_health(state: FabricState) -> List[Drift]:
         out.append(Drift(
             dimension="assert_poll_health",
             severity=SEVERITY_ERROR,
+            category=CATEGORY_META,
             subject=f"{row.get('hostname')}:{row.get('service')}",
             detail=(
                 f"Poller is falling behind: pollExcdPeriodCount={count} "

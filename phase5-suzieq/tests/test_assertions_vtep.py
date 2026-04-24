@@ -117,3 +117,13 @@ class TestVtepRemoteCount:
         state = _state([])
         out = assert_vtep_remote_count(state)
         assert out == []
+
+    def test_category_is_overlay(self):
+        """Regression guard: Phase 6 category filters depend on this."""
+        state = _state([
+            {"hostname": "dc1-leaf1", "vni": 10010, "type": "L2",
+             "state": "up", "remoteVtepList": []},
+        ])
+        out = assert_vtep_remote_count(state)
+        assert len(out) == 1
+        assert out[0].category == "overlay"

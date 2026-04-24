@@ -586,3 +586,229 @@ class TestOutputStability:
         # Within device_presence, subjects are sorted
         device_subjects = [d.subject for d in drifts if d.dimension == "device_presence"]
         assert device_subjects == sorted(device_subjects)
+
+
+# ---------------------------------------------------------------------------
+# Drift record: category field + allowlist enforcement
+# ---------------------------------------------------------------------------
+#
+# Every Drift carries a `category` field - a coarse axis ("inventory",
+# "topology", "control_plane", "overlay", "arp_nd", "meta") that a
+# Phase 6 CI consumer can filter/prioritize on without enumerating
+# every dimension name. The __post_init__ enforces the allowlist at
+# construction time so a typo ("controlPlane" vs "control_plane")
+# fails loudly on the first test run.
+
+from drift.diff import (  # noqa: E402
+    CATEGORY_ARP_ND,
+    CATEGORY_CONTROL_PLANE,
+    CATEGORY_INVENTORY,
+    CATEGORY_META,
+    CATEGORY_OVERLAY,
+    CATEGORY_TOPOLOGY,
+    Drift,
+    _VALID_CATEGORIES,
+)
+
+
+class TestDriftCategory:
+    """Pin the Drift category contract."""
+
+    def test_constructor_accepts_valid_category(self):
+        d = Drift(
+            dimension="device_presence",
+            severity=SEVERITY_ERROR,
+            category=CATEGORY_INVENTORY,
+            subject="dc1-leaf1",
+            detail="test",
+        )
+        assert d.category == "inventory"
+
+    def test_constructor_rejects_unknown_category(self):
+        with pytest.raises(ValueError, match="not in"):
+            Drift(
+                dimension="device_presence",
+                severity=SEVERITY_ERROR,
+                category="bogus",
+                subject="dc1-leaf1",
+                detail="test",
+            )
+
+    def test_typo_rejected_at_construction(self):
+        # "controlplane" (no underscore) is the kind of typo that
+        # would otherwise silently break a Phase 6 category filter.
+        with pytest.raises(ValueError):
+            Drift(
+                dimension="bgp_session",
+                severity=SEVERITY_ERROR,
+                category="controlplane",
+                subject="x",
+                detail="x",
+            )
+
+    def test_to_dict_includes_category(self):
+        d = Drift(
+            dimension="bgp_session",
+            severity=SEVERITY_ERROR,
+            category=CATEGORY_CONTROL_PLANE,
+            subject="dc1-leaf1->dc1-spine1",
+            detail="test",
+        )
+        out = d.to_dict()
+        assert out["category"] == "control_plane"
+        # Full shape regression - pin the key set so a future
+        # refactor can't silently drop or rename the field.
+        assert set(out.keys()) == {
+            "dimension", "severity", "category", "subject",
+            "detail", "intent", "state",
+        }
+
+    def test_all_six_categories_in_allowlist(self):
+        assert _VALID_CATEGORIES == {
+            "inventory",
+            "topology",
+            "control_plane",
+            "overlay",
+            "arp_nd",
+            "meta",
+        }
+
+    def test_constants_match_string_values(self):
+        assert CATEGORY_INVENTORY == "inventory"
+        assert CATEGORY_TOPOLOGY == "topology"
+        assert CATEGORY_CONTROL_PLANE == "control_plane"
+        assert CATEGORY_OVERLAY == "overlay"
+        assert CATEGORY_ARP_ND == "arp_nd"
+        assert CATEGORY_META == "meta"
+
+
+class TestDimensionCategoryMapping:
+    """Pin that every diff dimension emits the right category.
+
+    The mapping is part of the Drift contract for Phase 6 consumers.
+    If a future refactor accidentally changes a dimension's category
+    (e.g. moves anycast_mac from 'overlay' to 'topology'), every
+    downstream filter rule breaks silently. These tests make that
+    breakage loud.
+    """
+
+    def _run_with_drift(self, builder):
+        """Helper: run `compare()` against an intent/state pair that
+        is guaranteed to produce at least one drift, return the list."""
+        intent, state = builder()
+        from drift.diff import compare
+        drifts = compare(intent, state)
+        assert drifts, "builder must produce at least one drift"
+        return drifts
+
+    def test_device_presence_is_inventory(self):
+        def builder():
+            intent = FabricIntent(
+                namespace="dc1",
+                devices=[_device("dc1-leaf1")],
+            )
+            state = FabricState(namespace="dc1")
+            return intent, state
+        drifts = self._run_with_drift(builder)
+        cats = {d.category for d in drifts if d.dimension == "device_presence"}
+        assert cats == {"inventory"}
+
+    def test_interface_admin_is_inventory(self):
+        def builder():
+            intent = FabricIntent(
+                namespace="dc1",
+                interfaces=[InterfaceIntent(device="dc1-leaf1",
+                                            name="ge-0/0/0", enabled=True)],
+            )
+            state = FabricState(namespace="dc1")
+            return intent, state
+        drifts = self._run_with_drift(builder)
+        cats = {d.category for d in drifts if d.dimension == "interface_admin"}
+        assert cats == {"inventory"}
+
+    def test_lldp_topology_is_topology(self):
+        def builder():
+            cable = Cable(
+                a=CableEdge(device="dc1-leaf1", interface="ge-0/0/0"),
+                b=CableEdge(device="dc1-spine1", interface="ge-0/0/1"),
+            )
+            intent = FabricIntent(namespace="dc1", cables=[cable])
+            state = FabricState(namespace="dc1")
+            return intent, state
+        drifts = self._run_with_drift(builder)
+        cats = {d.category for d in drifts if d.dimension == "lldp_topology"}
+        assert cats == {"topology"}
+
+    def test_bgp_session_is_control_plane(self):
+        def builder():
+            intent = FabricIntent(
+                namespace="dc1",
+                bgp_sessions=[BgpSessionIntent(
+                    device_a="dc1-leaf1", ip_a="10.1.4.0",
+                    device_b="dc1-spine1", ip_b="10.1.4.1",
+                )],
+            )
+            state = FabricState(namespace="dc1")
+            return intent, state
+        drifts = self._run_with_drift(builder)
+        cats = {d.category for d in drifts if d.dimension == "bgp_session"}
+        assert cats == {"control_plane"}
+
+    def test_evpn_vni_is_overlay(self):
+        def builder():
+            intent = FabricIntent(
+                namespace="dc1",
+                vnis=[VniIntent(device="dc1-leaf1", vni=10010, vni_type="L2")],
+            )
+            state = FabricState(namespace="dc1")
+            return intent, state
+        drifts = self._run_with_drift(builder)
+        cats = {d.category for d in drifts if d.dimension == "evpn_vni"}
+        assert cats == {"overlay"}
+
+    def test_loopback_route_is_control_plane(self):
+        def builder():
+            intent = FabricIntent(
+                namespace="dc1",
+                loopback_routes=[LoopbackRouteIntent(
+                    observer_device="dc1-leaf1",
+                    target_device="dc1-spine1",
+                    prefix="10.1.0.1/32",
+                )],
+            )
+            state = FabricState(namespace="dc1")
+            return intent, state
+        drifts = self._run_with_drift(builder)
+        cats = {d.category for d in drifts if d.dimension == "loopback_route"}
+        assert cats == {"control_plane"}
+
+    def test_anycast_mac_is_overlay(self):
+        def builder():
+            intent = FabricIntent(
+                namespace="dc1",
+                anycast_macs=[AnycastMacIntent(
+                    device="dc1-leaf1", vlan=10,
+                    anycast_mac="00:1c:73:00:00:10",
+                )],
+            )
+            state = FabricState(namespace="dc1")
+            return intent, state
+        drifts = self._run_with_drift(builder)
+        cats = {d.category for d in drifts if d.dimension == "anycast_mac"}
+        assert cats == {"overlay"}
+
+    def test_peer_irb_arp_is_arp_nd(self):
+        def builder():
+            intent = FabricIntent(
+                namespace="dc1",
+                peer_irb_arps=[PeerIrbArpIntent(
+                    observer_device="dc1-leaf2",
+                    target_device="dc1-leaf1",
+                    target_ip="10.10.10.11",
+                )],
+            )
+            state = FabricState(namespace="dc1")
+            return intent, state
+        drifts = self._run_with_drift(builder)
+        cats = {d.category for d in drifts if d.dimension == "peer_irb_arp"}
+        assert cats == {"arp_nd"}

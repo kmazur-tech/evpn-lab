@@ -222,6 +222,7 @@ class TestCliModeRun:
             return [Drift(
                 dimension="assert_bgp_established",
                 severity=SEVERITY_ERROR,
+                category="control_plane",
                 subject="dc1-leaf1:default:10.1.4.0",
                 detail="injected failure",
             )]

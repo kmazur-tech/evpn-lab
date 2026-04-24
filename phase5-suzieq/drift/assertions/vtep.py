@@ -39,7 +39,7 @@ read showed no such column. Root cause: engine-computed vs raw.
 """
 from typing import List
 
-from ..diff import Drift, SEVERITY_ERROR
+from ..diff import Drift, SEVERITY_ERROR, CATEGORY_OVERLAY
 from ..state import FabricState
 
 
@@ -87,6 +87,7 @@ def assert_vtep_remote_count(state: FabricState) -> List[Drift]:
         out.append(Drift(
             dimension="assert_vtep_remote_count",
             severity=SEVERITY_ERROR,
+            category=CATEGORY_OVERLAY,
             subject=f"{row.get('hostname')}:vni{row.get('vni')}",
             detail=(
                 f"L2 VNI {row.get('vni')} on {row.get('hostname')} "

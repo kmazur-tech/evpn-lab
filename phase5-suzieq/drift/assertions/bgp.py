@@ -29,7 +29,7 @@ healthy.
 from dataclasses import asdict
 from typing import List
 
-from ..diff import Drift, SEVERITY_ERROR
+from ..diff import Drift, SEVERITY_ERROR, CATEGORY_CONTROL_PLANE
 from ..state import FabricState
 
 
@@ -45,6 +45,7 @@ def assert_bgp_all_established(state: FabricState) -> List[Drift]:
         out.append(Drift(
             dimension="assert_bgp_established",
             severity=SEVERITY_ERROR,
+            category=CATEGORY_CONTROL_PLANE,
             subject=f"{row.get('hostname')}:{row.get('vrf')}:{row.get('peer')}",
             detail=(
                 f"BGP session {row.get('peer')} on {row.get('hostname')} "
@@ -95,6 +96,7 @@ def assert_bgp_pfx_rx_positive(state: FabricState) -> List[Drift]:
         out.append(Drift(
             dimension="assert_bgp_pfx_rx",
             severity=SEVERITY_ERROR,
+            category=CATEGORY_CONTROL_PLANE,
             subject=(
                 f"{row.get('hostname')}:{row.get('peer')}"
                 f":{row.get('afi')}/{row.get('safi')}"

@@ -177,6 +177,7 @@ class TestEmit:
         d = Drift(
             dimension="device_presence",
             severity=SEVERITY_ERROR,
+            category="inventory",
             subject="dc1-leaf1",
             detail="missing",
             intent={"name": "dc1-leaf1"},
@@ -187,6 +188,7 @@ class TestEmit:
         assert out["drift_count"] == 1
         assert out["drifts"][0]["dimension"] == "device_presence"
         assert out["drifts"][0]["severity"] == "error"
+        assert out["drifts"][0]["category"] == "inventory"
         assert out["drifts"][0]["intent"]["name"] == "dc1-leaf1"
 
     def test_human_output_no_drift(self, capsys):
@@ -198,6 +200,7 @@ class TestEmit:
         d = Drift(
             dimension="device_presence",
             severity=SEVERITY_ERROR,
+            category="inventory",
             subject="dc1-leaf1",
             detail="modeled but not seen",
         )

@@ -82,3 +82,14 @@ class TestPollHealth:
         out = assert_poll_health(state)
         assert len(out) == 1
         assert "dc1-leaf1:lldp" in out[0].subject
+
+    def test_category_is_meta(self):
+        """Regression guard: the poller self-health check belongs to
+        the 'meta' category so Phase 6 filters can separate harness-
+        health signals from fabric-health signals."""
+        state = _state([
+            {"hostname": "dc1-leaf1", "service": "lldp", "pollExcdPeriodCount": 3},
+        ])
+        out = assert_poll_health(state)
+        assert len(out) == 1
+        assert out[0].category == "meta"
