@@ -27,11 +27,14 @@ from drift.timeseries.envelope import (  # noqa: E402
     build_envelope,
     emit_human,
     emit_json,
+    self_check,
+    HEARTBEAT_TABLE,
     _coerce_scalar,
     _df_to_records,
+    _STALE_THRESHOLD_SEC,
 )
 from drift.timeseries.queries import TimeseriesResult  # noqa: E402
-from drift.timeseries.reader import TimeWindow  # noqa: E402
+from drift.timeseries.reader import TimeWindow, WindowedTable  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -257,3 +260,310 @@ class TestEmitHuman:
         emit_human(env, stream=buf)
         text = buf.getvalue()
         assert "namespace=dc1" in text
+
+
+# ---------------------------------------------------------------------------
+# self_check / status / warnings (review-finding fix)
+# ---------------------------------------------------------------------------
+#
+# The self-check uses sqPoller as a heartbeat. An earlier version
+# flagged every query table's files_read + row freshness and
+# false-positived on stable fabrics: sparse tables like bgp/macs/
+# routes legitimately go hours between writes. sqPoller is the one
+# table SuzieQ writes unconditionally every poll cycle, so it is
+# the right heartbeat source.
+#
+# Rules covered by these tests:
+#   1. Per-query `warning` field (missing columns) -> propagated
+#      regardless of live/historical window.
+#   2. Live window + sqPoller heartbeat shows the poller is alive.
+#      Historical windows skip the heartbeat check entirely.
+#   3. Exit code stays 0 - per ADR-11, timeseries observations are
+#      never pass/fail. Status is purely informational.
+
+
+def _live_window(now):
+    """A window whose end is at `now` - counts as live."""
+    return TimeWindow(now - 3600, now)
+
+
+def _historical_window():
+    """A window that ended long ago - NOT live."""
+    return TimeWindow(1000, 4600)
+
+
+def _bgp_result(window, summary=None):
+    return TimeseriesResult(
+        name="bgp_flaps", table="bgp", window=window,
+        rows=pd.DataFrame(),
+        summary=summary or {"total_flaps": 0},
+    )
+
+
+def _healthy_heartbeat(window, now):
+    """sqPoller WindowedTable with a fresh row at (now - 30s)."""
+    return WindowedTable(
+        table="sqPoller", namespace="dc1", window=window,
+        rows=pd.DataFrame([
+            {"hostname": "dc1-leaf1", "service": "device",
+             "timestamp": (now - 30) * 1000},
+        ]),
+        files_read=1,
+    )
+
+
+class TestSelfCheckOk:
+    def test_clean_run_with_heartbeat_returns_ok(self):
+        now = 10000
+        window = _live_window(now)
+        results = [_bgp_result(window)]
+        files = {"bgp": 3, "sqPoller": 1}
+        wt = {"sqPoller": _healthy_heartbeat(window, now)}
+        status, warnings = self_check(results, files, windowed_tables=wt, now=now)
+        assert status == "ok"
+        assert warnings == []
+
+    def test_ok_on_historical_window_heartbeat_skipped(self):
+        """Historical query windows skip the heartbeat check
+        entirely because old data is expected to look old."""
+        results = [_bgp_result(_historical_window())]
+        status, warnings = self_check(
+            results, {"bgp": 3, "sqPoller": 0},
+            windowed_tables={"sqPoller": WindowedTable(
+                table="sqPoller", namespace="dc1",
+                window=_historical_window(),
+                rows=pd.DataFrame(), files_read=0,
+            )},
+            now=99999,
+        )
+        assert status == "ok"
+        assert warnings == []
+
+    def test_ok_when_windowed_tables_is_none(self):
+        """Passing None explicitly opts out of the heartbeat
+        check. Used by tests / callers that don't care about
+        liveness."""
+        results = [_bgp_result(_live_window(10000))]
+        status, warnings = self_check(
+            results, {"bgp": 3}, windowed_tables=None, now=10000,
+        )
+        assert status == "ok"
+        assert warnings == []
+
+    def test_sparse_table_old_rows_do_not_trigger_false_positive(self):
+        """Regression guard for the live-test false positive:
+        bgp/macs/routes can legitimately have rows 8 hours old
+        when the fabric is stable. The heartbeat model does NOT
+        inspect query-table row timestamps, so this MUST NOT
+        produce a warning."""
+        now = 10000
+        window = _live_window(now)
+        # Stale bgp row, but sqPoller heartbeat is fresh
+        bgp_wt = WindowedTable(
+            table="bgp", namespace="dc1", window=window,
+            rows=pd.DataFrame([{"timestamp": 100 * 1000}]),  # ~8h old
+            files_read=2,
+        )
+        wt = {
+            "bgp": bgp_wt,
+            "sqPoller": _healthy_heartbeat(window, now),
+        }
+        status, warnings = self_check(
+            [_bgp_result(window)], {"bgp": 2, "sqPoller": 1},
+            windowed_tables=wt, now=now,
+        )
+        assert status == "ok", f"false positive on sparse table: {warnings}"
+
+
+class TestSelfCheckDegraded:
+    def test_per_query_warning_propagated(self):
+        """Shape warnings (missing columns) surface regardless
+        of live/historical."""
+        now = 10000
+        window = _live_window(now)
+        results = [_bgp_result(
+            window,
+            summary={"total_flaps": 0, "warning": "missing bgp columns"},
+        )]
+        wt = {"sqPoller": _healthy_heartbeat(window, now)}
+        status, warnings = self_check(
+            results, {"bgp": 3, "sqPoller": 1},
+            windowed_tables=wt, now=now,
+        )
+        assert status == "degraded"
+        assert any("missing bgp columns" in w for w in warnings)
+
+    def test_heartbeat_missing_is_degraded(self):
+        """Live window, windowed_tables is not None, but has no
+        sqPoller entry. The self-check cannot verify liveness
+        and must say so."""
+        now = 10000
+        window = _live_window(now)
+        results = [_bgp_result(window)]
+        # windowed_tables without the sqPoller heartbeat
+        wt = {"bgp": WindowedTable(
+            table="bgp", namespace="dc1", window=window,
+            rows=pd.DataFrame(), files_read=1,
+        )}
+        status, warnings = self_check(
+            results, {"bgp": 1}, windowed_tables=wt, now=now,
+        )
+        assert status == "degraded"
+        assert any("heartbeat not provided" in w for w in warnings)
+
+    def test_heartbeat_zero_files_is_degraded(self):
+        """sqPoller table exists but files_read == 0. Means the
+        poller never wrote a heartbeat in the window."""
+        now = 10000
+        window = _live_window(now)
+        wt = {"sqPoller": WindowedTable(
+            table="sqPoller", namespace="dc1", window=window,
+            rows=pd.DataFrame(), files_read=0,
+        )}
+        status, warnings = self_check(
+            [_bgp_result(window)], {"sqPoller": 0},
+            windowed_tables=wt, now=now,
+        )
+        assert status == "degraded"
+        assert any("0 files read" in w and "sqPoller" in w for w in warnings)
+
+    def test_heartbeat_empty_rows_is_degraded(self):
+        """Files present but every row filtered out by the
+        time-window pass - poller might be writing to a window
+        we're not looking at."""
+        now = 10000
+        window = _live_window(now)
+        wt = {"sqPoller": WindowedTable(
+            table="sqPoller", namespace="dc1", window=window,
+            rows=pd.DataFrame(), files_read=2,
+        )}
+        status, warnings = self_check(
+            [_bgp_result(window)], {"sqPoller": 2},
+            windowed_tables=wt, now=now,
+        )
+        assert status == "degraded"
+        assert any("files present but no rows" in w for w in warnings)
+
+    def test_heartbeat_stale_row_is_degraded(self):
+        """sqPoller row exists but latest is > 120 s old at
+        window end. Poller is stuck."""
+        now = 10000
+        window = _live_window(now)
+        wt = {"sqPoller": WindowedTable(
+            table="sqPoller", namespace="dc1", window=window,
+            # latest row at (now - 500s), exceeds 120s threshold
+            rows=pd.DataFrame([
+                {"hostname": "dc1-leaf1", "service": "device",
+                 "timestamp": (now - 500) * 1000},
+            ]),
+            files_read=1,
+        )}
+        status, warnings = self_check(
+            [_bgp_result(window)], {"sqPoller": 1},
+            windowed_tables=wt, now=now,
+        )
+        assert status == "degraded"
+        assert any(
+            "latest row" in w and "sqPoller" in w and "500s old" in w
+            for w in warnings
+        )
+
+    def test_heartbeat_fresh_row_just_under_threshold_is_ok(self):
+        """119 s of age is under the 120 s threshold. Just barely
+        ok. This is the strict boundary test."""
+        now = 10000
+        window = _live_window(now)
+        wt = {"sqPoller": WindowedTable(
+            table="sqPoller", namespace="dc1", window=window,
+            rows=pd.DataFrame([
+                {"hostname": "dc1-leaf1", "service": "device",
+                 "timestamp": (now - 119) * 1000},
+            ]),
+            files_read=1,
+        )}
+        status, warnings = self_check(
+            [_bgp_result(window)], {"sqPoller": 1},
+            windowed_tables=wt, now=now,
+        )
+        assert status == "ok"
+        assert warnings == []
+
+
+class TestBuildEnvelopeSelfCheck:
+    def test_envelope_has_status_and_warnings_fields(self):
+        window = TimeWindow(0, 3600)
+        env = build_envelope("dc1", window, [], {})
+        assert "status" in env
+        assert "warnings" in env
+        assert env["status"] == "ok"  # empty results is a clean run
+        assert env["warnings"] == []
+
+    def test_envelope_status_degraded_propagates(self):
+        """End-to-end: a query with a shape warning must surface
+        as a degraded envelope."""
+        now = 10000
+        window = _live_window(now)
+        result = _bgp_result(
+            window, summary={"warning": "missing"},
+        )
+        # Heartbeat healthy so only the shape warning contributes
+        wt = {"sqPoller": _healthy_heartbeat(window, now)}
+        env = build_envelope(
+            "dc1", window, [result],
+            files_read_by_table={"bgp": 1, "sqPoller": 1},
+            windowed_tables=wt,
+            now=now,
+        )
+        assert env["status"] == "degraded"
+        assert len(env["warnings"]) >= 1
+        assert any("missing" in w for w in env["warnings"])
+
+    def test_envelope_key_shape_regression_guard(self):
+        """Pin the full top-level key set so a future refactor
+        can't silently drop or rename status/warnings."""
+        env = build_envelope("dc1", TimeWindow(0, 60), [], {})
+        assert set(env.keys()) == {
+            "namespace", "generated_at", "status", "warnings",
+            "window", "queries",
+        }
+
+
+class TestEmitHumanStatus:
+    def test_ok_status_does_not_print_banner(self):
+        env = build_envelope("dc1", TimeWindow(0, 60), [], {})
+        buf = io.StringIO()
+        emit_human(env, stream=buf)
+        text = buf.getvalue()
+        # Clean run -> no status line
+        assert "status=" not in text
+
+    def test_degraded_status_prints_banner_and_warnings(self):
+        now = 10000
+        window = _live_window(now)
+        # A query with a shape warning triggers degraded
+        env = build_envelope(
+            "dc1", window,
+            [_bgp_result(window, summary={"warning": "missing columns"})],
+            files_read_by_table={"bgp": 1, "sqPoller": 1},
+            windowed_tables={"sqPoller": _healthy_heartbeat(window, now)},
+            now=now,
+        )
+        buf = io.StringIO()
+        emit_human(env, stream=buf)
+        text = buf.getvalue()
+        assert "status=degraded" in text
+        assert "!" in text  # the per-warning marker
+        assert "missing columns" in text
+
+
+class TestStaleThresholdConstant:
+    def test_threshold_is_two_poll_cadences(self):
+        """The stale threshold is documented as 2 x poll cadence
+        (60 s) = 120 s. Pin the constant so a future tweak has to
+        update both the code and the docstring / README."""
+        assert _STALE_THRESHOLD_SEC == 120
+
+    def test_heartbeat_table_constant(self):
+        """Pin the heartbeat table name. A future SuzieQ that
+        renames sqPoller would break this on the first test run."""
+        assert HEARTBEAT_TABLE == "sqPoller"

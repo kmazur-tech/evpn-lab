@@ -46,7 +46,12 @@ from .assertions import run_all as run_all_assertions
 from .timeseries.partition import parse_duration
 from .timeseries.reader import TimeWindow, window_read
 from .timeseries.queries import QUERIES
-from .timeseries.envelope import build_envelope, emit_human as ts_emit_human, emit_json as ts_emit_json
+from .timeseries.envelope import (
+    build_envelope,
+    emit_human as ts_emit_human,
+    emit_json as ts_emit_json,
+    HEARTBEAT_TABLE,
+)
 
 
 EXIT_OK            = 0
@@ -193,7 +198,14 @@ def run_timeseries(args) -> int:
 
     # Read each distinct table once and cache, so two queries
     # against the same table don't re-walk the parquet store.
-    tables_needed = sorted({entry.table for entry in QUERIES.values()})
+    # HEARTBEAT_TABLE (sqPoller) is read in addition to the query
+    # tables so the envelope self-check can evaluate poller
+    # liveness - it is not used by any registered query, but it
+    # is the one table in the SuzieQ schema that gets new rows
+    # every poll cycle regardless of fabric state, making it the
+    # right source for a heartbeat signal.
+    query_tables = {entry.table for entry in QUERIES.values()}
+    tables_needed = sorted(query_tables | {HEARTBEAT_TABLE})
     windowed_tables = {}
     files_read_by_table = {}
     for table in tables_needed:
@@ -232,6 +244,12 @@ def run_timeseries(args) -> int:
         window=window,
         results=results,
         files_read_by_table=files_read_by_table,
+        # Pass the windowed tables so the envelope's self-check can
+        # inspect row freshness and flag a "degraded" status when the
+        # poller has silently stopped feeding data. Does NOT change
+        # the exit code - degraded is an observational signal for
+        # Phase 6 consumers, not a failure per ADR-11.
+        windowed_tables=windowed_tables,
     )
 
     if args.format == "json":
