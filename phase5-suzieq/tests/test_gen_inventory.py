@@ -218,3 +218,82 @@ class TestGenerateSkipping:
         ]
         with pytest.raises(ValueError, match="no usable devices"):
             generate(devices)
+
+
+# ---------------------------------------------------------------------------
+# SUZIEQ_STRICT_HOST_KEYS env var (Phase 5.1 security hygiene)
+# ---------------------------------------------------------------------------
+#
+# The default is still ignore-known-hosts: true because lab vJunos
+# containers regenerate SSH host keys on every containerlab
+# destroy/deploy cycle and wiping known_hosts on every cold boot is
+# operationally painful. Production deployments are expected to set
+# SUZIEQ_STRICT_HOST_KEYS=1 in the environment and provision
+# known_hosts via configuration management.
+#
+# These tests pin the env var contract and the default behavior so
+# a future contributor cannot silently flip either direction.
+
+class TestStrictHostKeysEnvVar:
+    _STRICT_DEVICES = [
+        fake_nb_device("dc1-leaf1", "EX9214", "10.1.0.1", "dc1"),
+    ]
+
+    def test_default_is_permissive_lab_mode(self, monkeypatch):
+        """With no env var set, the lab default stays permissive so
+        existing lab deploys keep working after the env var lands."""
+        monkeypatch.delenv("SUZIEQ_STRICT_HOST_KEYS", raising=False)
+        inv = yaml.safe_load(generate(self._STRICT_DEVICES))
+        assert inv["devices"][0]["ignore-known-hosts"] is True
+
+    def test_strict_keys_1_flips_to_strict(self, monkeypatch):
+        monkeypatch.setenv("SUZIEQ_STRICT_HOST_KEYS", "1")
+        inv = yaml.safe_load(generate(self._STRICT_DEVICES))
+        assert inv["devices"][0]["ignore-known-hosts"] is False
+
+    def test_strict_keys_true_flips_to_strict(self, monkeypatch):
+        monkeypatch.setenv("SUZIEQ_STRICT_HOST_KEYS", "true")
+        inv = yaml.safe_load(generate(self._STRICT_DEVICES))
+        assert inv["devices"][0]["ignore-known-hosts"] is False
+
+    def test_strict_keys_case_insensitive(self, monkeypatch):
+        for value in ("TRUE", "Yes", "ON", "1"):
+            monkeypatch.setenv("SUZIEQ_STRICT_HOST_KEYS", value)
+            inv = yaml.safe_load(generate(self._STRICT_DEVICES))
+            assert inv["devices"][0]["ignore-known-hosts"] is False, (
+                f"{value!r} should enable strict host keys"
+            )
+
+    def test_strict_keys_falsy_values_stay_permissive(self, monkeypatch):
+        for value in ("0", "false", "no", "off", ""):
+            monkeypatch.setenv("SUZIEQ_STRICT_HOST_KEYS", value)
+            inv = yaml.safe_load(generate(self._STRICT_DEVICES))
+            assert inv["devices"][0]["ignore-known-hosts"] is True, (
+                f"{value!r} should stay permissive"
+            )
+
+    def test_strict_keys_kwarg_overrides_env(self, monkeypatch):
+        """Tests pass strict_host_keys= explicitly to avoid touching
+        process env. The kwarg must win over the env var so the
+        tests themselves are reproducible."""
+        monkeypatch.setenv("SUZIEQ_STRICT_HOST_KEYS", "")
+        inv = yaml.safe_load(
+            generate(self._STRICT_DEVICES, strict_host_keys=True)
+        )
+        assert inv["devices"][0]["ignore-known-hosts"] is False
+        inv = yaml.safe_load(
+            generate(self._STRICT_DEVICES, strict_host_keys=False)
+        )
+        assert inv["devices"][0]["ignore-known-hosts"] is True
+
+    def test_all_device_groups_get_same_setting(self, monkeypatch):
+        """If strict mode is on, EVERY devices block entry must be
+        strict. Not just the first one."""
+        monkeypatch.setenv("SUZIEQ_STRICT_HOST_KEYS", "1")
+        devices = [
+            fake_nb_device("dc1-leaf1", "EX9214", "10.1.0.1", "dc1"),
+            fake_nb_device("dc1-mx-edge", "MX204", "10.1.0.99", "dc1"),
+        ]
+        inv = yaml.safe_load(generate(devices))
+        assert len(inv["devices"]) == 2
+        assert all(d["ignore-known-hosts"] is False for d in inv["devices"])

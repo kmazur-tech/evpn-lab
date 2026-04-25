@@ -127,7 +127,25 @@ def map_devtype(model):
     return None
 
 
-def generate(devices, netbox_url="", warn_stream=None):
+def _strict_host_keys_enabled():
+    """Read SUZIEQ_STRICT_HOST_KEYS from the environment.
+
+    Returns True when the env var is set to any truthy value
+    ('1', 'true', 'yes', 'on', case-insensitive). Default False so
+    lab deploys keep the ignore-known-hosts convenience that lets
+    `containerlab destroy/deploy` cycles work without wiping a
+    host-side known_hosts file.
+
+    Production deployments MUST set SUZIEQ_STRICT_HOST_KEYS=1 and
+    provision known_hosts via configuration management. The env var
+    is the single switch that flips the behavior; there is no code
+    path where strict host keys get disabled by accident.
+    """
+    raw = os.environ.get("SUZIEQ_STRICT_HOST_KEYS", "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def generate(devices, netbox_url="", warn_stream=None, strict_host_keys=None):
     """Pure function: NetBox devices list -> SuzieQ inventory YAML.
 
     Split out from main() so tests can call it with hand-built device
@@ -141,6 +159,11 @@ def generate(devices, netbox_url="", warn_stream=None):
         warn_stream: where to write WARNING lines for skipped
                     devices. Defaults to sys.stderr in the CLI path,
                     pytest passes capsys-friendly streams.
+        strict_host_keys: force the ignore-known-hosts flag in the
+                    generated YAML. None (default) reads the value
+                    from the SUZIEQ_STRICT_HOST_KEYS env var via
+                    _strict_host_keys_enabled(). True/False override
+                    the env var (used by tests).
 
     Returns:
         YAML string suitable for SuzieQ's native inventory format.
@@ -151,6 +174,8 @@ def generate(devices, netbox_url="", warn_stream=None):
     """
     if warn_stream is None:
         warn_stream = sys.stderr
+    if strict_host_keys is None:
+        strict_host_keys = _strict_host_keys_enabled()
 
     if not devices:
         raise ValueError(
@@ -215,17 +240,25 @@ def generate(devices, netbox_url="", warn_stream=None):
     out.write("\n")
 
     out.write("devices:\n")
+    # Lab default: ignore-known-hosts: true (vJunos containers come
+    # up with a fresh SSH host key on every containerlab
+    # destroy/deploy cycle, so a known_hosts file would have to be
+    # wiped on every cold boot).
+    #
+    # Production: set SUZIEQ_STRICT_HOST_KEYS=1 in the environment
+    # (or pass strict_host_keys=True directly) and the inventory
+    # will emit ignore-known-hosts: false. Operators are then
+    # responsible for provisioning known_hosts via configuration
+    # management. See _strict_host_keys_enabled() for the env var
+    # parsing; the default stays permissive so lab deploys do not
+    # silently start failing on cold boots after this env var is
+    # added.
+    ignore_value = "false" if strict_host_keys else "true"
     for (_, devtype), _hosts in sorted(grouped.items()):
         out.write(f"  - name: dev-{devtype}\n")
         out.write(f"    transport: ssh\n")
         out.write(f"    devtype: {devtype}\n")
-        # vJunos containers come up with a fresh SSH host key on
-        # every `containerlab destroy/deploy` cycle, so a
-        # known_hosts file would have to be wiped on every cold
-        # boot. Lab convenience only - production must keep host
-        # key verification on and provision known_hosts via
-        # configuration management.
-        out.write(f"    ignore-known-hosts: true\n")
+        out.write(f"    ignore-known-hosts: {ignore_value}\n")
     out.write("\n")
 
     out.write("auths:\n")
