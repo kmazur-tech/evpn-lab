@@ -10,6 +10,12 @@ __pycache__/
 .venv/
 venv/
 
+# Coverage reports (pytest-cov, Phase 5.1)
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
 # Phase 3 Nornir build output (rendered configs)
 phase3-nornir/build/
 

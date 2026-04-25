@@ -1,2 +1,6 @@
 pytest>=8.0
 PyYAML>=6.0
+# Coverage reporting (Phase 5.1). Invoke with `pytest --cov` or run
+# `scripts/coverage.sh` for the canonical config. Adding the dep only -
+# the default test suite does NOT collect coverage so runtime stays flat.
+pytest-cov>=4.1

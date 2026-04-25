@@ -1,0 +1,66 @@
+# Phase 5.1: coverage config for the drift harness + gen-inventory +
+# the build-time patcher script.
+#
+# Invoked by:
+#   cd phase5-suzieq
+#   python -m pytest --cov --cov-config=.coveragerc
+#
+# Default `pytest` (no --cov) skips coverage entirely, so test suite
+# runtime stays flat at ~2.5 s. Coverage is an opt-in report, not a
+# gate.
+#
+# Why it lives in phase5-suzieq/ and not at the repo root:
+#   Coverage is per-phase. Each phase has its own tests and its own
+#   source layout. Collecting coverage across the whole repo would
+#   lump phase3-nornir + phase4-batfish + phase5-suzieq together and
+#   the resulting number would be meaningless.
+
+[run]
+# Cover the production modules under drift/ and the standalone
+# scripts gen-inventory.py + suzieq-image/add-vjunos-switch.py.
+#
+# `source` would be cleaner for drift/ alone but cannot auto-import
+# the two hyphenated stand-alone scripts (Python disallows hyphens
+# in module names so coverage's importable-package heuristic drops
+# them). `include` takes filesystem path patterns directly and
+# tracks whatever gets imported by test_gen_inventory.py /
+# test_suzieq_patcher.py via importlib.
+include =
+    drift/*
+    drift/*/*
+    drift/*/*/*
+    gen-inventory.py
+    suzieq-image/add-vjunos-switch.py
+
+# Do NOT track tests themselves - testing the tests would be noise.
+omit =
+    tests/*
+    */__pycache__/*
+    */__init__.py
+
+[report]
+# Ignore defensive branches that are impossible to hit without a
+# hand-built fixture specifically designed to trigger them. The
+# sentinel patterns below are the canonical exclusions from the
+# coverage.py docs plus one for the _json_default fallback in
+# drift/cli.py.
+exclude_lines =
+    pragma: no cover
+    raise NotImplementedError
+    if __name__ == .__main__.:
+    pass
+    \.\.\.
+
+# Round precision matches pytest-cov's default.
+precision = 1
+
+# Sort the report by filename so diffs across runs are readable.
+sort = Name
+
+# Print a summary even for files with 100% coverage.
+show_missing = True
+
+# Skip files that have 0% coverage (usually means they were not
+# imported during the test run; worth fixing but don't pollute the
+# report).
+skip_empty = True
