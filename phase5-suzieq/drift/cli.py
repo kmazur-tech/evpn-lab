@@ -122,6 +122,20 @@ def parse_args(argv=None):
         "--to", dest="to_epoch", type=int, default=None,
         help="Timeseries mode: absolute window end as unix epoch seconds.",
     )
+    p.add_argument(
+        "--exit-nonzero-on-degraded", action="store_true", default=False,
+        help=(
+            "Timeseries mode opt-in (Phase 5.1): when the envelope "
+            "self-check reports status='degraded', exit with "
+            "EXIT_DRIFT_FOUND (1) instead of EXIT_OK (0). Default "
+            "OFF - preserves ADR-11 'timeseries observations are "
+            "never pass/fail' for normal runs. Intended for "
+            "operators who want systemd `OnFailure=` to fire on "
+            "degraded status without waiting for a Phase 6 "
+            "consumer. See phase5-suzieq/README.md for the "
+            "systemd drop-in pattern."
+        ),
+    )
     return p.parse_args(argv)
 
 
@@ -246,9 +260,13 @@ def run_timeseries(args) -> int:
         files_read_by_table=files_read_by_table,
         # Pass the windowed tables so the envelope's self-check can
         # inspect row freshness and flag a "degraded" status when the
-        # poller has silently stopped feeding data. Does NOT change
-        # the exit code - degraded is an observational signal for
-        # Phase 6 consumers, not a failure per ADR-11.
+        # poller has silently stopped feeding data. By default this
+        # does NOT change the exit code - degraded is an
+        # observational signal for Phase 6 consumers, not a failure
+        # per ADR-11. The --exit-nonzero-on-degraded flag below
+        # opts into promoting it to EXIT_DRIFT_FOUND so operators
+        # can wire systemd OnFailure= to the hourly timer without
+        # waiting for a Phase 6 consumer.
         windowed_tables=windowed_tables,
     )
 
@@ -256,6 +274,14 @@ def run_timeseries(args) -> int:
         ts_emit_json(envelope)
     else:
         ts_emit_human(envelope)
+
+    # Opt-in exit-code-on-degraded (Phase 5.1). Default stays EXIT_OK
+    # to preserve ADR-11; flag flips the contract for operators who
+    # want the timer unit to surface degradation immediately via
+    # systemd OnFailure= instead of waiting for a Phase 6 consumer.
+    if getattr(args, "exit_nonzero_on_degraded", False):
+        if envelope.get("status") == "degraded":
+            return EXIT_DRIFT_FOUND
 
     return EXIT_OK
 

@@ -630,6 +630,42 @@ journalctl -u suzieq-drift-timeseries.service -n 50           # run history
 
 The hourly cadence is the natural floor of the parquet partition scheme — a more frequent timer would just reread the same coalesced files and produce identical output. Override via `systemctl edit suzieq-drift-timeseries.timer` if a different cadence is needed.
 
+### Wiring systemd OnFailure= to `status: degraded` (Phase 5.1 opt-in)
+
+The default `--mode timeseries` exit code is always 0 (ADR-11), so a vanilla systemd timer never fires `OnFailure=` even when the envelope self-check reports `status: "degraded"`. The result: an operator who doesn't watch the JSON file could miss a broken-poller state for hours or days.
+
+Phase 5.1 adds a strictly-opt-in flag that lets systemd pick up the degraded signal without waiting for a Phase 6 consumer:
+
+```bash
+docker compose run --rm drift --mode timeseries --window 1h --json --exit-nonzero-on-degraded
+```
+
+When the flag is set AND `envelope.status == "degraded"`, the command exits with `EXIT_DRIFT_FOUND` (1) instead of `EXIT_OK` (0). Tooling errors still exit 2. Any other run still exits 0. The default is **off** — the ADR-11 "timeseries observations are never pass/fail" contract stays intact for every run that does not opt in.
+
+Install as a systemd drop-in override so the unit file stays pristine:
+
+```bash
+sudo systemctl edit suzieq-drift-timeseries.service
+```
+
+Enter:
+
+```ini
+[Service]
+# Promote status=degraded to exit 1 so OnFailure= fires on it.
+# See ADR-15 + Phase 5.1 review item #3.
+ExecStart=
+ExecStart=/bin/bash -c '/usr/bin/docker compose run --rm drift --mode timeseries --window 1h --json --exit-nonzero-on-degraded > /var/log/suzieq-drift/timeseries-latest.json'
+
+# Fire an alerting unit when the timer's oneshot exits non-zero
+# (which now happens on either tooling error OR degraded status).
+OnFailure=suzieq-drift-timeseries-alert.service
+```
+
+Then define a trivial alert service (one-shot wrapper around your mailer / Slack-webhook / pagerduty-cli of choice). This gives operators a fire-immediately path for the degraded signal without any Phase 6 consumer infrastructure.
+
+**Why a flag and not flip the default:** the ADR-11 rule is load-bearing for consumers that treat the JSON file as a data source (e.g. a dashboard polling `timeseries-latest.json`). Such a consumer depends on the file being readable even when the harness reports degradation. Flipping the default would break the fire-and-forget dashboard case to help the systemd-OnFailure case; making it an opt-in lets both patterns coexist.
+
 ### Why "touched/churned" instead of an absolute route delta
 
 The natural framing of `route_churn` is "how did the route count change between window start and window end?". Answering it cleanly requires snapshots at exactly the window's start AND end, which we don't have — the parquet store has poll-cadence snapshots and a query window starts at an arbitrary time that almost never aligns with one. The "touched/churned" decomposition sidesteps the alignment problem by counting only what's observable inside the window.
