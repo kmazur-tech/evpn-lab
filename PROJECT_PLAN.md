@@ -136,7 +136,21 @@ Result: structural configuration errors caught before touching any device. Runti
 
 ## Phase 5 - Suzieq Operational State Monitoring + NetBox Drift Detection
 
-Re-scope rationale: the Phase 2 smoke test suite already covers the originally-planned assertions (BGP Established + per-peer EVPN NLRI, per-VNI Type-2/3, Type-5, TENANT-1 /32 object asserts, ESI-LAG with cross-leaf DF election consistency, LLDP neighbor counts, VXLAN tunnel state, MAC/IP entries against an expected host list). Re-implementing those in Suzieq would be duplication. Phase 5 instead focuses on what the smoke suite cannot do: continuous time-series state, vendor-neutral schema (needed for Phase 10 multi-vendor), and intent-vs-state diff against NetBox.
+**Status: DONE (2026-04-11).** Parts A + B-min + B-full + C + D all shipped, plus two post-review correction rounds. See `phase5-suzieq/README.md` for the full deployment guide + contracts + gotchas. The scope below is the original planning text from before the phase shipped; read it for intent, read the README for what actually landed.
+
+Implementation summary:
+- **Part A** — 3-container SuzieQ stack (poller + coalescer + rest) + build-time image patcher adding a project-owned `junos-vjunos-switch` devtype + `gen-inventory.py` reading NetBox for deploy-time inventory generation
+- **Part B-min / B-full** — 8-dimensional NetBox-vs-state drift harness in a sibling `drift` container: device presence, interface admin, LLDP topology, BGP session, EVPN VNI, loopback reachability, anycast MAC, peer-leaf IRB ARP
+- **Part C** — 4 state-only invariant assertions + 5-minute systemd timer (no NetBox credentials needed on the assertion loop)
+- **Part D** — time-window queries over the parquet history (`bgp_flaps`, `route_churn`, `mac_mobility`) + hourly systemd timer producing `/var/log/suzieq-drift/timeseries-latest.json`
+- **Rev 2 (architectural review corrections)** — `Drift.category` axis (6-value allowlist: inventory/topology/control_plane/overlay/arp_nd/meta), central `TABLE_REGISTRY` in `drift/state.py`, envelope self-check with `status` + `warnings[]` fields via sqPoller heartbeat
+- **Phase 5.1 (operational hardening)** — `SUZIEQ_STRICT_HOST_KEYS` env var, pytest-cov baseline 91.9%, `--exit-nonzero-on-degraded` opt-in flag on `--mode timeseries`, live schema guards catching new engine-computed columns, real HTTP healthcheck on `sq-rest-server` (replaces a `/dev/tcp` probe that let a 3-day accept-but-no-serve wedge go undetected), REST vs raw pyarrow schema-drift smoke test. 362 default tests + 12 live tests + 2 standalone live scripts.
+
+Phase 6 now has everything it needs to build a CI/alerting consumer: the `status` / `warnings[]` envelope fields, the `category` axis on drift records, the `--exit-nonzero-on-degraded` hook for systemd `OnFailure=`, and the engine-computed-column regression guards. Phase 5 is architecturally closed; no more logic belongs in the drift harness.
+
+---
+
+Re-scope rationale (original planning text): the Phase 2 smoke test suite already covers the originally-planned assertions (BGP Established + per-peer EVPN NLRI, per-VNI Type-2/3, Type-5, TENANT-1 /32 object asserts, ESI-LAG with cross-leaf DF election consistency, LLDP neighbor counts, VXLAN tunnel state, MAC/IP entries against an expected host list). Re-implementing those in Suzieq would be duplication. Phase 5 instead focuses on what the smoke suite cannot do: continuous time-series state, vendor-neutral schema (needed for Phase 10 multi-vendor), and intent-vs-state diff against NetBox.
 
 Smoke tests = deploy-time gate (one-shot, runs in CI after `containerlab deploy`).
 Suzieq = runtime monitor (cron, dashboards, alerts).

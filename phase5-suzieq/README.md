@@ -201,7 +201,7 @@ Documented because the same potholes will trip the next operator:
 | `Data directory /suzieq/parquet is not an accessible dir` | Fresh docker volume is root-owned; container runs as uid 1000 | One-time `chown -R 1000:1000` via `--user root` (see step 4 of Deployment) |
 | `Unable to parse hostname env:NETBOX_URL` | SuzieQ NetBox source plugin's `url` field uses `urlparse()` directly and does NOT support `env:` syntax (only `token`/`username`/`password`/`API_KEY` do) | `gen-inventory.py` writes the literal URL at generate time |
 | Empty `device show` despite parquet files on disk | `gen-inventory.py` writes the literal URL at generate time, but the SuzieQ NetBox source uses `primary_ip4` (the loopback in this project) which is unreachable from netdevops-srv | Switched to native source generated from NetBox, using `oob_ip` |
-| `Host key is not trusted for host 172.16.18.161` for 3 of 4 devices | First device's key gets accepted into a fresh known_hosts; the rest get rejected. vJunos containers regenerate keys on every cold boot anyway | `ignore-known-hosts: true` in the device block (lab convenience; production must keep verification on) |
+| `Host key is not trusted for host 172.16.18.161` for 3 of 4 devices | First device's key gets accepted into a fresh known_hosts; the rest get rejected. vJunos containers regenerate keys on every cold boot anyway | Lab default: `ignore-known-hosts: true` via `gen-inventory.py` (lab convenience). Production: set `SUZIEQ_STRICT_HOST_KEYS=1` in the environment before running `gen-inventory.py` - the script will flip `ignore-known-hosts: false` and the operator is then responsible for provisioning known_hosts via configuration management. See "Production note" section below. |
 | `Processing data failed for service device ... KeyError: 'bootupTimestamp'` | `junos-qfx` / `junos-ex` device template expects multi-routing-engine wrapper that vJunos-switch does not produce | Project-owned `junos-vjunos-switch` devtype added by build-time patcher (see "junos-vjunos-switch devtype" section); originally Phase 5 Part A worked around this with `junos-mx` but Part B did it properly |
 | `device show` empty after re-deploy even though `pd.read_parquet` returns data | `suzieq-cli` reads `~/.suzieq/suzieq-cfg.yml` (default config) which has `data-directory: ./parquet`; our config lives at `/suzieq/suzieq.cfg` | Mount `./suzieq.cfg` at BOTH `/suzieq/suzieq.cfg` AND `/home/suzieq/.suzieq/suzieq-cfg.yml` |
 | REST API returns "Connection reset by peer" | Default rest server bind address is `127.0.0.1`, not reachable through Docker port mapping | `address: 0.0.0.0` in `suzieq.cfg` rest section |
@@ -229,7 +229,16 @@ The lab cuts corners that production deployments should not:
     ```
   - Production at hundreds of devices scales the daily growth roughly linearly (40+ devices = 300-400 MB/day) and needs the retention cron from day one plus a sized parquet volume on a dedicated disk.
 - **REST TLS.** See the banner above. `--no-https` is a lab convenience, not a production posture.
-- **Host key verification.** Lab uses `ignore-known-hosts: true` because vJunos containers regenerate SSH keys on every cold boot. Production must keep verification on and provision known_hosts via configuration management.
+- **Host key verification.** Lab default is `ignore-known-hosts: true` (via `gen-inventory.py`) because vJunos containers regenerate SSH keys on every `containerlab destroy/deploy` cycle. Production MUST keep verification on. The switch is a single env var read by `gen-inventory.py:_strict_host_keys_enabled()`:
+    ```bash
+    # Production deploy:
+    export SUZIEQ_STRICT_HOST_KEYS=1
+    python3 gen-inventory.py > inventory.yml
+    # Produces: ignore-known-hosts: false  on every device block.
+    # Operator then provisions known_hosts via configuration management
+    # (Ansible/Salt/etc.) before the poller first connects.
+    ```
+    Accepts any truthy value (`1`, `true`, `yes`, `on`, case-insensitive). Default (unset/empty/falsy) stays permissive for lab compat. Regression tests in `tests/test_gen_inventory.py::TestStrictHostKeysEnvVar` pin both directions.
 - **Static inventory regeneration.** Re-run `gen-inventory.py` and restart the poller after device adds/removes in NetBox. The proper fix is upstream - a SuzieQ PR adding `address-source: oob_ip|primary_ip4` to the NetBox source plugin - so that we can drop the script and use the native dynamic source.
 
 ## Comparison to commercial alternatives
@@ -433,11 +442,15 @@ Assertions that would read identically to a smoke-check docstring are rejected a
 
 All four are **pure state-only** - none read NetBox. The assertion mode is therefore safe to run from a systemd timer that has no NetBox credential.
 
-### Gotcha 1: `remoteVtepCnt` vs `remoteVtepList`
+### Gotcha 1: engine-computed columns (two known cases)
 
-`suzieq-cli evpnVni show` exposes a `remoteVtepCnt` column. **That column is computed at query time by the SuzieQ engine** from the raw `remoteVtepList` column. It does not exist in the parquet file. The drift state reader uses direct pyarrow reads that bypass the engine, so the assertion must compute the count itself via `len(row["remoteVtepList"])`.
+`suzieq-cli` and the REST API expose some columns that the SuzieQ pandas engine COMPUTES at query time from raw parquet columns. They never exist in the parquet file. The drift state reader uses direct pyarrow reads that bypass the engine, so production code that reads one of these columns directly will silently see `None`/`NaN` and default to 0 / empty / wrong. Two documented cases today; a live schema-drift smoke test in Phase 5.1 catches new ones automatically on an image bump (see "Phase 5.1 live schema guards" below).
 
-Discovered live on 2026-04-11: the first live run of `assert_vtep_remote_count` fired 4 false positives on a clean fully-converged fabric because the assertion was reading the non-existent `remoteVtepCnt` column and defaulting to 0. Fix + regression guard pinned in `test_assertions_vtep.py::test_l2_vni_with_missing_column_is_error`.
+**Case 1: `evpnVni.remoteVtepCnt`** — computed as `len(remoteVtepList)` at query time. The raw source column `remoteVtepList` (list-typed) IS in parquet. Production code in `drift/assertions/vtep.py:_count_remote_vteps()` computes the count itself from the raw column. Discovered live on 2026-04-11: the first live run of `assert_vtep_remote_count` fired 4 false positives on a clean fully-converged fabric because the assertion was reading the non-existent `remoteVtepCnt` column and defaulting to 0. Fix + regression guard pinned in `test_assertions_vtep.py::test_l2_vni_with_missing_column_is_error`.
+
+**Case 2: `sqPoller.statusStr`** — maps the integer `status` column (which IS in parquet) to a human string like `"OK"` or `"Command Not Found"` at query time. Production code does NOT currently read `statusStr` (`assert_poll_health` reads `pollExcdPeriodCount` instead), so this is a documented-but-unused case — the smoke test catches it so a future contributor adding a `statusStr` read would hit the guard first. Discovered live on 2026-04-11 by the Phase 5.1 REST schema-drift smoke test (`tests/fixtures/verify_rest_vs_raw.py`) on its FIRST live run. Allowlisted in `KNOWN_ENGINE_COMPUTED["sqPoller"]`. If a future assertion needs the human-readable status, read raw `status` (integer) and apply a local int-to-string map — NOT a direct `statusStr` read.
+
+**How to avoid this class of bug when adding a new reader:** before reading a column directly via pyarrow in `drift/state.py` / `drift/diff.py` / `drift/assertions/*.py`, grep `tests/fixtures/verify_rest_vs_raw.py:KNOWN_ENGINE_COMPUTED` for the column name. If it's there, use the raw source column + local computation. If it isn't, run the REST schema-drift smoke test once against the live lab to confirm the column is in raw parquet (see "Phase 5.1 live schema guards" below).
 
 ### Gotcha 2: partial-view BGP rows during session transitions
 
@@ -814,10 +827,95 @@ In the order you should check when something doesn't work:
 5. `journalctl -u suzieq-drift-assert.service -n 50` — the timer's last run. If "unit failed" shows up, tail the journal to see which assertion fired.
 6. `docker exec sq-poller cat /tmp/sq-poller-0.log | tail -50` — poller-side errors (SSH auth failures, command timeouts).
 
-## What lands in Part D
+## Phase 5.1 operational hardening (2026-04-11)
 
-| Part | Scope |
-|---|---|
-| D | Time-window queries via pyarrow over the parquet history (BGP flap count, route count delta, MAC mobility, VTEP appear/disappear) |
+Five operator-facing changes landed after a review pass that focused on operational gaps the earlier architectural reviews had missed. All five are live-verified end-to-end on netdevops-srv.
 
-Uses the same drift sibling container - no new infrastructure, no new venvs, just more code in `drift/timeseries/`.
+### `sq-rest-server` real HTTP healthcheck
+
+The earlier healthcheck was `["CMD-SHELL", "timeout 3 bash -c '</dev/tcp/127.0.0.1/8000' || exit 1"]` — a bash TCP connect probe that succeeds as long as the listening socket is alive. A wedged uvicorn worker still satisfies that, because the parent accept path is separate from the request-handling path. Result: the container reported `Up 3 days (healthy)` while every HTTP request got reset at the server.
+
+Fixed by `sq-rest-healthcheck.py` (host-side script, bind-mounted into the container at `/usr/local/bin/sq-rest-healthcheck.py`). Makes an authenticated HTTP GET to `/api/v2/device/show?namespace=dc1` with the container's `SUZIEQ_API_KEY`, asserts HTTP 200 + JSON list body, fails non-zero on anything else. Docker marks the container unhealthy within the configured retry window instead of silently staying green.
+
+`docker-compose.yml` healthcheck now:
+
+```yaml
+healthcheck:
+  test: ["CMD", "python3", "/usr/local/bin/sq-rest-healthcheck.py"]
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 30s
+```
+
+Diagnostic recipe for a future wedge:
+
+```bash
+docker inspect sq-rest-server --format '{{.State.Health.Status}}: {{range .State.Health.Log}}exit={{.ExitCode}} [{{.Start.Format "15:04:05"}}] {{.Output}}{{end}}'
+```
+
+### `--exit-nonzero-on-degraded` opt-in for the hourly timer
+
+Default `--mode timeseries` exit code is always 0 per ADR-11. Operators who want systemd `OnFailure=` to fire on `status: "degraded"` without waiting for a Phase 6 consumer can enable the opt-in flag via a `systemctl edit` drop-in. See the "Wiring systemd OnFailure= to `status: degraded` (Phase 5.1 opt-in)" section in the Part D block above for the full drop-in example.
+
+### `SUZIEQ_STRICT_HOST_KEYS` env var
+
+`gen-inventory.py` now reads `SUZIEQ_STRICT_HOST_KEYS` at deploy time. Default stays permissive for lab compat (containerlab destroy/deploy cycles); production sets the env var to any truthy value and gets `ignore-known-hosts: false`. See the "Production note" section above for the full explanation.
+
+### Live schema guards (catch new engine-computed columns automatically)
+
+Two new test files in `tests/`:
+
+**`tests/test_live_schema_guards.py`** — 12 `@pytest.mark.live` tests parametrized over 9 SuzieQ tables. For each table, reads the coalesced parquet subtree via `pyarrow.dataset(partitioning='hive')` and asserts every column production code depends on is present. Plus three engine-computed-drift regression guards pinning the `remoteVtepCnt`, `bgp` 6-field PK, and `sqPoller.timestamp` heartbeat contracts. Skipped by default (`addopts = -m "not live"`); runs when `SUZIEQ_LIVE_PARQUET_DIR` is set and the `live` marker is enabled.
+
+**`tests/fixtures/verify_live_schema.py`** — standalone Python mirror of the same logic that runs WITHOUT pytest. Needed because netdevops-srv is Debian 12 + PEP 668 blocks `pip install pytest` on system python, and installing pytest into the drift container would bloat the image. Run via:
+
+```bash
+docker run --rm \
+    -v suzieq_parquet:/suzieq/parquet:ro \
+    -v /tmp/verify_live_schema.py:/verify.py:ro \
+    -e SUZIEQ_LIVE_PARQUET_DIR=/suzieq/parquet \
+    --entrypoint python3 \
+    evpn-lab/phase5-drift:dev /verify.py
+```
+
+First live run 2026-04-11: 10/10 PASS against the real lab parquet store. All 9 required-column checks succeed + the `remoteVtepCnt` engine-computed pin still holds.
+
+### REST vs raw schema-drift smoke test (catches NEW engine-computed columns)
+
+**`tests/fixtures/verify_rest_vs_raw.py`** — standalone script that diffs the REST `/api/v2/<table>/show` column set against the raw pyarrow column set for 8 SuzieQ tables. Columns in REST but NOT in raw parquet = engine-computed. Fails on any that aren't in the `KNOWN_ENGINE_COMPUTED` allowlist.
+
+REST API table-name gotcha encoded in the script's `TABLES` tuple: REST uses singular `route` / `mac` / `interface` while parquet uses plural `routes` / `macs` / `interfaces`. Verified empirically via status-code probe (`200` vs `404`).
+
+Run via:
+
+```bash
+docker run --rm --network host \
+    -v /var/lib/docker/volumes/suzieq_parquet/_data:/parquet:ro \
+    -v /tmp/verify_rest_vs_raw.py:/verify.py:ro \
+    -e SUZIEQ_REST_URL=http://127.0.0.1:8443 \
+    -e SUZIEQ_API_KEY=$(docker inspect sq-rest-server \
+        --format '{{range .Config.Env}}{{println .}}{{end}}' \
+        | awk -F= '/^SUZIEQ_API_KEY=/{print $2}') \
+    -e SUZIEQ_LIVE_PARQUET_DIR=/parquet \
+    -e SUZIEQ_NAMESPACE=dc1 \
+    --entrypoint python3 \
+    evpn-lab/phase5-drift:dev /verify.py
+```
+
+First live run 2026-04-11 caught `sqPoller.statusStr` as a previously-undocumented engine-computed column (see Gotcha 1 above). Final result after allowlisting: **8/8 passed, 0 failed, 0 skipped**.
+
+### Coverage baseline 91.9%
+
+`pytest-cov` is now a dev dependency (`requirements-dev.txt`) and `.coveragerc` is in the phase directory. Coverage is **opt-in** — the default `pytest` command skips it entirely so the default test runtime stays flat at ~2.5 s. Run the coverage report via:
+
+```bash
+cd phase5-suzieq
+python -m pytest --cov --cov-config=.coveragerc --cov-report=term
+```
+
+Baseline as of this commit: **91.9% on 1214 statements, 98 missed.** Per-file: worst is `drift/timeseries/reader.py` at 86.3% (FileNotFoundError race paths during fresh poll cycles — hard to unit-test without a real tmp_path race); `gen-inventory.py` at 87.0% (`main()` not exercised by unit tests); `drift/cli.py` at 89.4% (NetBox exception handlers). Everything else is above 90%.
+
+The `.coveragerc` uses `include =` (not `source =`) because two of the production modules live in hyphenated filenames (`gen-inventory.py`, `suzieq-image/add-vjunos-switch.py`) and coverage's auto-import heuristic can't track them by package name. `include` takes filesystem path patterns directly.
+
+Coverage is **NOT a CI gate** — the point is to measure the claim that "362 tests exercise critical error paths", not to force writing tests-for-coverage. The number gives a reviewer a signal on where the gaps are; closing them is a Phase 5.2 follow-up task, not a merge blocker.
