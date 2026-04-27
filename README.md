@@ -67,7 +67,7 @@ An automated EVPN-VXLAN data center fabric built with Infrastructure as Code pri
 | 3 | [Nornir IaC Framework](phase3-nornir/) | Done |
 | 4 | [Batfish Pre-Deployment Validation](phase4-batfish/) | Done |
 | 5 | [Suzieq Continuous State + Drift Detection](phase5-suzieq/) | Done |
-| 6 | GitHub Actions CI/CD Pipeline | Planned |
+| 6 | [GitHub Actions CI/CD Pipeline](PHASE6_PLAN.md) | In progress |
 | 7 | Forwarding Scale + Convergence Tuning | Planned |
 | 8 | CIS/PCI-DSS Hardening | Planned |
 | 9 | gNMI Streaming Telemetry | Planned |
@@ -99,14 +99,21 @@ python phase1-netbox/populate.py
 ```
 evpn-lab/
 +-- README.md                 # This file
-+-- PROJECT_PLAN.md            # 11-phase roadmap
++-- PROJECT_PLAN.md            # 12-phase roadmap
++-- PHASE6_PLAN.md             # Phase 6 CI/CD work plan
 +-- .env.example               # Environment variable template
-+-- phase1-netbox/
-    +-- README.md              # Phase 1 design decisions and docs
-    +-- NETBOX_DATA_MODEL.md   # Complete NetBox object inventory
-    +-- netbox-data.yml        # Structured YAML data for populate.py
-    +-- populate.py            # Idempotent NetBox population script
-    +-- requirements.txt       # Python dependencies
++-- phase1-netbox/             # NetBox as Source of Truth
++-- phase2-fabric/             # EVPN+VXLAN+ESI-LAG fabric (containerlab)
++-- phase3-nornir/             # Nornir IaC: render, guard, deploy
+    +-- tests/                 # Unit + integration tests (Phase 3 + Phase 6 extensions)
+        +-- fixtures/render/   # Per-device canned HostData for golden-file tests
+        +-- cassettes/         # vcrpy recorded NetBox HTTP cassettes (Phase 6)
++-- phase4-batfish/            # Pre-deployment offline validation
++-- phase5-suzieq/             # Continuous state observation + drift detection
++-- phase6-cicd/               # CI/CD infrastructure (Phase 6, Stages 2-4)
+    +-- .github/workflows/     # fabric-ci.yml, fabric-deploy.yml
+    +-- scripts/               # Cassette refresh, CI helpers
+    +-- CI.md                  # CI operations documentation
 ```
 
 ## IP Addressing Plan

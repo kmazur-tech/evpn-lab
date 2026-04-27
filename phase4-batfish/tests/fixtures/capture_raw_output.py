@@ -16,7 +16,7 @@ When to re-run:
 
 Invocation (from the workstation, WSL2 venv with pybatfish installed):
 
-    wsl -d Debian -- bash -c 'export BATFISH_HOST=netdevops-srv.lab.local && \
+    wsl -d Debian -- bash -c 'export BATFISH_HOST=$BATFISH_HOST && \
       ~/.venvs/evpn-lab/bin/python \
         /mnt/c/Users/tasior/Projects/evpn-lab/phase4-batfish/tests/fixtures/capture_raw_output.py \
         > /mnt/c/Users/tasior/Projects/evpn-lab/phase4-batfish/tests/fixtures/raw_init_issues_YYYY-MM-DD.txt'

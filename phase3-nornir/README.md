@@ -155,7 +155,7 @@ If you add a new template that emits a secret field, you MUST extend the guard's
 
 ## Tests
 
-Pure-function unit tests under `tests/`. No NetBox, no devices, no env vars (each test that needs env uses `monkeypatch`). Run from WSL2:
+Unit tests and integration tests under `tests/`. No NetBox, no devices, no env vars (each test that needs env uses `monkeypatch`). Run from WSL2:
 
 ```
 cd phase3-nornir
@@ -163,7 +163,7 @@ cd phase3-nornir
 ~/.venvs/evpn-lab/bin/python -m pytest
 ```
 
-Coverage as of Phase 3 close (79 tests, ~1.8 sec):
+### Phase 3 original tests (104 tests, ~2.7 sec)
 
 | File | What it pins | Why it matters |
 |------|--------------|----------------|
@@ -171,15 +171,28 @@ Coverage as of Phase 3 close (79 tests, ~1.8 sec):
 | `test_extract_stanza.py` | Brace-balanced Junos stanza extraction: top-level, nested, indented, missing, substring-no-match, first-match | Used by the regression gate for every per-stanza diff. Bugs here = false PASS or false FAIL. Documents the known limitation of `}` inside string literals. |
 | `test_normalize.py` | Diff normalizer rules + idempotence + non-secret-fields-untouched | Pins the boundary between "regression-diff noise" and "deploy-critical content". Any change to this function MUST come with deploy guard tests proving placeholder hashes still get caught. |
 | `test_enrich_helpers.py` | `_lo0_unit_from_iface_name()`, `_loopback_description()`, `derive_login_hash()` (deterministic, hard-fail on missing env) | Pure mappers easy to break on refactor; the hash derivation is the postmortem fix verified to fail-fast. |
+| `test_enrich_pure.py` | `collect_underlay_neighbors()` IP sorting + pydantic `extra="forbid"` contracts + type validation + field defaults | Pins the schema contract between enrich and templates. |
 | `test_transform.py` | `fabric_inventory_transform()` mgmt-IP/platform/credential mutation | Idiomatic Nornir contract; broken transform = unreachable deploy. |
 | `test_lag_system_id.py` | LAG system-id and admin-key formulas (`f"00:00:00:00:{(ae_index + 3):02x}:00"`) parametrized over ae0/1/6/7/12/13/252 with valid 6-octet MAC regex check; explicit "Phase 2 baselines unchanged" guard | The old formula `f"00:00:00:00:0{ae_index + 3}:00"` produced an invalid 3-char octet for ae7+. Fix verified byte-identical for ae0/1 (the only LAGs in Phase 2) so no expected/ regen needed. |
 | `test_napalm_diff_contract.py` | `napalm_deploy()` correctly reads `out[0].diff` (not `.result`) from the wrapped napalm_configure call; passes `revert_in=300` only when committing; uses `replace=True`; loads config bytes from `build/<host>.conf` not memory | Pins the contract that was broken by the original `out.result or ""` bug. Empty diffs print "no diff", real diffs print the diff text. Verified to FAIL 6/6 when the bug is reintroduced. |
+| `test_validate_flag.py` | Phase 4 Batfish hook wiring: argv construction, exit code propagation, missing-script sentinel | Pins the --validate integration with phase4-batfish/validate.py. |
 
-What's intentionally NOT tested at Phase 3:
-- Full template rendering (would need a complete `host.data` fixture; Phase 6 scope)
-- `enrich_from_netbox()` end-to-end (needs NetBox or vcrpy cassettes; Phase 6)
-- NAPALM tasks (needs devices or mocked NAPALM; Phase 6)
-- Live deploy / smoke (the existing manual deploy + lab-server smoke covers this)
+### Phase 6 test extensions (added to this directory because they test Phase 3 code)
+
+Tests added by Phase 6 Stage 1. They live here (not in `phase6-cicd/`) because they import from `deploy` and `tasks.enrich`. CI-specific infrastructure (workflow YAML, refresh scripts, CI docs) lives in `phase6-cicd/`.
+
+| File | What it pins | Status |
+|------|--------------|--------|
+| `test_render_golden.py` | Full main.j2 render against canned fixture data for all 4 devices, normalized byte-equality against `expected/*.conf`. Plus structural role checks (spine vs leaf: forwarding-options, cluster RR, network-isolation, EVPN-VXLAN, deploy sentinels). 24 tests. | Done |
+| `test_enrich_vcr.py` | `enrich_from_netbox()` end-to-end with vcrpy cassettes recorded against lab NetBox. Validates enriched HostData matches fixture data. | Planned |
+| `test_napalm_tasks.py` | Mocked NAPALM two-stage commit-confirm flow, liveness check, `revert_in=300` contract. | Planned |
+| `test_nornir_per_device.py` | pytest-nornir parametrized runner: each device as a row in CI test summary. | Planned |
+
+Fixture data for golden-file tests lives in `tests/fixtures/render/*.json` (one JSON per device, containing the canned HostData that `enrich_from_netbox()` would produce). vcrpy cassettes will live in `tests/cassettes/` once recorded.
+
+What's intentionally NOT tested here:
+- Live deploy / smoke (covered by manual deploy + lab-server smoke; wired into Phase 6 CI deploy workflow)
+- Semantic intent validation (Phase 4 Batfish territory)
 
 ## Phased rollout
 
@@ -221,7 +234,7 @@ Documented above in the "Secrets and credential material" section. The vault-bac
 
 ### Same hash for root and admin accounts
 
-`deploy.py` calls `derive_login_hash()` once and assigns the same value to both `junos_root_hash` and `junos_admin_hash`. Both accounts therefore use the same plaintext password (`TestLabPass1` in the lab). The CIS Junos benchmark requires unique credentials per account, so Phase 8 (CIS/PCI-DSS hardening) will split this into `JUNOS_ROOT_PASSWORD` and `JUNOS_ADMIN_PASSWORD` env vars and derive two distinct hashes. The `system.j2` template already takes the two hashes as separate variables - the change is one-line in `deploy.py`.
+`deploy.py` calls `derive_login_hash()` once and assigns the same value to both `junos_root_hash` and `junos_admin_hash`. Both accounts therefore use the same plaintext from `$JUNOS_LOGIN_PASSWORD`. The CIS Junos benchmark requires unique credentials per account, so Phase 8 (CIS/PCI-DSS hardening) will split this into `JUNOS_ROOT_PASSWORD` and `JUNOS_ADMIN_PASSWORD` env vars and derive two distinct hashes. The `system.j2` template already takes the two hashes as separate variables - the change is one-line in `deploy.py`.
 
 ### N+1 NetBox API queries during enrich
 
@@ -233,11 +246,9 @@ The Phase 10 plan documents the GraphQL refactor (one query per device, ~10x fas
 
 If NetBox is briefly unreachable during an enrich run, the entire Nornir task fails immediately. No retry loop, no configurable timeout. Acceptable for the lab where NetBox is on a local VM. **Phase 6 (CI) will need this** - flaky CI runs against a remote NetBox would be hard to debug. The fix is a `requests.Session` with an `HTTPAdapter` retry policy mounted onto `nb.http_session`. ~10 line change, defer to Phase 6 alongside vcrpy cassettes.
 
-### No template integration test (Jinja semantics)
+### No template semantic validation (Jinja semantics beyond byte-equality)
 
-The `tests/` suite covers helpers, normalizer, stanza extraction, deploy guard, transform, and the LAG system-id formula - but does NOT render full templates against fixture data. Right now templates are validated only by the golden-file byte-diff against `expected/`, which catches structural drift but not semantic bugs (e.g. a template that emits valid Junos syntax but the wrong route-target).
-
-**Phase 4 (Batfish)** is the structured semantic-validation layer. As a cheap intermediate step, **Phase 6** could add one fixture-based test per top-level template that asserts a few key stanzas appear in the rendered output - that would catch the "wrong RT for a new tenant" class of bug without needing NetBox or Batfish.
+Phase 6 Stage 1 added `test_render_golden.py` which renders full templates against canned fixture data and asserts byte-equality with `expected/*.conf`. This catches structural template drift. Semantic intent validation (does this BGP session converge? are these prefixes reachable?) is **Phase 4 (Batfish)** territory.
 
 ### `vpn-apply-export` on the spine OVERLAY group is intentionally absent
 

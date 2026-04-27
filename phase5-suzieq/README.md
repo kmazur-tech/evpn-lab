@@ -100,7 +100,7 @@ All run in <1 second, no docker, no SuzieQ install, no network - fixture yamls i
 
 ## Deployment
 
-Run on the netdevops services VM (netdevops-srv.lab.local - same host as NetBox and Batfish):
+Run on the netdevops services VM (same host as NetBox and Batfish):
 
 ```bash
 # 0. Always source the env file in the same shell that runs compose.
@@ -170,7 +170,7 @@ print('max pollExcdPeriodCount:', df['pollExcdPeriodCount'].max(), '| rows:', le
 # 4. REST API reachable from a dev box on the lab mgmt segment.
 #    Host port is 8443 (NOT 8000 - that's NetBox on the same VM).
 curl -s -H "access_token: $SUZIEQ_API_KEY" \
-  "http://netdevops-srv.lab.local:8443/api/v2/device/show?namespace=dc1" | head -c 500
+  "http://$SUZIEQ_HOST:8443/api/v2/device/show?namespace=dc1" | head -c 500
 # expect: JSON array with 4 device objects
 
 # 5. Parquet store has data
@@ -201,7 +201,7 @@ Documented because the same potholes will trip the next operator:
 | `Data directory /suzieq/parquet is not an accessible dir` | Fresh docker volume is root-owned; container runs as uid 1000 | One-time `chown -R 1000:1000` via `--user root` (see step 4 of Deployment) |
 | `Unable to parse hostname env:NETBOX_URL` | SuzieQ NetBox source plugin's `url` field uses `urlparse()` directly and does NOT support `env:` syntax (only `token`/`username`/`password`/`API_KEY` do) | `gen-inventory.py` writes the literal URL at generate time |
 | Empty `device show` despite parquet files on disk | `gen-inventory.py` writes the literal URL at generate time, but the SuzieQ NetBox source uses `primary_ip4` (the loopback in this project) which is unreachable from netdevops-srv | Switched to native source generated from NetBox, using `oob_ip` |
-| `Host key is not trusted for host 172.16.18.161` for 3 of 4 devices | First device's key gets accepted into a fresh known_hosts; the rest get rejected. vJunos containers regenerate keys on every cold boot anyway | Lab default: `ignore-known-hosts: true` via `gen-inventory.py` (lab convenience). Production: set `SUZIEQ_STRICT_HOST_KEYS=1` in the environment before running `gen-inventory.py` - the script will flip `ignore-known-hosts: false` and the operator is then responsible for provisioning known_hosts via configuration management. See "Production note" section below. |
+| `Host key is not trusted for host <device-oob-ip>` for 3 of 4 devices | First device's key gets accepted into a fresh known_hosts; the rest get rejected. vJunos containers regenerate keys on every cold boot anyway | Lab default: `ignore-known-hosts: true` via `gen-inventory.py` (lab convenience). Production: set `SUZIEQ_STRICT_HOST_KEYS=1` in the environment before running `gen-inventory.py` - the script will flip `ignore-known-hosts: false` and the operator is then responsible for provisioning known_hosts via configuration management. See "Production note" section below. |
 | `Processing data failed for service device ... KeyError: 'bootupTimestamp'` | `junos-qfx` / `junos-ex` device template expects multi-routing-engine wrapper that vJunos-switch does not produce | Project-owned `junos-vjunos-switch` devtype added by build-time patcher (see "junos-vjunos-switch devtype" section); originally Phase 5 Part A worked around this with `junos-mx` but Part B did it properly |
 | `device show` empty after re-deploy even though `pd.read_parquet` returns data | `suzieq-cli` reads `~/.suzieq/suzieq-cfg.yml` (default config) which has `data-directory: ./parquet`; our config lives at `/suzieq/suzieq.cfg` | Mount `./suzieq.cfg` at BOTH `/suzieq/suzieq.cfg` AND `/home/suzieq/.suzieq/suzieq-cfg.yml` |
 | REST API returns "Connection reset by peer" | Default rest server bind address is `127.0.0.1`, not reachable through Docker port mapping | `address: 0.0.0.0` in `suzieq.cfg` rest section |
@@ -706,7 +706,7 @@ The instructions below are the complete recipe for reproducing the Phase 5 stack
 | ≥ 2 GB free RAM available for the Suzieq stack | Poller is the heaviest; measured ~400 MB steady-state for 4 devices |
 | ≥ 5 GB free disk for the first year | Parquet store + archive grows ~30-40 MB/day for a 4-device lab (see "Coalescer storage budget" above) |
 | NetBox 4.x instance reachable from the host | Intent source for drift. Must have the `dcim`, `ipam`, `vpn` APIs. |
-| SSH reachability from the host to every fabric device | Suzieq polls via SSH. Lab uses `admin/TestLabPass1` local users; production must use a dedicated read-only user. |
+| SSH reachability from the host to every fabric device | Suzieq polls via SSH. Credentials come from `$JUNOS_SSH_USER` / `$JUNOS_SSH_PASSWORD`; production must use a dedicated read-only user. |
 | Python 3.10+ on the workstation that generates `inventory.yml` | `gen-inventory.py` uses stdlib urllib + pynetbox |
 | systemd (for Part C timer) | Optional; without it assertions run on demand only |
 
@@ -733,7 +733,7 @@ These live in a single file outside the repo (the project convention is `../evpn
 ```bash
 # SSH credentials used by Suzieq poller
 export JUNOS_SSH_USER=admin
-export JUNOS_SSH_PASSWORD=TestLabPass1
+export JUNOS_SSH_PASSWORD=<your-junos-password>
 
 # NetBox API
 export NETBOX_URL=http://your-netbox:8000

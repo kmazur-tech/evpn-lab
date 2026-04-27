@@ -13,7 +13,7 @@ qemu and expects `/dev/kvm`).
 |---------|---------|---------|
 | `containerlab` >= 0.74 | `dc1.clab.yml` | Topology orchestration |
 | `docker` | clab + smoke tests | Container runtime, `docker exec/pause/unpause` for hosts |
-| `sshpass` | `smoke-tests.sh` | Non-interactive SSH to vJunos devices (TestLabPass1) |
+| `sshpass` | `smoke-tests.sh` | Non-interactive SSH to vJunos devices (uses `$JUNOS_SSH_PASSWORD`) |
 | `jq` >= 1.6 | `smoke-tests.sh` | Parse `| display json` output from Junos for fragile fields (BGP neighbor state, BFD diag, interface counters). Replaces brittle awk/sed positional parsing. |
 | `python3` | optional | Fallback JSON parser if jq is unavailable |
 | `nsenter` (util-linux) | `smoke-tests.sh` | Enter host network namespaces for ping tests without paying docker exec startup cost |

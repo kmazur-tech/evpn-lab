@@ -1,0 +1,628 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.1
+      accept:
+      - application/json
+      authorization:
+      - Token sanitized
+    method: GET
+    uri: http://netbox.lab.local:8000/api/dcim/devices/?name=dc1-spine1&limit=0
+  response:
+    body:
+      string: '{"count":1,"next":null,"previous":null,"results":[{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/devices/1/","display_url":"http://netbox.lab.local:8000/dcim/devices/1/","display":"dc1-spine1","name":"dc1-spine1","device_type":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/device-types/1/","display":"EX9214","manufacturer":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/manufacturers/1/","display":"Juniper
+        Networks","name":"Juniper Networks","slug":"juniper","description":""},"model":"EX9214","slug":"ex9214","description":"vjunos-switch
+        emulates EX9214 (SMBIOS VM-VEX)","device_count":4},"role":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/device-roles/1/","display":"Spine","name":"Spine","slug":"spine","description":"Spine
+        / aggregation layer","device_count":0,"virtualmachine_count":0,"_depth":0},"tenant":null,"platform":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/platforms/1/","display":"Junos","name":"Junos","slug":"junos","description":"Juniper
+        JunOS","device_count":0,"virtualmachine_count":0,"_depth":0},"serial":"","asset_tag":null,"site":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/sites/1/","display":"DC1","name":"DC1","slug":"dc1","description":"Primary
+        DC - Juniper fabric"},"location":null,"rack":null,"position":null,"face":null,"latitude":null,"longitude":null,"parent_device":null,"status":{"value":"active","label":"Active"},"airflow":null,"primary_ip":{"id":5,"url":"http://netbox.lab.local:8000/api/ipam/ip-addresses/5/","display":"10.1.0.1/32","family":{"value":4,"label":"IPv4"},"address":"10.1.0.1/32","description":"Router-ID"},"primary_ip4":{"id":5,"url":"http://netbox.lab.local:8000/api/ipam/ip-addresses/5/","display":"10.1.0.1/32","family":{"value":4,"label":"IPv4"},"address":"10.1.0.1/32","description":"Router-ID"},"primary_ip6":null,"oob_ip":{"id":1,"url":"http://netbox.lab.local:8000/api/ipam/ip-addresses/1/","display":"172.16.18.160/24","family":{"value":4,"label":"IPv4"},"address":"172.16.18.160/24","description":"dc1-spine1
+        OOB management"},"cluster":null,"virtual_chassis":null,"vc_position":null,"vc_priority":null,"description":"","owner":null,"comments":"","config_template":null,"config_context":{"bgp_asn":65001},"local_context_data":{"bgp_asn":65001},"tags":[{"id":10,"url":"http://netbox.lab.local:8000/api/extras/tags/10/","display_url":"http://netbox.lab.local:8000/extras/tags/10/","display":"DC1","name":"DC1","slug":"dc1","color":"1565c0"},{"id":1,"url":"http://netbox.lab.local:8000/api/extras/tags/1/","display_url":"http://netbox.lab.local:8000/extras/tags/1/","display":"Spine","name":"Spine","slug":"spine","color":"2196f3"},{"id":12,"url":"http://netbox.lab.local:8000/api/extras/tags/12/","display_url":"http://netbox.lab.local:8000/extras/tags/12/","display":"Suzieq","name":"Suzieq","slug":"suzieq","color":"ff9800"}],"custom_fields":{},"created":"2026-04-07T18:21:29.688664Z","last_updated":"2026-04-07T18:21:36.128095Z","console_port_count":0,"console_server_port_count":0,"power_port_count":0,"power_outlet_count":0,"interface_count":8,"front_port_count":0,"rear_port_count":0,"device_bay_count":0,"module_bay_count":0,"inventory_item_count":0}]}'
+    headers:
+      allow:
+      - GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS
+      api-version:
+      - '4.5'
+      content-language:
+      - en
+      content-length:
+      - '3118'
+      content-type:
+      - application/json
+      cross-origin-opener-policy:
+      - same-origin
+      date:
+      - Sun, 12 Apr 2026 07:19:00 GMT
+      referrer-policy:
+      - same-origin
+      server:
+      - granian
+      vary:
+      - HX-Request, Accept-Language, Cookie, origin
+      x-content-type-options:
+      - nosniff
+      x-frame-options:
+      - SAMEORIGIN
+      x-request-id:
+      - 2a50890b-c647-46d6-89ac-36d624de20b2
+    status:
+      code: 200
+      message: OK
+- request:
+    body: null
+    headers:
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.1
+      accept:
+      - application/json
+      authorization:
+      - Token sanitized
+    method: GET
+    uri: http://netbox.lab.local:8000/api/dcim/interfaces/?device_id=1&limit=0
+  response:
+    body:
+      string: '{"count":8,"next":null,"previous":null,"results":[{"id":2,"url":"http://netbox.lab.local:8000/api/dcim/interfaces/2/","display_url":"http://netbox.lab.local:8000/dcim/interfaces/2/","display":"ge-0/0/0","device":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/devices/1/","display":"dc1-spine1","name":"dc1-spine1","description":""},"vdcs":[],"module":null,"name":"ge-0/0/0","label":"","type":{"value":"10gbase-x-sfpp","label":"SFP+
+        (10GE)"},"enabled":true,"parent":null,"bridge":null,"bridge_interfaces":[],"lag":null,"mtu":null,"mac_address":null,"primary_mac_address":null,"mac_addresses":[],"speed":null,"duplex":null,"wwn":null,"mgmt_only":false,"description":"","mode":null,"rf_role":null,"rf_channel":null,"poe_mode":null,"poe_type":null,"rf_channel_frequency":null,"rf_channel_width":null,"tx_power":null,"untagged_vlan":null,"tagged_vlans":[],"qinq_svlan":null,"vlan_translation_policy":null,"mark_connected":false,"cable":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/cables/1/","display":"sp1-lf1","label":"sp1-lf1","description":""},"cable_end":"A","wireless_link":null,"link_peers":[{"id":18,"url":"http://netbox.lab.local:8000/api/dcim/interfaces/18/","display":"ge-0/0/0","device":{"id":3,"url":"http://netbox.lab.local:8000/api/dcim/devices/3/","display":"dc1-leaf1","name":"dc1-leaf1","description":""},"name":"ge-0/0/0","description":"","cable":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/cables/1/","display":"sp1-lf1","label":"sp1-lf1","description":""},"_occupied":true}],"link_peers_type":"dcim.interface","wireless_lans":[],"vrf":null,"l2vpn_termination":null,"connected_endpoints":[{"id":18,"url":"http://netbox.lab.local:8000/api/dcim/interfaces/18/","display":"ge-0/0/0","device":{"id":3,"url":"http://netbox.lab.local:8000/api/dcim/devices/3/","display":"dc1-leaf1","name":"dc1-leaf1","description":""},"name":"ge-0/0/0","description":"","cable":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/cables/1/","display":"sp1-lf1","label":"sp1-lf1","description":""},"_occupied":true}],"connected_endpoints_type":"dcim.interface","connected_endpoints_reachable":true,"owner":null,"tags":[],"custom_fields":{"esi":null},"created":"2026-04-07T18:21:29.715812Z","last_updated":"2026-04-07T18:21:42.991691Z","count_ipaddresses":1,"count_fhrp_groups":0,"_occupied":true},{"id":3,"url":"http://netbox.lab.local:8000/api/dcim/interfaces/3/","display_url":"http://netbox.lab.local:8000/dcim/interfaces/3/","display":"ge-0/0/1","device":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/devices/1/","display":"dc1-spine1","name":"dc1-spine1","description":""},"vdcs":[],"module":null,"name":"ge-0/0/1","label":"","type":{"value":"10gbase-x-sfpp","label":"SFP+
+        (10GE)"},"enabled":true,"parent":null,"bridge":null,"bridge_interfaces":[],"lag":null,"mtu":null,"mac_address":null,"primary_mac_address":null,"mac_addresses":[],"speed":null,"duplex":null,"wwn":null,"mgmt_only":false,"description":"","mode":null,"rf_role":null,"rf_channel":null,"poe_mode":null,"poe_type":null,"rf_channel_frequency":null,"rf_channel_width":null,"tx_power":null,"untagged_vlan":null,"tagged_vlans":[],"qinq_svlan":null,"vlan_translation_policy":null,"mark_connected":false,"cable":{"id":2,"url":"http://netbox.lab.local:8000/api/dcim/cables/2/","display":"sp1-lf2","label":"sp1-lf2","description":""},"cable_end":"A","wireless_link":null,"link_peers":[{"id":26,"url":"http://netbox.lab.local:8000/api/dcim/interfaces/26/","display":"ge-0/0/0","device":{"id":4,"url":"http://netbox.lab.local:8000/api/dcim/devices/4/","display":"dc1-leaf2","name":"dc1-leaf2","description":""},"name":"ge-0/0/0","description":"","cable":{"id":2,"url":"http://netbox.lab.local:8000/api/dcim/cables/2/","display":"sp1-lf2","label":"sp1-lf2","description":""},"_occupied":true}],"link_peers_type":"dcim.interface","wireless_lans":[],"vrf":null,"l2vpn_termination":null,"connected_endpoints":[{"id":26,"url":"http://netbox.lab.local:8000/api/dcim/interfaces/26/","display":"ge-0/0/0","device":{"id":4,"url":"http://netbox.lab.local:8000/api/dcim/devices/4/","display":"dc1-leaf2","name":"dc1-leaf2","description":""},"name":"ge-0/0/0","description":"","cable":{"id":2,"url":"http://netbox.lab.local:8000/api/dcim/cables/2/","display":"sp1-lf2","label":"sp1-lf2","description":""},"_occupied":true}],"connected_endpoints_type":"dcim.interface","connected_endpoints_reachable":true,"owner":null,"tags":[],"custom_fields":{"esi":null},"created":"2026-04-07T18:21:29.715860Z","last_updated":"2026-04-07T18:21:43.659137Z","count_ipaddresses":1,"count_fhrp_groups":0,"_occupied":true},{"id":4,"url":"http://netbox.lab.local:8000/api/dcim/interfaces/4/","display_url":"http://netbox.lab.local:8000/dcim/interfaces/4/","display":"ge-0/0/2","device":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/devices/1/","display":"dc1-spine1","name":"dc1-spine1","description":""},"vdcs":[],"module":null,"name":"ge-0/0/2","label":"","type":{"value":"10gbase-x-sfpp","label":"SFP+
+        (10GE)"},"enabled":true,"parent":null,"bridge":null,"bridge_interfaces":[],"lag":null,"mtu":null,"mac_address":null,"primary_mac_address":null,"mac_addresses":[],"speed":null,"duplex":null,"wwn":null,"mgmt_only":false,"description":"","mode":null,"rf_role":null,"rf_channel":null,"poe_mode":null,"poe_type":null,"rf_channel_frequency":null,"rf_channel_width":null,"tx_power":null,"untagged_vlan":null,"tagged_vlans":[],"qinq_svlan":null,"vlan_translation_policy":null,"mark_connected":false,"cable":null,"cable_end":null,"wireless_link":null,"link_peers":[],"link_peers_type":null,"wireless_lans":[],"vrf":null,"l2vpn_termination":null,"connected_endpoints":null,"connected_endpoints_type":null,"connected_endpoints_reachable":false,"owner":null,"tags":[],"custom_fields":{"esi":null},"created":"2026-04-07T18:21:29.715903Z","last_updated":"2026-04-07T18:21:29.715907Z","count_ipaddresses":0,"count_fhrp_groups":0,"_occupied":false},{"id":5,"url":"http://netbox.lab.local:8000/api/dcim/interfaces/5/","display_url":"http://netbox.lab.local:8000/dcim/interfaces/5/","display":"ge-0/0/3","device":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/devices/1/","display":"dc1-spine1","name":"dc1-spine1","description":""},"vdcs":[],"module":null,"name":"ge-0/0/3","label":"","type":{"value":"10gbase-x-sfpp","label":"SFP+
+        (10GE)"},"enabled":true,"parent":null,"bridge":null,"bridge_interfaces":[],"lag":null,"mtu":null,"mac_address":null,"primary_mac_address":null,"mac_addresses":[],"speed":null,"duplex":null,"wwn":null,"mgmt_only":false,"description":"","mode":null,"rf_role":null,"rf_channel":null,"poe_mode":null,"poe_type":null,"rf_channel_frequency":null,"rf_channel_width":null,"tx_power":null,"untagged_vlan":null,"tagged_vlans":[],"qinq_svlan":null,"vlan_translation_policy":null,"mark_connected":false,"cable":null,"cable_end":null,"wireless_link":null,"link_peers":[],"link_peers_type":null,"wireless_lans":[],"vrf":null,"l2vpn_termination":null,"connected_endpoints":null,"connected_endpoints_type":null,"connected_endpoints_reachable":false,"owner":null,"tags":[],"custom_fields":{"esi":null},"created":"2026-04-07T18:21:29.715945Z","last_updated":"2026-04-07T18:21:29.715949Z","count_ipaddresses":0,"count_fhrp_groups":0,"_occupied":false},{"id":6,"url":"http://netbox.lab.local:8000/api/dcim/interfaces/6/","display_url":"http://netbox.lab.local:8000/dcim/interfaces/6/","display":"ge-0/0/4","device":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/devices/1/","display":"dc1-spine1","name":"dc1-spine1","description":""},"vdcs":[],"module":null,"name":"ge-0/0/4","label":"","type":{"value":"10gbase-x-sfpp","label":"SFP+
+        (10GE)"},"enabled":true,"parent":null,"bridge":null,"bridge_interfaces":[],"lag":null,"mtu":null,"mac_address":null,"primary_mac_address":null,"mac_addresses":[],"speed":null,"duplex":null,"wwn":null,"mgmt_only":false,"description":"","mode":null,"rf_role":null,"rf_channel":null,"poe_mode":null,"poe_type":null,"rf_channel_frequency":null,"rf_channel_width":null,"tx_power":null,"untagged_vlan":null,"tagged_vlans":[],"qinq_svlan":null,"vlan_translation_policy":null,"mark_connected":false,"cable":null,"cable_end":null,"wireless_link":null,"link_peers":[],"link_peers_type":null,"wireless_lans":[],"vrf":null,"l2vpn_termination":null,"connected_endpoints":null,"connected_endpoints_type":null,"connected_endpoints_reachable":false,"owner":null,"tags":[],"custom_fields":{"esi":null},"created":"2026-04-07T18:21:29.715986Z","last_updated":"2026-04-07T18:21:29.716000Z","count_ipaddresses":0,"count_fhrp_groups":0,"_occupied":false},{"id":7,"url":"http://netbox.lab.local:8000/api/dcim/interfaces/7/","display_url":"http://netbox.lab.local:8000/dcim/interfaces/7/","display":"ge-0/0/5","device":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/devices/1/","display":"dc1-spine1","name":"dc1-spine1","description":""},"vdcs":[],"module":null,"name":"ge-0/0/5","label":"","type":{"value":"10gbase-x-sfpp","label":"SFP+
+        (10GE)"},"enabled":true,"parent":null,"bridge":null,"bridge_interfaces":[],"lag":null,"mtu":null,"mac_address":null,"primary_mac_address":null,"mac_addresses":[],"speed":null,"duplex":null,"wwn":null,"mgmt_only":false,"description":"","mode":null,"rf_role":null,"rf_channel":null,"poe_mode":null,"poe_type":null,"rf_channel_frequency":null,"rf_channel_width":null,"tx_power":null,"untagged_vlan":null,"tagged_vlans":[],"qinq_svlan":null,"vlan_translation_policy":null,"mark_connected":false,"cable":null,"cable_end":null,"wireless_link":null,"link_peers":[],"link_peers_type":null,"wireless_lans":[],"vrf":null,"l2vpn_termination":null,"connected_endpoints":null,"connected_endpoints_type":null,"connected_endpoints_reachable":false,"owner":null,"tags":[],"custom_fields":{"esi":null},"created":"2026-04-07T18:21:29.716040Z","last_updated":"2026-04-07T18:21:29.716044Z","count_ipaddresses":0,"count_fhrp_groups":0,"_occupied":false},{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/interfaces/1/","display_url":"http://netbox.lab.local:8000/dcim/interfaces/1/","display":"fxp0","device":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/devices/1/","display":"dc1-spine1","name":"dc1-spine1","description":""},"vdcs":[],"module":null,"name":"fxp0","label":"","type":{"value":"1000base-t","label":"1000BASE-T
+        (1GE)"},"enabled":true,"parent":null,"bridge":null,"bridge_interfaces":[],"lag":null,"mtu":null,"mac_address":null,"primary_mac_address":null,"mac_addresses":[],"speed":null,"duplex":null,"wwn":null,"mgmt_only":true,"description":"","mode":null,"rf_role":null,"rf_channel":null,"poe_mode":null,"poe_type":null,"rf_channel_frequency":null,"rf_channel_width":null,"tx_power":null,"untagged_vlan":null,"tagged_vlans":[],"qinq_svlan":null,"vlan_translation_policy":null,"mark_connected":false,"cable":null,"cable_end":null,"wireless_link":null,"link_peers":[],"link_peers_type":null,"wireless_lans":[],"vrf":null,"l2vpn_termination":null,"connected_endpoints":null,"connected_endpoints_type":null,"connected_endpoints_reachable":false,"owner":null,"tags":[],"custom_fields":{"esi":null},"created":"2026-04-07T18:21:29.715722Z","last_updated":"2026-04-07T18:21:29.715736Z","count_ipaddresses":1,"count_fhrp_groups":0,"_occupied":false},{"id":8,"url":"http://netbox.lab.local:8000/api/dcim/interfaces/8/","display_url":"http://netbox.lab.local:8000/dcim/interfaces/8/","display":"lo0.1","device":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/devices/1/","display":"dc1-spine1","name":"dc1-spine1","description":""},"vdcs":[],"module":null,"name":"lo0.1","label":"","type":{"value":"virtual","label":"Virtual"},"enabled":true,"parent":null,"bridge":null,"bridge_interfaces":[],"lag":null,"mtu":null,"mac_address":null,"primary_mac_address":null,"mac_addresses":[],"speed":null,"duplex":null,"wwn":null,"mgmt_only":false,"description":"","mode":null,"rf_role":null,"rf_channel":null,"poe_mode":null,"poe_type":null,"rf_channel_frequency":null,"rf_channel_width":null,"tx_power":null,"untagged_vlan":null,"tagged_vlans":[],"qinq_svlan":null,"vlan_translation_policy":null,"mark_connected":false,"cable":null,"cable_end":null,"wireless_link":null,"link_peers":[],"link_peers_type":null,"wireless_lans":[],"vrf":null,"l2vpn_termination":null,"connected_endpoints":null,"connected_endpoints_type":null,"connected_endpoints_reachable":false,"owner":null,"tags":[],"custom_fields":{"esi":null},"created":"2026-04-07T18:21:29.716081Z","last_updated":"2026-04-07T18:21:29.716085Z","count_ipaddresses":1,"count_fhrp_groups":0,"_occupied":false}]}'
+    headers:
+      allow:
+      - GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS, TRACE
+      api-version:
+      - '4.5'
+      content-language:
+      - en
+      content-length:
+      - '12364'
+      content-type:
+      - application/json
+      cross-origin-opener-policy:
+      - same-origin
+      date:
+      - Sun, 12 Apr 2026 07:19:01 GMT
+      referrer-policy:
+      - same-origin
+      server:
+      - granian
+      vary:
+      - HX-Request, Accept-Language, Cookie, origin
+      x-content-type-options:
+      - nosniff
+      x-frame-options:
+      - SAMEORIGIN
+      x-request-id:
+      - aeeed167-5c73-4df4-8b15-962ab880f78b
+    status:
+      code: 200
+      message: OK
+- request:
+    body: null
+    headers:
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.1
+      accept:
+      - application/json
+      authorization:
+      - Token sanitized
+    method: GET
+    uri: http://netbox.lab.local:8000/api/ipam/ip-addresses/?interface_id=2&limit=0
+  response:
+    body:
+      string: '{"count":1,"next":null,"previous":null,"results":[{"id":11,"url":"http://netbox.lab.local:8000/api/ipam/ip-addresses/11/","display_url":"http://netbox.lab.local:8000/ipam/ip-addresses/11/","display":"10.1.4.0/31","family":{"value":4,"label":"IPv4"},"address":"10.1.4.0/31","vrf":null,"tenant":null,"status":{"value":"active","label":"Active"},"role":null,"assigned_object_type":"dcim.interface","assigned_object_id":2,"assigned_object":{"id":2,"url":"http://netbox.lab.local:8000/api/dcim/interfaces/2/","display":"ge-0/0/0","device":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/devices/1/","display":"dc1-spine1","name":"dc1-spine1","description":""},"name":"ge-0/0/0","description":"","cable":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/cables/1/","display":"sp1-lf1","label":"sp1-lf1","description":""},"_occupied":true},"nat_inside":null,"nat_outside":[],"dns_name":"","description":"P2P
+        dc1-spine1 - dc1-leaf1","owner":null,"comments":"","tags":[],"custom_fields":{},"created":"2026-04-07T18:21:39.602256Z","last_updated":"2026-04-07T18:21:39.602269Z"}]}'
+    headers:
+      allow:
+      - GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS
+      api-version:
+      - '4.5'
+      content-language:
+      - en
+      content-length:
+      - '1061'
+      content-type:
+      - application/json
+      cross-origin-opener-policy:
+      - same-origin
+      date:
+      - Sun, 12 Apr 2026 07:19:01 GMT
+      referrer-policy:
+      - same-origin
+      server:
+      - granian
+      vary:
+      - HX-Request, Accept-Language, Cookie, origin
+      x-content-type-options:
+      - nosniff
+      x-frame-options:
+      - SAMEORIGIN
+      x-request-id:
+      - ac14770f-863e-47d2-a2ac-47ed79177928
+    status:
+      code: 200
+      message: OK
+- request:
+    body: null
+    headers:
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.1
+      accept:
+      - application/json
+      authorization:
+      - Token sanitized
+    method: GET
+    uri: http://netbox.lab.local:8000/api/dcim/cables/1/
+  response:
+    body:
+      string: '{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/cables/1/","display_url":"http://netbox.lab.local:8000/dcim/cables/1/","display":"sp1-lf1","type":null,"a_terminations":[{"object_type":"dcim.interface","object_id":2,"object":{"id":2,"url":"http://netbox.lab.local:8000/api/dcim/interfaces/2/","display":"ge-0/0/0","device":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/devices/1/","display":"dc1-spine1","name":"dc1-spine1","description":""},"name":"ge-0/0/0","description":"","cable":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/cables/1/","display":"sp1-lf1","label":"sp1-lf1","description":""},"_occupied":true}}],"b_terminations":[{"object_type":"dcim.interface","object_id":18,"object":{"id":18,"url":"http://netbox.lab.local:8000/api/dcim/interfaces/18/","display":"ge-0/0/0","device":{"id":3,"url":"http://netbox.lab.local:8000/api/dcim/devices/3/","display":"dc1-leaf1","name":"dc1-leaf1","description":""},"name":"ge-0/0/0","description":"","cable":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/cables/1/","display":"sp1-lf1","label":"sp1-lf1","description":""},"_occupied":true}}],"status":{"value":"connected","label":"Connected"},"profile":null,"tenant":null,"label":"sp1-lf1","color":"","length":null,"length_unit":null,"description":"","owner":null,"comments":"","tags":[],"custom_fields":{},"created":"2026-04-07T18:21:42.959765Z","last_updated":"2026-04-07T18:21:43.030030Z"}'
+    headers:
+      allow:
+      - GET, PUT, PATCH, DELETE, HEAD, OPTIONS
+      api-version:
+      - '4.5'
+      content-language:
+      - en
+      content-length:
+      - '1393'
+      content-type:
+      - application/json
+      cross-origin-opener-policy:
+      - same-origin
+      date:
+      - Sun, 12 Apr 2026 07:19:01 GMT
+      referrer-policy:
+      - same-origin
+      server:
+      - granian
+      vary:
+      - HX-Request, Accept-Language, Cookie, origin
+      x-content-type-options:
+      - nosniff
+      x-frame-options:
+      - SAMEORIGIN
+      x-request-id:
+      - 54a66ca4-f9c7-484e-a9d9-38f6f41447cc
+    status:
+      code: 200
+      message: OK
+- request:
+    body: null
+    headers:
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.1
+      accept:
+      - application/json
+      authorization:
+      - Token sanitized
+    method: GET
+    uri: http://netbox.lab.local:8000/api/dcim/devices/?name=dc1-leaf1&limit=0
+  response:
+    body:
+      string: '{"count":1,"next":null,"previous":null,"results":[{"id":3,"url":"http://netbox.lab.local:8000/api/dcim/devices/3/","display_url":"http://netbox.lab.local:8000/dcim/devices/3/","display":"dc1-leaf1","name":"dc1-leaf1","device_type":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/device-types/1/","display":"EX9214","manufacturer":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/manufacturers/1/","display":"Juniper
+        Networks","name":"Juniper Networks","slug":"juniper","description":""},"model":"EX9214","slug":"ex9214","description":"vjunos-switch
+        emulates EX9214 (SMBIOS VM-VEX)","device_count":4},"role":{"id":2,"url":"http://netbox.lab.local:8000/api/dcim/device-roles/2/","display":"Leaf","name":"Leaf","slug":"leaf","description":"Leaf
+        / access layer (ToR)","device_count":0,"virtualmachine_count":0,"_depth":0},"tenant":null,"platform":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/platforms/1/","display":"Junos","name":"Junos","slug":"junos","description":"Juniper
+        JunOS","device_count":0,"virtualmachine_count":0,"_depth":0},"serial":"","asset_tag":null,"site":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/sites/1/","display":"DC1","name":"DC1","slug":"dc1","description":"Primary
+        DC - Juniper fabric"},"location":null,"rack":null,"position":null,"face":null,"latitude":null,"longitude":null,"parent_device":null,"status":{"value":"active","label":"Active"},"airflow":null,"primary_ip":{"id":7,"url":"http://netbox.lab.local:8000/api/ipam/ip-addresses/7/","display":"10.1.0.3/32","family":{"value":4,"label":"IPv4"},"address":"10.1.0.3/32","description":"Router-ID
+        / VTEP"},"primary_ip4":{"id":7,"url":"http://netbox.lab.local:8000/api/ipam/ip-addresses/7/","display":"10.1.0.3/32","family":{"value":4,"label":"IPv4"},"address":"10.1.0.3/32","description":"Router-ID
+        / VTEP"},"primary_ip6":null,"oob_ip":{"id":3,"url":"http://netbox.lab.local:8000/api/ipam/ip-addresses/3/","display":"172.16.18.162/24","family":{"value":4,"label":"IPv4"},"address":"172.16.18.162/24","description":"dc1-leaf1
+        OOB management"},"cluster":null,"virtual_chassis":null,"vc_position":null,"vc_priority":null,"description":"","owner":null,"comments":"","config_template":null,"config_context":{"bgp_asn":65003},"local_context_data":{"bgp_asn":65003},"tags":[{"id":10,"url":"http://netbox.lab.local:8000/api/extras/tags/10/","display_url":"http://netbox.lab.local:8000/extras/tags/10/","display":"DC1","name":"DC1","slug":"dc1","color":"1565c0"},{"id":2,"url":"http://netbox.lab.local:8000/api/extras/tags/2/","display_url":"http://netbox.lab.local:8000/extras/tags/2/","display":"Leaf","name":"Leaf","slug":"leaf","color":"4caf50"},{"id":12,"url":"http://netbox.lab.local:8000/api/extras/tags/12/","display_url":"http://netbox.lab.local:8000/extras/tags/12/","display":"Suzieq","name":"Suzieq","slug":"suzieq","color":"ff9800"}],"custom_fields":{},"created":"2026-04-07T18:21:31.909203Z","last_updated":"2026-04-07T18:21:37.482525Z","console_port_count":0,"console_server_port_count":0,"power_port_count":0,"power_outlet_count":0,"interface_count":13,"front_port_count":0,"rear_port_count":0,"device_bay_count":0,"module_bay_count":0,"inventory_item_count":0}]}'
+    headers:
+      allow:
+      - GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS
+      api-version:
+      - '4.5'
+      content-language:
+      - en
+      content-length:
+      - '3124'
+      content-type:
+      - application/json
+      cross-origin-opener-policy:
+      - same-origin
+      date:
+      - Sun, 12 Apr 2026 07:19:01 GMT
+      referrer-policy:
+      - same-origin
+      server:
+      - granian
+      vary:
+      - HX-Request, Accept-Language, Cookie, origin
+      x-content-type-options:
+      - nosniff
+      x-frame-options:
+      - SAMEORIGIN
+      x-request-id:
+      - 36735014-7c9a-414a-8828-e16e4cb56802
+    status:
+      code: 200
+      message: OK
+- request:
+    body: null
+    headers:
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.1
+      accept:
+      - application/json
+      authorization:
+      - Token sanitized
+    method: GET
+    uri: http://netbox.lab.local:8000/api/ipam/ip-addresses/?interface_id=3&limit=0
+  response:
+    body:
+      string: '{"count":1,"next":null,"previous":null,"results":[{"id":13,"url":"http://netbox.lab.local:8000/api/ipam/ip-addresses/13/","display_url":"http://netbox.lab.local:8000/ipam/ip-addresses/13/","display":"10.1.4.2/31","family":{"value":4,"label":"IPv4"},"address":"10.1.4.2/31","vrf":null,"tenant":null,"status":{"value":"active","label":"Active"},"role":null,"assigned_object_type":"dcim.interface","assigned_object_id":3,"assigned_object":{"id":3,"url":"http://netbox.lab.local:8000/api/dcim/interfaces/3/","display":"ge-0/0/1","device":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/devices/1/","display":"dc1-spine1","name":"dc1-spine1","description":""},"name":"ge-0/0/1","description":"","cable":{"id":2,"url":"http://netbox.lab.local:8000/api/dcim/cables/2/","display":"sp1-lf2","label":"sp1-lf2","description":""},"_occupied":true},"nat_inside":null,"nat_outside":[],"dns_name":"","description":"P2P
+        dc1-spine1 - dc1-leaf2","owner":null,"comments":"","tags":[],"custom_fields":{},"created":"2026-04-07T18:21:40.337981Z","last_updated":"2026-04-07T18:21:40.338001Z"}]}'
+    headers:
+      allow:
+      - GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS
+      api-version:
+      - '4.5'
+      content-language:
+      - en
+      content-length:
+      - '1061'
+      content-type:
+      - application/json
+      cross-origin-opener-policy:
+      - same-origin
+      date:
+      - Sun, 12 Apr 2026 07:19:01 GMT
+      referrer-policy:
+      - same-origin
+      server:
+      - granian
+      vary:
+      - HX-Request, Accept-Language, Cookie, origin
+      x-content-type-options:
+      - nosniff
+      x-frame-options:
+      - SAMEORIGIN
+      x-request-id:
+      - ff18e95d-3885-41e4-8859-9fe63f04d32a
+    status:
+      code: 200
+      message: OK
+- request:
+    body: null
+    headers:
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.1
+      accept:
+      - application/json
+      authorization:
+      - Token sanitized
+    method: GET
+    uri: http://netbox.lab.local:8000/api/dcim/cables/2/
+  response:
+    body:
+      string: '{"id":2,"url":"http://netbox.lab.local:8000/api/dcim/cables/2/","display_url":"http://netbox.lab.local:8000/dcim/cables/2/","display":"sp1-lf2","type":null,"a_terminations":[{"object_type":"dcim.interface","object_id":3,"object":{"id":3,"url":"http://netbox.lab.local:8000/api/dcim/interfaces/3/","display":"ge-0/0/1","device":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/devices/1/","display":"dc1-spine1","name":"dc1-spine1","description":""},"name":"ge-0/0/1","description":"","cable":{"id":2,"url":"http://netbox.lab.local:8000/api/dcim/cables/2/","display":"sp1-lf2","label":"sp1-lf2","description":""},"_occupied":true}}],"b_terminations":[{"object_type":"dcim.interface","object_id":26,"object":{"id":26,"url":"http://netbox.lab.local:8000/api/dcim/interfaces/26/","display":"ge-0/0/0","device":{"id":4,"url":"http://netbox.lab.local:8000/api/dcim/devices/4/","display":"dc1-leaf2","name":"dc1-leaf2","description":""},"name":"ge-0/0/0","description":"","cable":{"id":2,"url":"http://netbox.lab.local:8000/api/dcim/cables/2/","display":"sp1-lf2","label":"sp1-lf2","description":""},"_occupied":true}}],"status":{"value":"connected","label":"Connected"},"profile":null,"tenant":null,"label":"sp1-lf2","color":"","length":null,"length_unit":null,"description":"","owner":null,"comments":"","tags":[],"custom_fields":{},"created":"2026-04-07T18:21:43.631279Z","last_updated":"2026-04-07T18:21:43.697046Z"}'
+    headers:
+      allow:
+      - GET, PUT, PATCH, DELETE, HEAD, OPTIONS
+      api-version:
+      - '4.5'
+      content-language:
+      - en
+      content-length:
+      - '1393'
+      content-type:
+      - application/json
+      cross-origin-opener-policy:
+      - same-origin
+      date:
+      - Sun, 12 Apr 2026 07:19:01 GMT
+      referrer-policy:
+      - same-origin
+      server:
+      - granian
+      vary:
+      - HX-Request, Accept-Language, Cookie, origin
+      x-content-type-options:
+      - nosniff
+      x-frame-options:
+      - SAMEORIGIN
+      x-request-id:
+      - 837316ee-2e83-4df4-ae2c-98c67122fa2d
+    status:
+      code: 200
+      message: OK
+- request:
+    body: null
+    headers:
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.1
+      accept:
+      - application/json
+      authorization:
+      - Token sanitized
+    method: GET
+    uri: http://netbox.lab.local:8000/api/dcim/devices/?name=dc1-leaf2&limit=0
+  response:
+    body:
+      string: '{"count":1,"next":null,"previous":null,"results":[{"id":4,"url":"http://netbox.lab.local:8000/api/dcim/devices/4/","display_url":"http://netbox.lab.local:8000/dcim/devices/4/","display":"dc1-leaf2","name":"dc1-leaf2","device_type":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/device-types/1/","display":"EX9214","manufacturer":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/manufacturers/1/","display":"Juniper
+        Networks","name":"Juniper Networks","slug":"juniper","description":""},"model":"EX9214","slug":"ex9214","description":"vjunos-switch
+        emulates EX9214 (SMBIOS VM-VEX)","device_count":4},"role":{"id":2,"url":"http://netbox.lab.local:8000/api/dcim/device-roles/2/","display":"Leaf","name":"Leaf","slug":"leaf","description":"Leaf
+        / access layer (ToR)","device_count":0,"virtualmachine_count":0,"_depth":0},"tenant":null,"platform":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/platforms/1/","display":"Junos","name":"Junos","slug":"junos","description":"Juniper
+        JunOS","device_count":0,"virtualmachine_count":0,"_depth":0},"serial":"","asset_tag":null,"site":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/sites/1/","display":"DC1","name":"DC1","slug":"dc1","description":"Primary
+        DC - Juniper fabric"},"location":null,"rack":null,"position":null,"face":null,"latitude":null,"longitude":null,"parent_device":null,"status":{"value":"active","label":"Active"},"airflow":null,"primary_ip":{"id":8,"url":"http://netbox.lab.local:8000/api/ipam/ip-addresses/8/","display":"10.1.0.4/32","family":{"value":4,"label":"IPv4"},"address":"10.1.0.4/32","description":"Router-ID
+        / VTEP"},"primary_ip4":{"id":8,"url":"http://netbox.lab.local:8000/api/ipam/ip-addresses/8/","display":"10.1.0.4/32","family":{"value":4,"label":"IPv4"},"address":"10.1.0.4/32","description":"Router-ID
+        / VTEP"},"primary_ip6":null,"oob_ip":{"id":4,"url":"http://netbox.lab.local:8000/api/ipam/ip-addresses/4/","display":"172.16.18.163/24","family":{"value":4,"label":"IPv4"},"address":"172.16.18.163/24","description":"dc1-leaf2
+        OOB management"},"cluster":null,"virtual_chassis":null,"vc_position":null,"vc_priority":null,"description":"","owner":null,"comments":"","config_template":null,"config_context":{"bgp_asn":65004},"local_context_data":{"bgp_asn":65004},"tags":[{"id":10,"url":"http://netbox.lab.local:8000/api/extras/tags/10/","display_url":"http://netbox.lab.local:8000/extras/tags/10/","display":"DC1","name":"DC1","slug":"dc1","color":"1565c0"},{"id":2,"url":"http://netbox.lab.local:8000/api/extras/tags/2/","display_url":"http://netbox.lab.local:8000/extras/tags/2/","display":"Leaf","name":"Leaf","slug":"leaf","color":"4caf50"},{"id":12,"url":"http://netbox.lab.local:8000/api/extras/tags/12/","display_url":"http://netbox.lab.local:8000/extras/tags/12/","display":"Suzieq","name":"Suzieq","slug":"suzieq","color":"ff9800"}],"custom_fields":{},"created":"2026-04-07T18:21:32.868173Z","last_updated":"2026-04-07T18:21:38.072118Z","console_port_count":0,"console_server_port_count":0,"power_port_count":0,"power_outlet_count":0,"interface_count":13,"front_port_count":0,"rear_port_count":0,"device_bay_count":0,"module_bay_count":0,"inventory_item_count":0}]}'
+    headers:
+      allow:
+      - GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS
+      api-version:
+      - '4.5'
+      content-language:
+      - en
+      content-length:
+      - '3124'
+      content-type:
+      - application/json
+      cross-origin-opener-policy:
+      - same-origin
+      date:
+      - Sun, 12 Apr 2026 07:19:01 GMT
+      referrer-policy:
+      - same-origin
+      server:
+      - granian
+      vary:
+      - HX-Request, Accept-Language, Cookie, origin
+      x-content-type-options:
+      - nosniff
+      x-frame-options:
+      - SAMEORIGIN
+      x-request-id:
+      - 64f36c8a-7bf1-42b1-bea3-5e70ea3cf5c0
+    status:
+      code: 200
+      message: OK
+- request:
+    body: null
+    headers:
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.1
+      accept:
+      - application/json
+      authorization:
+      - Token sanitized
+    method: GET
+    uri: http://netbox.lab.local:8000/api/dcim/interfaces/?device_id=1&name__isw=lo0.&limit=0
+  response:
+    body:
+      string: '{"count":1,"next":null,"previous":null,"results":[{"id":8,"url":"http://netbox.lab.local:8000/api/dcim/interfaces/8/","display_url":"http://netbox.lab.local:8000/dcim/interfaces/8/","display":"lo0.1","device":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/devices/1/","display":"dc1-spine1","name":"dc1-spine1","description":""},"vdcs":[],"module":null,"name":"lo0.1","label":"","type":{"value":"virtual","label":"Virtual"},"enabled":true,"parent":null,"bridge":null,"bridge_interfaces":[],"lag":null,"mtu":null,"mac_address":null,"primary_mac_address":null,"mac_addresses":[],"speed":null,"duplex":null,"wwn":null,"mgmt_only":false,"description":"","mode":null,"rf_role":null,"rf_channel":null,"poe_mode":null,"poe_type":null,"rf_channel_frequency":null,"rf_channel_width":null,"tx_power":null,"untagged_vlan":null,"tagged_vlans":[],"qinq_svlan":null,"vlan_translation_policy":null,"mark_connected":false,"cable":null,"cable_end":null,"wireless_link":null,"link_peers":[],"link_peers_type":null,"wireless_lans":[],"vrf":null,"l2vpn_termination":null,"connected_endpoints":null,"connected_endpoints_type":null,"connected_endpoints_reachable":false,"owner":null,"tags":[],"custom_fields":{"esi":null},"created":"2026-04-07T18:21:29.716081Z","last_updated":"2026-04-07T18:21:29.716085Z","count_ipaddresses":1,"count_fhrp_groups":0,"_occupied":false}]}'
+    headers:
+      allow:
+      - GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS, TRACE
+      api-version:
+      - '4.5'
+      content-language:
+      - en
+      content-length:
+      - '1346'
+      content-type:
+      - application/json
+      cross-origin-opener-policy:
+      - same-origin
+      date:
+      - Sun, 12 Apr 2026 07:19:02 GMT
+      referrer-policy:
+      - same-origin
+      server:
+      - granian
+      vary:
+      - HX-Request, Accept-Language, Cookie, origin
+      x-content-type-options:
+      - nosniff
+      x-frame-options:
+      - SAMEORIGIN
+      x-request-id:
+      - bf97b853-e88e-4044-9491-34469c8c9677
+    status:
+      code: 200
+      message: OK
+- request:
+    body: null
+    headers:
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.1
+      accept:
+      - application/json
+      authorization:
+      - Token sanitized
+    method: GET
+    uri: http://netbox.lab.local:8000/api/ipam/ip-addresses/?interface_id=8&limit=0
+  response:
+    body:
+      string: '{"count":1,"next":null,"previous":null,"results":[{"id":5,"url":"http://netbox.lab.local:8000/api/ipam/ip-addresses/5/","display_url":"http://netbox.lab.local:8000/ipam/ip-addresses/5/","display":"10.1.0.1/32","family":{"value":4,"label":"IPv4"},"address":"10.1.0.1/32","vrf":null,"tenant":null,"status":{"value":"active","label":"Active"},"role":null,"assigned_object_type":"dcim.interface","assigned_object_id":8,"assigned_object":{"id":8,"url":"http://netbox.lab.local:8000/api/dcim/interfaces/8/","display":"lo0.1","device":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/devices/1/","display":"dc1-spine1","name":"dc1-spine1","description":""},"name":"lo0.1","description":"","cable":null,"_occupied":false},"nat_inside":null,"nat_outside":[],"dns_name":"","description":"Router-ID","owner":null,"comments":"","tags":[],"custom_fields":{},"created":"2026-04-07T18:21:35.962406Z","last_updated":"2026-04-07T18:21:35.962419Z"}]}'
+    headers:
+      allow:
+      - GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS
+      api-version:
+      - '4.5'
+      content-language:
+      - en
+      content-length:
+      - '924'
+      content-type:
+      - application/json
+      cross-origin-opener-policy:
+      - same-origin
+      date:
+      - Sun, 12 Apr 2026 07:19:02 GMT
+      referrer-policy:
+      - same-origin
+      server:
+      - granian
+      vary:
+      - HX-Request, Accept-Language, Cookie, origin
+      x-content-type-options:
+      - nosniff
+      x-frame-options:
+      - SAMEORIGIN
+      x-request-id:
+      - b7312ab7-ae48-407f-9391-2692cea830ad
+    status:
+      code: 200
+      message: OK
+- request:
+    body: null
+    headers:
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.1
+      accept:
+      - application/json
+      authorization:
+      - Token sanitized
+    method: GET
+    uri: http://netbox.lab.local:8000/api/dcim/devices/?site_id=1&role=leaf&limit=0
+  response:
+    body:
+      string: '{"count":2,"next":null,"previous":null,"results":[{"id":3,"url":"http://netbox.lab.local:8000/api/dcim/devices/3/","display_url":"http://netbox.lab.local:8000/dcim/devices/3/","display":"dc1-leaf1","name":"dc1-leaf1","device_type":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/device-types/1/","display":"EX9214","manufacturer":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/manufacturers/1/","display":"Juniper
+        Networks","name":"Juniper Networks","slug":"juniper","description":""},"model":"EX9214","slug":"ex9214","description":"vjunos-switch
+        emulates EX9214 (SMBIOS VM-VEX)","device_count":4},"role":{"id":2,"url":"http://netbox.lab.local:8000/api/dcim/device-roles/2/","display":"Leaf","name":"Leaf","slug":"leaf","description":"Leaf
+        / access layer (ToR)","device_count":0,"virtualmachine_count":0,"_depth":0},"tenant":null,"platform":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/platforms/1/","display":"Junos","name":"Junos","slug":"junos","description":"Juniper
+        JunOS","device_count":0,"virtualmachine_count":0,"_depth":0},"serial":"","asset_tag":null,"site":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/sites/1/","display":"DC1","name":"DC1","slug":"dc1","description":"Primary
+        DC - Juniper fabric"},"location":null,"rack":null,"position":null,"face":null,"latitude":null,"longitude":null,"parent_device":null,"status":{"value":"active","label":"Active"},"airflow":null,"primary_ip":{"id":7,"url":"http://netbox.lab.local:8000/api/ipam/ip-addresses/7/","display":"10.1.0.3/32","family":{"value":4,"label":"IPv4"},"address":"10.1.0.3/32","description":"Router-ID
+        / VTEP"},"primary_ip4":{"id":7,"url":"http://netbox.lab.local:8000/api/ipam/ip-addresses/7/","display":"10.1.0.3/32","family":{"value":4,"label":"IPv4"},"address":"10.1.0.3/32","description":"Router-ID
+        / VTEP"},"primary_ip6":null,"oob_ip":{"id":3,"url":"http://netbox.lab.local:8000/api/ipam/ip-addresses/3/","display":"172.16.18.162/24","family":{"value":4,"label":"IPv4"},"address":"172.16.18.162/24","description":"dc1-leaf1
+        OOB management"},"cluster":null,"virtual_chassis":null,"vc_position":null,"vc_priority":null,"description":"","owner":null,"comments":"","config_template":null,"config_context":{"bgp_asn":65003},"local_context_data":{"bgp_asn":65003},"tags":[{"id":10,"url":"http://netbox.lab.local:8000/api/extras/tags/10/","display_url":"http://netbox.lab.local:8000/extras/tags/10/","display":"DC1","name":"DC1","slug":"dc1","color":"1565c0"},{"id":2,"url":"http://netbox.lab.local:8000/api/extras/tags/2/","display_url":"http://netbox.lab.local:8000/extras/tags/2/","display":"Leaf","name":"Leaf","slug":"leaf","color":"4caf50"},{"id":12,"url":"http://netbox.lab.local:8000/api/extras/tags/12/","display_url":"http://netbox.lab.local:8000/extras/tags/12/","display":"Suzieq","name":"Suzieq","slug":"suzieq","color":"ff9800"}],"custom_fields":{},"created":"2026-04-07T18:21:31.909203Z","last_updated":"2026-04-07T18:21:37.482525Z","console_port_count":0,"console_server_port_count":0,"power_port_count":0,"power_outlet_count":0,"interface_count":13,"front_port_count":0,"rear_port_count":0,"device_bay_count":0,"module_bay_count":0,"inventory_item_count":0},{"id":4,"url":"http://netbox.lab.local:8000/api/dcim/devices/4/","display_url":"http://netbox.lab.local:8000/dcim/devices/4/","display":"dc1-leaf2","name":"dc1-leaf2","device_type":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/device-types/1/","display":"EX9214","manufacturer":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/manufacturers/1/","display":"Juniper
+        Networks","name":"Juniper Networks","slug":"juniper","description":""},"model":"EX9214","slug":"ex9214","description":"vjunos-switch
+        emulates EX9214 (SMBIOS VM-VEX)","device_count":4},"role":{"id":2,"url":"http://netbox.lab.local:8000/api/dcim/device-roles/2/","display":"Leaf","name":"Leaf","slug":"leaf","description":"Leaf
+        / access layer (ToR)","device_count":0,"virtualmachine_count":0,"_depth":0},"tenant":null,"platform":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/platforms/1/","display":"Junos","name":"Junos","slug":"junos","description":"Juniper
+        JunOS","device_count":0,"virtualmachine_count":0,"_depth":0},"serial":"","asset_tag":null,"site":{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/sites/1/","display":"DC1","name":"DC1","slug":"dc1","description":"Primary
+        DC - Juniper fabric"},"location":null,"rack":null,"position":null,"face":null,"latitude":null,"longitude":null,"parent_device":null,"status":{"value":"active","label":"Active"},"airflow":null,"primary_ip":{"id":8,"url":"http://netbox.lab.local:8000/api/ipam/ip-addresses/8/","display":"10.1.0.4/32","family":{"value":4,"label":"IPv4"},"address":"10.1.0.4/32","description":"Router-ID
+        / VTEP"},"primary_ip4":{"id":8,"url":"http://netbox.lab.local:8000/api/ipam/ip-addresses/8/","display":"10.1.0.4/32","family":{"value":4,"label":"IPv4"},"address":"10.1.0.4/32","description":"Router-ID
+        / VTEP"},"primary_ip6":null,"oob_ip":{"id":4,"url":"http://netbox.lab.local:8000/api/ipam/ip-addresses/4/","display":"172.16.18.163/24","family":{"value":4,"label":"IPv4"},"address":"172.16.18.163/24","description":"dc1-leaf2
+        OOB management"},"cluster":null,"virtual_chassis":null,"vc_position":null,"vc_priority":null,"description":"","owner":null,"comments":"","config_template":null,"config_context":{"bgp_asn":65004},"local_context_data":{"bgp_asn":65004},"tags":[{"id":10,"url":"http://netbox.lab.local:8000/api/extras/tags/10/","display_url":"http://netbox.lab.local:8000/extras/tags/10/","display":"DC1","name":"DC1","slug":"dc1","color":"1565c0"},{"id":2,"url":"http://netbox.lab.local:8000/api/extras/tags/2/","display_url":"http://netbox.lab.local:8000/extras/tags/2/","display":"Leaf","name":"Leaf","slug":"leaf","color":"4caf50"},{"id":12,"url":"http://netbox.lab.local:8000/api/extras/tags/12/","display_url":"http://netbox.lab.local:8000/extras/tags/12/","display":"Suzieq","name":"Suzieq","slug":"suzieq","color":"ff9800"}],"custom_fields":{},"created":"2026-04-07T18:21:32.868173Z","last_updated":"2026-04-07T18:21:38.072118Z","console_port_count":0,"console_server_port_count":0,"power_port_count":0,"power_outlet_count":0,"interface_count":13,"front_port_count":0,"rear_port_count":0,"device_bay_count":0,"module_bay_count":0,"inventory_item_count":0}]}'
+    headers:
+      allow:
+      - GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS
+      api-version:
+      - '4.5'
+      content-language:
+      - en
+      content-length:
+      - '6197'
+      content-type:
+      - application/json
+      cross-origin-opener-policy:
+      - same-origin
+      date:
+      - Sun, 12 Apr 2026 07:19:02 GMT
+      referrer-policy:
+      - same-origin
+      server:
+      - granian
+      vary:
+      - HX-Request, Accept-Language, Cookie, origin
+      x-content-type-options:
+      - nosniff
+      x-frame-options:
+      - SAMEORIGIN
+      x-request-id:
+      - 2fed0299-eec5-4d3b-a38e-99b216b045fc
+    status:
+      code: 200
+      message: OK
+- request:
+    body: null
+    headers:
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.1
+      accept:
+      - application/json
+      authorization:
+      - Token sanitized
+    method: GET
+    uri: http://netbox.lab.local:8000/api/dcim/sites/?id=1&limit=0
+  response:
+    body:
+      string: '{"count":1,"next":null,"previous":null,"results":[{"id":1,"url":"http://netbox.lab.local:8000/api/dcim/sites/1/","display_url":"http://netbox.lab.local:8000/dcim/sites/1/","display":"DC1","name":"DC1","slug":"dc1","status":{"value":"active","label":"Active"},"region":{"id":2,"url":"http://netbox.lab.local:8000/api/dcim/regions/2/","display":"DC1","name":"DC1","slug":"dc1","description":"","site_count":0,"_depth":1},"group":null,"tenant":{"id":1,"url":"http://netbox.lab.local:8000/api/tenancy/tenants/1/","display":"Lab
+        Operations","name":"Lab Operations","slug":"lab-operations","description":"Owner
+        of all lab devices"},"facility":"","time_zone":null,"description":"Primary
+        DC - Juniper fabric","physical_address":"","shipping_address":"","latitude":null,"longitude":null,"owner":null,"comments":"","asns":[],"tags":[],"custom_fields":{"mgmt_gw_v4":"10.0.0.2","mgmt_gw_v6":"2001:db8::1"},"created":"2026-04-07T18:21:22.323775Z","last_updated":"2026-04-07T18:21:22.323786Z","circuit_count":0,"device_count":8,"prefix_count":10,"rack_count":0,"virtualmachine_count":0,"vlan_count":0}]}'
+    headers:
+      allow:
+      - GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS
+      api-version:
+      - '4.5'
+      content-language:
+      - en
+      content-length:
+      - '1077'
+      content-type:
+      - application/json
+      cross-origin-opener-policy:
+      - same-origin
+      date:
+      - Sun, 12 Apr 2026 07:19:02 GMT
+      referrer-policy:
+      - same-origin
+      server:
+      - granian
+      vary:
+      - HX-Request, Accept-Language, Cookie, origin
+      x-content-type-options:
+      - nosniff
+      x-frame-options:
+      - SAMEORIGIN
+      x-request-id:
+      - 1a773fd3-0382-4590-b8d3-7f56eb6b9496
+    status:
+      code: 200
+      message: OK
+version: 1

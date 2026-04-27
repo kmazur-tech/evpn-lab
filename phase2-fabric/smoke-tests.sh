@@ -389,7 +389,7 @@ echo "  Waiting for leaf1 recovery..."
 # Try SSH first, restart if unresponsive
 waited=0
 while [ $waited -lt $MAX_WAIT ]; do
-  if sshpass -p 'TestLabPass1' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 admin@$LEAF1_IP "show system uptime" >/dev/null 2>&1; then
+  if sshpass -p "${JUNOS_SSH_PASSWORD:?JUNOS_SSH_PASSWORD not set}" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 "${JUNOS_SSH_USER:-admin}@$LEAF1_IP" "show system uptime" >/dev/null 2>&1; then
     break
   fi
   sleep 10

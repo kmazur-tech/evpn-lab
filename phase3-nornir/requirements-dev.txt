@@ -1,3 +1,5 @@
 # Development / test dependencies (not needed for deploy.py)
 -r requirements.txt
 pytest>=8.0
+pytest-cov>=5.0
+vcrpy>=6.0

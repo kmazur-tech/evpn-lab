@@ -1,0 +1,46 @@
+{
+    "name": "dc1-spine2",
+    "role_slug": "spine",
+    "router_id": "10.1.0.2",
+    "asn": 65002,
+    "fabric_links": [
+        {
+            "name": "ge-0/0/0",
+            "description": "to dc1-leaf1",
+            "address": "10.1.4.4/31",
+            "peer_ip": "10.1.4.5",
+            "peer_asn": 65003,
+            "peer_name": "dc1-leaf1"
+        },
+        {
+            "name": "ge-0/0/1",
+            "description": "to dc1-leaf2",
+            "address": "10.1.4.6/31",
+            "peer_ip": "10.1.4.7",
+            "peer_asn": 65004,
+            "peer_name": "dc1-leaf2"
+        }
+    ],
+    "access_ports": [],
+    "lag_members": [],
+    "lags": [],
+    "irbs": [],
+    "loopbacks": [
+        {
+            "unit": 1,
+            "description": "Router-ID",
+            "address": "10.1.0.2/32"
+        }
+    ],
+    "tenants": [],
+    "mgmt_gw_v4": "10.0.0.2",
+    "mgmt_gw_v6": "2001:db8::1",
+    "mac_vrf_interfaces": [],
+    "vlans_in_mac_vrf": [],
+    "extended_vni_list": [],
+    "underlay_neighbors": [
+        {"ip": "10.1.4.5", "asn": 65003},
+        {"ip": "10.1.4.7", "asn": 65004}
+    ],
+    "overlay_neighbors": ["10.1.0.3", "10.1.0.4"]
+}

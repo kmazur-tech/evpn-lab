@@ -98,7 +98,7 @@ sudo containerlab deploy -t dc1.clab.yml
 bash setup-hosts.sh
 
 # Verify
-ssh admin@$CLAB_IP_dc1_spine1  # password: TestLabPass1
+ssh $JUNOS_SSH_USER@$CLAB_IP_dc1_spine1  # password from $JUNOS_SSH_PASSWORD
 show bgp summary
 show evpn instance
 show lldp neighbors
