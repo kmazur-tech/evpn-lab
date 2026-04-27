@@ -150,9 +150,6 @@ services:
     # server only honors the CLI flag). Lab-only - see README banner.
     entrypoint: ["/usr/local/bin/sq-rest-server"]
     command: ["-c", "/suzieq/suzieq.cfg", "--no-https"]
-    volumes:
-      - parquet:/suzieq/parquet
-      - ./suzieq.cfg:/suzieq/suzieq.cfg:ro
     environment:
       SUZIEQ_API_KEY: ${SUZIEQ_API_KEY}
     ports:
@@ -168,13 +165,31 @@ services:
       # binds 8000 (suzieq.cfg `rest.port`) - only the host-side
       # mapping is shifted.
       - "8443:8000"
+    volumes:
+      - parquet:/suzieq/parquet
+      - ./suzieq.cfg:/suzieq/suzieq.cfg:ro
+      # Real HTTP healthcheck. Bind-mounted from host so the script
+      # can be edited without an image rebuild. See
+      # sq-rest-healthcheck.py for the backstory: the earlier
+      # bash `</dev/tcp/127.0.0.1/8000` check only verified TCP
+      # accept, which a wedged uvicorn worker still satisfies
+      # (Phase 5.1 review item #1: sq-rest-server ran in an
+      # accept-but-no-serve state for 3 days with the old check
+      # passing the whole time).
+      - ./sq-rest-healthcheck.py:/usr/local/bin/sq-rest-healthcheck.py:ro
     depends_on:
       sq-poller:
         condition: service_started
     healthcheck:
-      test: ["CMD-SHELL", "timeout 3 bash -c '</dev/tcp/127.0.0.1/8000' || exit 1"]
+      # Authenticated HTTP GET to /api/v2/device/show. Catches both
+      # TCP-level failures AND the "uvicorn worker wedged" state
+      # where TCP accept works but every HTTP request is reset.
+      # SUZIEQ_API_KEY is already in the container's env via the
+      # environment: block below, so the script picks it up for
+      # free.
+      test: ["CMD", "python3", "/usr/local/bin/sq-rest-healthcheck.py"]
       interval: 30s
-      timeout: 5s
+      timeout: 10s
       retries: 5
       start_period: 30s
 
