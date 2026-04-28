@@ -1,0 +1,4 @@
+# Working directory for phase plans, reviews, and bundle scripts.
+# Nothing here is tracked in git except this .gitignore.
+*
+!.gitignore
