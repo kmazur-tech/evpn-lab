@@ -1,10 +1,13 @@
 # Phase 6 PR-time CI workflow.  Runs on every PR and push to main.
-# All jobs run on the self-hosted runner labeled 'lab-deploy' on
-# netdevops-srv (consistent with project services: NetBox, Batfish,
-# SuzieQ all live on the same VM).
+# All jobs run on GitHub-hosted ubuntu-latest because the public repo
+# means PRs from forks can run arbitrary code -- we want that on
+# GitHub's sandbox, not on our own infrastructure.  PR-time CI does
+# not need lab access (vcrpy cassettes, mocked NAPALM, captured
+# Batfish fixtures).  Self-hosted runner is reserved for fabric-deploy.yml.
 #
 # All external Actions are pinned to full commit SHAs per project
-# policy.  Dependabot tracks updates.
+# policy and per repo "Require actions to be pinned to a full-length
+# commit SHA" setting.  Dependabot tracks updates.
 
 name: fabric-ci
 
@@ -30,7 +33,7 @@ jobs:
   # ------------------------------------------------------------------
   lint:
     name: lint
-    runs-on: [self-hosted, lab-deploy]
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: read
@@ -75,7 +78,7 @@ jobs:
   # ------------------------------------------------------------------
   unit:
     name: unit (${{ matrix.phase.dir }})
-    runs-on: [self-hosted, lab-deploy]
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: read
@@ -131,7 +134,7 @@ jobs:
   # ------------------------------------------------------------------
   render-pipeline:
     name: render + diff + guard
-    runs-on: [self-hosted, lab-deploy]
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: read
@@ -188,13 +191,14 @@ jobs:
   # ------------------------------------------------------------------
   # 4. Batfish offline analysis
   #
-  # The Batfish container runs on netdevops-srv (this runner's host).
-  # validate.py performs the 7 offline checks plus differential
-  # analysis against the main branch baseline.
+  # PR-time CI runs only the pybatfish unit tests (60 tests with
+  # captured fixtures, no live container).  Differential analysis
+  # against a real Batfish container belongs in fabric-deploy.yml on
+  # the self-hosted runner where the container actually lives.
   # ------------------------------------------------------------------
   batfish:
     name: batfish
-    runs-on: [self-hosted, lab-deploy]
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
