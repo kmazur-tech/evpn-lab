@@ -1,6 +1,72 @@
 # EVPN-VXLAN Data Center Fabric - NetDevOps Lab
 
-An automated EVPN-VXLAN data center fabric built with Infrastructure as Code principles. From planning in NetBox to configuration rendering, validation, and deployment - the entire lifecycle is code-driven, repeatable, and version-controlled.
+[![CI](https://github.com/kmazur-tech/evpn-lab/actions/workflows/fabric-ci.yml/badge.svg)](https://github.com/kmazur-tech/evpn-lab/actions/workflows/fabric-ci.yml)
+
+A Juniper EVPN-VXLAN fabric built end-to-end as code: NetBox is the source of truth, Nornir renders Junos configs from it, Batfish validates them offline, NAPALM commits with a 5-minute auto-rollback timer, smoke tests gate the deploy, and SuzieQ watches for drift afterwards. Every change goes through CI before it reaches a device.
+
+## What works today
+
+- **EVPN-VXLAN fabric** running on containerlab with vJunos-switch (EX9214 model). 2 spines, 2 leaves, 4 hosts. Full-mesh underlay, EVPN overlay, VLAN-aware MAC-VRF, anycast gateways on IRB, ESI-LAG dual-homing.
+- **NetBox-driven configs**: device data, VRFs, VLANs, VNIs, cabling, anycast MACs, RT scheme. `populate.py` is idempotent. Nornir's `enrich_from_netbox()` collects it all into a pydantic-validated `HostData` per device.
+- **Render -> diff -> guard pipeline**: Jinja2 templates produce per-device configs, byte-diffed against checked-in golden files, then scanned for placeholders / malformed password hashes before any NAPALM call.
+- **Batfish validation**: 7 offline checks (BGP topology, undefined references, parse status, IP ownership conflicts, ...) plus differential analysis vs `main`.
+- **Commit-confirmed deploys** via NAPALM: `commit confirmed 5m`, then liveness check, then explicit confirm. If liveness fails, Junos auto-rolls back.
+- **76-check smoke suite** runs after every commit (control plane, data plane, ESI failover, core isolation, spine failover, EVPN type 2/3/5 routes, ECMP, jumbo MTU). Roughly 2 minutes, all green on the live lab.
+- **SuzieQ drift harness**: continuous state polling, NetBox-vs-runtime diff with strict assertion mode, time-series queries, schema-drift smoke test. 362 default tests + 12 live tests.
+- **GitHub Actions CI** on every PR: lint, unit-test matrix across phases 3/4/5, render pipeline, Batfish - all on GitHub-hosted runners with zero lab exposure.
+
+## Why this project is different
+
+This isn't an EVPN tutorial repo. It's a working model of how to operate a network with the same engineering hygiene a software team would apply to any production system:
+
+- **Single source of truth.** No config drift between docs, scripts, and devices: NetBox owns intent, everything else is derived from it.
+- **Multiple independent validation layers** before a device sees a candidate config: golden-file regression, on-disk deploy guard, Batfish semantic checks, then NAPALM compare.
+- **Self-correcting deploys.** Commit-confirmed + liveness check means a broken push rolls itself back without operator intervention. The credential-lockout postmortem in Phase 3 is the reason this was built that way.
+- **Continuous drift detection** post-deploy. SuzieQ keeps polling and a strict-assertions cron compares observed state against NetBox intent every 5 minutes.
+- **CI gates real device-touching changes**, not just code style. Public repo, Actions runners sandboxed, secrets scoped to environments, all third-party Actions pinned to commit SHAs.
+
+## 5-minute demo
+
+If you have access to the lab server, the full pipeline runs in under 5 minutes once containerlab is up:
+
+```bash
+# 1. Populate NetBox from the YAML data model
+python phase1-netbox/populate.py
+
+# 2. Bring up the fabric (4x vJunos + 4x Linux hosts in containerlab)
+sudo containerlab deploy -t phase2-fabric/dc1.clab.yml
+
+# 3. Render Junos configs from NetBox, diff against golden files
+cd phase3-nornir
+python deploy.py --check                  # offline diff per stanza
+
+# 4. Validate the rendered configs offline (Batfish on netdevops-srv)
+python ../phase4-batfish/validate.py --snapshot build/
+
+# 5. Deploy with commit-confirmed (5-min rollback timer)
+python deploy.py --commit                 # liveness check + auto-confirm
+
+# 6. Run the smoke gate (76 checks, ~2 min)
+bash ../phase2-fabric/smoke-tests.sh
+
+# 7. Compare runtime state vs NetBox intent
+docker compose -f /opt/suzieq/docker-compose.yml run --rm drift --mode all
+```
+
+If you don't have the lab, the offline pieces still run: `cd phase3-nornir && pytest` exercises the full render pipeline with vcrpy cassettes (zero NetBox / device dependencies, ~10 seconds).
+
+## Pipeline at a glance
+
+| Step | Tool | Input | Output |
+|---|---|---|---|
+| Source of truth | NetBox + `populate.py` | `netbox-data.yml` | Devices, VLANs, VNIs, VRFs, cables in NetBox |
+| Render | Nornir + Jinja2 | NetBox API (or vcrpy cassettes in CI) | `phase3-nornir/build/<host>.conf` |
+| Regression gate | `deploy.py --check` | Rendered configs | Byte-diff vs `phase3-nornir/expected/*.conf` |
+| Deploy guard | `assert_safe_to_deploy` | Rendered configs on disk | Reject placeholders, validate hash shape |
+| Validate | Batfish | Rendered configs + main baseline | 7 offline checks + differential snapshot |
+| Deploy | NAPALM | Candidate config | `commit confirmed 5`, then confirm or auto-rollback |
+| Smoke | `smoke-tests.sh` | Live fabric | 76-check pass/fail matrix |
+| Observe | SuzieQ + drift harness | Runtime state | Continuous diff vs NetBox intent |
 
 ## Architecture
 
@@ -38,28 +104,91 @@ flowchart TB
 
 **Topology summary:**
 - Full-mesh spine-leaf fabric in DC1, each spine connects to each leaf.
-- `dc1-host1` is single-homed to `dc1-leaf1`, and `dc1-host2` is single-homed to `dc1-leaf2`.
-- `dc1-host3` is dual-homed to both leaves using ESI-LAG on `ae0`.
-- `dc1-host4` is dual-homed to both leaves using ESI-LAG on `ae1`.
+- `dc1-host1` is single-homed to `dc1-leaf1`; `dc1-host2` to `dc1-leaf2`.
+- `dc1-host3` and `dc1-host4` are dual-homed via ESI-LAG (`ae0` and `ae1`) to both leaves.
 
 **Fabric design:**
-- Juniper ERB (Edge-Routed Bridging) architecture on vJunos-switch (EX9214)
-- eBGP underlay with unique ASN per device
-- iBGP EVPN overlay with spines as route reflectors (AS 65000)
-- VXLAN encapsulation with VNI-to-VLAN mapping
+- Juniper ERB (Edge-Routed Bridging) on vJunos-switch (EX9214)
+- eBGP underlay, unique ASN per device
+- iBGP EVPN overlay, spines as route reflectors (AS 65000)
+- VXLAN encap, VNI-to-VLAN mapping
 - ESI-LAG (EVPN multihoming) for active-active server connectivity
-- Anycast gateway on IRB interfaces for distributed L3 routing
+- Anycast gateway on IRB for distributed L3
+
+## Evidence
+
+### Smoke suite, post-deploy (76/76 PASS, ~2 minutes)
+
+```
+=== 1. Control Plane ===
+  PASS: dc1-spine1 BGP: 0 down peers
+  PASS: leaf1 EVPN routes: 42 destinations
+  PASS: leaf1 VTEP tunnel to leaf2 (10.1.0.4)
+  PASS: leaf1 BFD sessions up: 4
+  PASS: leaf1 ESI all-active entries: 6
+  PASS: leaf1 core-isolation configured
+
+=== 4. Failover: ESI-LAG ===
+  PASS: ESI-LAG: LACP detected leaf1 failure in 5s (active aggregator: 1 port)
+  PASS: ESI-LAG failover: host3 -> host4 (leaf1 crashed)
+  PASS: Post-failure withdrawal: leaf2 dropped remote VTEP 10.1.0.3 in 0s
+  PASS: ESI-LAG restore: leaf1 recovered
+
+=== 5. Failover: Core Isolation ===
+  PASS: Core isolation: ae0 AND ae1 both brought down in 0s
+  PASS: Core isolation: host3 -> host4 (leaf1 isolated, via leaf2)
+
+=== 8. EVPN Deep Validation ===
+  PASS: leaf1 ECMP: 10.1.0.4/32 installed via 2 next-hops (both spines)
+  PASS: leaf1 EVPN Type-2 (VNI 10010): 12 MAC/IP routes
+  PASS: leaf1 EVPN Type-5 (IP-prefix): 4 routes
+  PASS: leaf1 MTU: jumbo (size 8972 DF) -> 10.1.0.4
+  PASS: DF election: 2 ESIs, both leaves agree on DF
+
+============================================
+  ALL TESTS PASSED
+============================================
+```
+
+### CI test counts (latest green run)
+
+| Phase | Tests | Coverage | Runtime |
+|---|---|---|---|
+| Phase 1 (NetBox populate) | 18 | -- | <1 s |
+| Phase 3 (Nornir IaC) | 154 | 87% | ~12 s |
+| Phase 4 (Batfish) | 60 unit + 9 integration | -- | ~2 s |
+| Phase 5 (SuzieQ) | 362 default + 12 live | 91.9% | ~4 s |
+| **Total (default)** | **594** | -- | ~20 s |
+
+### Render pipeline (offline)
+
+Phase 3 `deploy.py --check` rendered against vcrpy cassettes, byte-diffed against `expected/`:
+
+```
+dc1-spine1 PASS
+  OK    system
+  OK    routing-options
+  OK    chassis
+  OK    interfaces
+  OK    forwarding-options
+  OK    policy-options
+  OK    routing-instances
+  OK    protocols
+```
+
+Same shape on all 4 devices. Any structural drift in a template surfaces here as a per-stanza DIFF before NAPALM is asked to do anything.
 
 ## Tech Stack
 
 | Tool | Purpose |
 |------|---------|
-| [NetBox](https://netbox.dev/) | Source of Truth - devices, IPs, VLANs, ASNs, cabling |
+| [NetBox](https://netbox.dev/) | Source of truth - devices, IPs, VLANs, ASNs, cabling |
 | [Containerlab](https://containerlab.dev/) | Virtual network lab (vJunos-switch, Linux hosts) |
 | [pynetbox](https://github.com/netbox-community/pynetbox) | Idempotent NetBox population via Python |
 | [Nornir](https://nornir.readthedocs.io/) | Configuration rendering and deployment |
+| [NAPALM](https://napalm.readthedocs.io/) | Vendor-abstract device API; commit-confirmed deploys |
 | [Batfish](https://www.batfish.org/) | Pre-deployment config validation |
-| [Suzieq](https://suzieq.readthedocs.io/) | Continuous state observation + drift detection |
+| [SuzieQ](https://suzieq.readthedocs.io/) | Continuous state observation + drift detection |
 | Juniper Junos | Network OS (EVPN-VXLAN, ERB, ESI-LAG) |
 | Arista EOS | Multi-vendor DC2 extension (planned) |
 
@@ -71,8 +200,8 @@ flowchart TB
 | 2 | [EVPN+VXLAN+ESI-LAG Fabric](phase2-fabric/) | Done |
 | 3 | [Nornir IaC Framework](phase3-nornir/) | Done |
 | 4 | [Batfish Pre-Deployment Validation](phase4-batfish/) | Done |
-| 5 | [Suzieq Continuous State + Drift Detection](phase5-suzieq/) | Done |
-| 6 | GitHub Actions CI/CD Pipeline | In progress |
+| 5 | [SuzieQ Continuous State + Drift Detection](phase5-suzieq/) | Done |
+| 6 | [GitHub Actions CI/CD Pipeline](phase6-cicd/) | In progress (Stage 6.1+6.2 done, 6.3 deploy planned) |
 | 7 | Forwarding Scale + Convergence Tuning | Planned |
 | 8 | CIS/PCI-DSS Hardening | Planned |
 | 9 | gNMI Streaming Telemetry | Planned |
@@ -82,42 +211,35 @@ flowchart TB
 
 See [PROJECT_PLAN.md](PROJECT_PLAN.md) for detailed scope of each phase.
 
-## Quick Start
+## Lessons learned
 
-```bash
-# Clone the repo
-git clone https://github.com/<your-user>/evpn-lab.git
-cd evpn-lab
+A few real incidents that shaped the design. They are the reason certain layers exist:
 
-# Set up environment variables (IPs, tokens - not stored in repo)
-cp .env.example .env
-# Edit .env with your values, then:
-source .env
+- **Credential lockout from a placeholder hash (Phase 3).** A render bug produced placeholder password hashes; `deploy.py` committed them to all 4 devices and SSH locked everyone out. The fix is the two-layer safety model: a regression gate that compares against checked-in golden files, plus an independent on-disk `assert_safe_to_deploy()` that scans rendered bytes for sentinels and validates SHA-512 crypt shape before NAPALM is ever called. Documented in [phase3-nornir/README.md](phase3-nornir/README.md) "Safety - the two-layer guard".
 
-# Phase 1: Populate NetBox
-pip install -r phase1-netbox/requirements.txt
-python phase1-netbox/populate.py
-```
+- **Falsely blamed Junos for a SuzieQ pipeline artifact (Phase 5).** Drift detection started reporting "every BGP peer appears twice" - the working theory was Junos emitting duplicate state. Three hours of vendor-blame later, the actual root cause was a SuzieQ multi-command merge pipeline that produces partial-view rows during state transitions. The lesson: default to "your code is wrong, not the vendor's", and verify the raw output before reaching for a workaround. Now codified as a project rule and an explicit `_cleanup_bgp_phantom_rows()` helper.
+
+- **vJunos MTU cap (Phase 2).** Real EX9214 supports 9216 MTU; the vJunos-switch image silently caps at 9192. Smoke test was sending 8972-byte (DF) pings between leaves - works at 9192 but would have failed on a real EX. The MTU constant lives in `vars/junos_defaults.yml` so the difference is one line, but the lesson is that emulation has invisible limits and the smoke suite needs to actively probe them.
+
+- **LAG `system-id` regex bug invisible at small scale (Phase 3).** The original ESI-LAG `system-id` formula was `f"00:00:00:00:0{ae_index + 3}:00"` - works fine for `ae0..ae6` but produces `00:00:00:00:010:00` (an invalid 3-character octet) for `ae7+`. Phase 2 only had `ae0` and `ae1` so this hid for months. Caught by extending parametrized tests across the realistic range, not by the smoke suite or by manual review. Now [phase3-nornir/tests/test_lag_system_id.py](phase3-nornir/tests/test_lag_system_id.py) parametrizes over `ae0/1/6/7/12/13/252` and pins a 6-octet MAC regex.
 
 ## Repository Structure
 
 ```
 evpn-lab/
-+-- README.md                 # This file
-+-- PROJECT_PLAN.md            # 12-phase roadmap
-+-- .env.example               # Environment variable template
-+-- phase1-netbox/             # NetBox as Source of Truth
-+-- phase2-fabric/             # EVPN+VXLAN+ESI-LAG fabric (containerlab)
-+-- phase3-nornir/             # Nornir IaC: render, guard, deploy
-    +-- tests/                 # Unit + integration tests (Phase 3 + Phase 6 extensions)
-        +-- fixtures/render/   # Per-device canned HostData for golden-file tests
-        +-- cassettes/         # vcrpy recorded NetBox HTTP cassettes (Phase 6)
-+-- phase4-batfish/            # Pre-deployment offline validation
-+-- phase5-suzieq/             # Continuous state observation + drift detection
-+-- phase6-cicd/               # CI/CD infrastructure (Phase 6, Stages 2-4)
-    +-- .github/workflows/     # fabric-ci.yml, fabric-deploy.yml
-    +-- scripts/               # Cassette refresh, CI helpers
-    +-- CI.md                  # CI operations documentation
++-- README.md                    # This file
++-- PROJECT_PLAN.md               # 12-phase roadmap
++-- .env.example                  # Environment variable template
++-- .github/workflows/            # GitHub Actions (fabric-ci.yml)
++-- phase1-netbox/                # NetBox as Source of Truth
++-- phase2-fabric/                # EVPN+VXLAN+ESI-LAG fabric (containerlab + smoke)
++-- phase3-nornir/                # Nornir IaC: render, guard, deploy
+|   +-- tests/                    # 154 unit/integration tests, vcrpy cassettes
+|   +-- expected/                 # Golden file regression baselines
+|   +-- templates/junos/          # Jinja2 templates per stanza
++-- phase4-batfish/               # Pre-deployment offline validation
++-- phase5-suzieq/                # Continuous state observation + drift detection
++-- phase6-cicd/                  # CI/CD docs, helper scripts (workflows live in .github/)
 ```
 
 ## IP Addressing Plan
@@ -131,7 +253,7 @@ evpn-lab/
 | 10.11.0.0/16 | DC1 local tenant subnets |
 | 10.12.0.0/16 | DC2 local tenant subnets (Phase 10) |
 
-Each DC summarizes to a single /16. See [Phase 1 docs](phase1-netbox/NETBOX_DATA_MODEL.md) for full details.
+Each DC summarizes to a single /16. See [Phase 1 docs](phase1-netbox/NETBOX_DATA_MODEL.md) for the full object inventory.
 
 ## Author
 
@@ -139,4 +261,4 @@ Each DC summarizes to a single /16. See [Phase 1 docs](phase1-netbox/NETBOX_DATA
 
 ## License
 
-This project is licensed under the MIT License - see [LICENSE](LICENSE) for details.
+MIT - see [LICENSE](LICENSE).

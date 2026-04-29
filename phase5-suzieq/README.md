@@ -2,6 +2,8 @@
 
 Continuous runtime monitor of the DC1 fabric, complement to Phase 2's deploy-time smoke suite. Three goals: continuous state observation, NetBox-vs-live-state drift, and a queryable time-series record. This README covers **Part A only** (the SuzieQ stack on netdevops-srv). Drift harness, strict assertions, and time-window queries land in subsequent parts.
 
+**Run from:** anywhere with `pip install pytest PyYAML pandas pyarrow pynetbox`. Live tests need `SUZIEQ_LIVE_PARQUET_DIR` pointing at a real parquet store. **Tests:** `cd phase5-suzieq && pytest` (362 default tests, ~4 s, fully offline). Add `-m live` (with the env var set) for the 12 live schema-guard tests. **Depends on:** the SuzieQ stack deployed on netdevops-srv (compose stack in this directory) for runtime monitoring; the test suite itself depends on nothing live.
+
 ## What Part A delivers
 
 A docker-compose stack on the netdevops services VM running three SuzieQ processes against one shared parquet store:

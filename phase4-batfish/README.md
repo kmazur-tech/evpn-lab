@@ -2,6 +2,8 @@
 
 Offline validation of rendered Junos configs before they touch a real device. Catches a class of bugs (BGP topology errors, undefined policy references, parse failures, loopback unreachability) that the Phase 3 regression gate and on-disk guard don't cover - and catches them **without** spinning up the lab.
 
+**Run from:** anywhere with `pip install pybatfish pandas pytest`. Live integration tests need a Batfish container reachable at `$BATFISH_HOST:9996`. **Tests:** `cd phase4-batfish && pytest` (60 unit tests, ~2 s, no live container). Add `-m integration` for the 9 live tests (~5 s once snapshot init is paid). **Depends on:** Phase 3 (rendered configs in `phase3-nornir/build/`) for live runs; unit tests use captured fixtures.
+
 ## What it validates
 
 | Check | What it catches | Confidence |

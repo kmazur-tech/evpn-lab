@@ -2,6 +2,8 @@
 
 NetBox-driven Junos configuration rendering and deployment for the DC1 EVPN-VXLAN fabric.
 
+**Run from:** WSL2 Debian on the workstation (or any Linux with the venv). `napalm-junos` + `junos-eznc` install cleanly on Linux but not on Windows. **Tests:** `cd phase3-nornir && pytest` (154 tests, 87% coverage, ~12 s, fully offline via vcrpy cassettes). **Depends on:** Phase 1 (NetBox populated). Live deploys also need lab SSH credentials in env.
+
 ## Pipeline
 
 ```mermaid

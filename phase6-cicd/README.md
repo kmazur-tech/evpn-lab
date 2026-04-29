@@ -29,6 +29,52 @@ Stage | Scope | State
 6.3 | Deploy `fabric-deploy.yml`: containerlab up, commit-confirmed, smoke gate, suzieq drift, teardown | Planned. Self-hosted runner, manual `workflow_dispatch`.
 6.4 | Documentation, status badge, `phase6-cicd/CI.md` operations runbook | Partial - this README covers what's live; runbook follows when deploy lands.
 
+## End-to-end pipeline
+
+```mermaid
+flowchart LR
+    pr["PR opened<br/>or push to main"]
+    lint["lint<br/>yamllint + ruff + j2lint"]
+    unit["unit (matrix)<br/>phase3 / phase4 / phase5"]
+    render["render + diff + guard<br/>(vcrpy cassettes)"]
+    bf["batfish<br/>offline unit tests"]
+    merge["merge to main"]
+
+    dispatch["operator triggers<br/>workflow_dispatch"]
+    env["lab-deploy environment<br/>required reviewer"]
+    deploy["nornir-commit<br/>commit-confirmed (revert_in=300)"]
+    smoke["smoke-tests.sh<br/>76 checks via SSH to lab"]
+    confirm["napalm_confirm_commit"]
+    rollback["Junos auto-rollback<br/>at 5-min deadline"]
+    drift["suzieq drift check<br/>soft-fail"]
+
+    pr --> lint --> unit --> render --> bf --> merge
+
+    merge -.-> dispatch
+    dispatch --> env --> deploy --> smoke
+    smoke -- PASS --> confirm --> drift
+    smoke -- FAIL --> rollback
+```
+
+The PR-time loop on the left runs on GitHub-hosted runners, fully offline, on every push. The deploy loop on the right is manual `workflow_dispatch`, runs on a self-hosted runner gated by the `lab-deploy` GitHub Environment with required reviewer.
+
+### What blocks what
+
+| Stage | Blocks merge to main? | Blocks deploy to lab? |
+|---|---|---|
+| `lint` | Yes | -- |
+| `unit (phase3-nornir)` | Yes | -- |
+| `unit (phase4-batfish)` | Warn-only\* | -- |
+| `unit (phase5-suzieq)` | Warn-only\* | -- |
+| `render + diff + guard` | Yes | -- |
+| `batfish` | Yes | -- |
+| Required reviewer on `lab-deploy` env | -- | Yes |
+| `nornir-commit` (commit-confirmed) | -- | Yes (planned) |
+| `smoke` (76-check gate) | -- | Yes (planned) - if fails, no confirm fires and Junos auto-rolls back |
+| `suzieq-drift` | -- | Soft-fail (planned) - warn in summary, do not block |
+
+The PR side is biased toward fast feedback and offline checks. The deploy side is biased toward safety: every device-touching step has a fail-safe (commit-confirmed timer, manual approval gate, post-deploy drift verification).
+
 ## fabric-ci.yml - PR-time workflow
 
 Triggered on every PR and push to `main`. Runs on GitHub-hosted `ubuntu-latest`, not the self-hosted lab runner - the public repo means PR contributors' code runs in CI, and we want that on GitHub's sandbox, not on infrastructure that has SSH keys to the lab. PR-time CI doesn't need lab access (vcrpy cassettes replay NetBox offline, NAPALM is mocked, Batfish unit tests use captured fixtures), so the GitHub-hosted runner is sufficient.

@@ -2,7 +2,7 @@
 
 A fully operational EVPN-VXLAN leaf-spine fabric running on containerlab with Juniper vJunos-switch (EX9214).
 
-**Status:** Complete. 76-check smoke suite passes (~2 min run). Full from-scratch deploy + setup + smoke cycle in ~6m20s on the lab server.
+**Run from:** lab server (containerlab host - the one running Docker). `smoke-tests.sh` uses `nsenter` into Docker netns and only works where the daemon lives. **Tests:** `bash smoke-tests.sh` after `containerlab deploy` and `setup-hosts.sh` (76 checks, ~2 min). **Depends on:** Phase 1 (the clab startup configs are hand-built but device IDs match NetBox).
 
 > This README describes WHAT was built and how to run it.
 > For WHY each design choice was made, see [DESIGN.md](DESIGN.md).

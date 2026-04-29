@@ -2,7 +2,7 @@
 
 NetBox serves as the single source of truth for the entire EVPN-VXLAN fabric. Every piece of network data - devices, interfaces, IPs, VLANs, ASNs, cabling - lives here and is consumed by automation in later phases.
 
-**Status:** Implemented. Population script tested and idempotent.
+**Run from:** anywhere with `pip install pynetbox PyYAML pytest`. **Tests:** `cd phase1-netbox && pytest` (18 tests, ~0.3 s, no live NetBox needed). **Depends on:** a reachable NetBox 4.5+ instance only when running `populate.py`; tests are fully offline.
 
 ## Prerequisites
 
