@@ -1,0 +1,27 @@
+# yamllint config for the workflow lint job.
+# Permissive defaults: this is a network automation lab, not a Kubernetes
+# manifest farm.  Long containerlab topology keys + long Junos config
+# fragments would otherwise trip a default 80-column rule.
+
+extends: default
+
+ignore: |
+  .work/
+  phase3-nornir/build/
+  phase3-nornir/tests/cassettes/
+  phase4-batfish/build/
+
+rules:
+  line-length:
+    max: 200
+    level: warning
+  truthy:
+    allowed-values: ['true', 'false', 'on']
+  document-start: disable
+  comments:
+    min-spaces-from-content: 1
+  comments-indentation: disable
+  braces:
+    max-spaces-inside: 1
+  brackets:
+    max-spaces-inside: 1

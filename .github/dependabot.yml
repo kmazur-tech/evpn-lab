@@ -1,0 +1,10 @@
+version: 2
+updates:
+  # Keep GitHub Actions SHAs current.  Dependabot rewrites @<sha> # vX.Y
+  # comments and opens a PR when a new release ships.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci

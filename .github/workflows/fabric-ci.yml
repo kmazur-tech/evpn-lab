@@ -1,0 +1,236 @@
+# Phase 6 PR-time CI workflow.  Runs on every PR and push to main.
+# All jobs run on the self-hosted runner labeled 'lab-deploy' on
+# netdevops-srv (consistent with project services: NetBox, Batfish,
+# SuzieQ all live on the same VM).
+#
+# All external Actions are pinned to full commit SHAs per project
+# policy.  Dependabot tracks updates.
+
+name: fabric-ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Empty permissions at workflow level.  Each job declares its own
+# minimal scope explicitly, so a new job cannot inherit broad rights
+# by accident.
+permissions: {}
+
+# Cancel an in-flight run when a new commit lands on the same branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ------------------------------------------------------------------
+  # 1. Lint
+  # ------------------------------------------------------------------
+  lint:
+    name: lint
+    runs-on: [self-hosted, lab-deploy]
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Python
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-lint-${{ hashFiles('.github/workflows/fabric-ci.yml') }}
+
+      - name: Install linters
+        run: pip install yamllint ruff j2lint
+
+      - name: yamllint
+        run: yamllint -c .github/yamllint.yml .
+
+      - name: ruff
+        run: ruff check phase1-netbox phase3-nornir phase4-batfish phase5-suzieq phase6-cicd
+
+      - name: j2lint (Junos templates)
+        # jinja-statements-indentation and single-statement-per-line are
+        # disabled because adding indentation or newlines around Jinja
+        # control flow would inject whitespace into the rendered Junos
+        # config, breaking byte-equality with golden files.
+        run: j2lint -i jinja-statements-indentation single-statement-per-line -- phase3-nornir/templates/
+
+  # ------------------------------------------------------------------
+  # 2. Unit tests (matrix over phases)
+  #
+  # Phase 3 is hard-fail from day one.  Phase 4 and 5 start as
+  # warn-only via continue-on-error and transition to hard-fail after
+  # 5 consecutive green PRs OR 14 calendar days, whichever comes
+  # first.  See phase6-cicd/CI.md for the transition log.
+  # ------------------------------------------------------------------
+  unit:
+    name: unit (${{ matrix.phase.dir }})
+    runs-on: [self-hosted, lab-deploy]
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        phase:
+          - { dir: phase3-nornir, hard_fail: true }
+          - { dir: phase4-batfish, hard_fail: false }
+          - { dir: phase5-suzieq, hard_fail: false }
+    continue-on-error: ${{ !matrix.phase.hard_fail }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Python
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ matrix.phase.dir }}-${{ hashFiles(format('{0}/requirements*.txt', matrix.phase.dir)) }}
+
+      - name: Install dependencies
+        working-directory: ${{ matrix.phase.dir }}
+        run: pip install -r requirements-dev.txt
+
+      - name: Run pytest
+        working-directory: ${{ matrix.phase.dir }}
+        run: python -m pytest -v
+
+      - name: Upload coverage HTML (phase3)
+        if: matrix.phase.dir == 'phase3-nornir' && always()
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: coverage-${{ matrix.phase.dir }}
+          path: ${{ matrix.phase.dir }}/htmlcov/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # ------------------------------------------------------------------
+  # 3. Render pipeline (render + regression-diff + deploy-guard)
+  #
+  # The render pipeline is exercised end-to-end by phase3-nornir's
+  # test suite (test_render_golden, test_nornir_per_device,
+  # test_deploy_guard, test_normalize) using vcrpy cassettes for
+  # offline NetBox replay.  This job runs the same tests in isolation
+  # and uploads the rendered artifacts so a failed PR can be
+  # inspected without re-running the full suite.
+  # ------------------------------------------------------------------
+  render-pipeline:
+    name: render + diff + guard
+    runs-on: [self-hosted, lab-deploy]
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    needs: [lint]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Python
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-phase3-render-${{ hashFiles('phase3-nornir/requirements*.txt') }}
+
+      - name: Install dependencies
+        run: pip install -r phase3-nornir/requirements-dev.txt
+
+      - name: Cassette age check
+        shell: bash
+        run: |
+          ts=$(git log -1 --format=%ct -- phase3-nornir/tests/cassettes/ || echo 0)
+          if [ "$ts" -eq 0 ]; then
+            echo "::warning::No cassette commit found"
+            exit 0
+          fi
+          age_days=$(( ($(date +%s) - ts) / 86400 ))
+          echo "Cassettes last touched ${age_days} days ago"
+          if [ "$age_days" -gt 30 ]; then
+            echo "::warning::Cassettes older than 30 days, refresh recommended (phase6-cicd/scripts/refresh-netbox-cassettes.py)"
+          fi
+
+      - name: Render + golden file diff
+        working-directory: phase3-nornir
+        run: python -m pytest tests/test_render_golden.py tests/test_nornir_per_device.py -v
+
+      - name: Deploy guard tests
+        working-directory: phase3-nornir
+        run: python -m pytest tests/test_deploy_guard.py tests/test_normalize.py -v
+
+      - name: Upload rendered configs
+        if: always()
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: rendered-configs
+          path: phase3-nornir/build/*.conf
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # ------------------------------------------------------------------
+  # 4. Batfish offline analysis
+  #
+  # The Batfish container runs on netdevops-srv (this runner's host).
+  # validate.py performs the 7 offline checks plus differential
+  # analysis against the main branch baseline.
+  # ------------------------------------------------------------------
+  batfish:
+    name: batfish
+    runs-on: [self-hosted, lab-deploy]
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write   # for the PR comment
+    needs: [render-pipeline]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Python
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-phase4-${{ hashFiles('phase4-batfish/requirements*.txt') }}
+
+      - name: Install dependencies
+        run: pip install -r phase4-batfish/requirements-dev.txt
+
+      - name: Run Batfish unit tests
+        working-directory: phase4-batfish
+        run: python -m pytest -v
+
+      - name: Upload Batfish output
+        if: always()
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: batfish-results
+          path: phase4-batfish/build/
+          retention-days: 14
+          if-no-files-found: ignore
+
+      # PR comment with Batfish diff is wired in a follow-up commit
+      # once the differential snapshot logic is moved out of validate.py
+      # into a CI-callable helper.  Tracked in phase6-cicd/CI.md.
