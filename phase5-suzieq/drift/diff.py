@@ -269,8 +269,7 @@ def _diff_lldp(intent_cables: List[Cable], state_df: pd.DataFrame) -> List[Drift
 
     # Build TWO indices over the LLDP table.
     strict_edges = set()  # (device, iface) <-> (device, iface) canonical
-    device_adjacency = set()  # (deviceA, ifaceA) -> set of peer device names
-    device_adj_map: Dict[Any, set] = {}
+    device_adj_map: Dict[Any, set] = {}  # (deviceA, ifaceA) -> set of peer device names
 
     if not state_df.empty:
         for _, row in state_df.iterrows():
@@ -632,7 +631,7 @@ def _diff_peer_irb_arp(
                 severity=SEVERITY_ERROR,
                 category=CATEGORY_ARP_ND,
                 subject=f"{a.observer_device}->{a.target_device}({a.target_ip})",
-                detail=f"arpnd table empty - cannot verify peer IRB resolution",
+                detail="arpnd table empty - cannot verify peer IRB resolution",
                 intent=asdict(a),
                 state=None,
             ))

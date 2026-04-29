@@ -32,7 +32,7 @@ import shutil
 import socket
 import sys
 import tempfile
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
 from typing import List
 

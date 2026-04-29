@@ -15,7 +15,6 @@ writing, so no infrastructure IPs leak into the repo.
 """
 
 import os
-import re
 import sys
 from pathlib import Path
 from urllib.parse import urlparse

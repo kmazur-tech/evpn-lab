@@ -30,15 +30,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from drift.intent import (  # noqa: E402
     DRIFT_TAG,
-    AnycastMacIntent,
-    BgpSessionIntent,
-    Cable,
-    CableEdge,
-    DeviceIntent,
-    InterfaceIntent,
-    LoopbackRouteIntent,
-    PeerIrbArpIntent,
-    VniIntent,
     collect,
 )
 

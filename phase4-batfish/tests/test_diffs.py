@@ -11,7 +11,6 @@ return the canned frame for that snapshot.
 from dataclasses import dataclass
 
 import pandas as pd
-import pytest
 
 from questions import (
     ALL_DIFFS,

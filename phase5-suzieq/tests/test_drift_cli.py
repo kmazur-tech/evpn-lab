@@ -11,12 +11,11 @@ import sys
 from pathlib import Path
 
 import pandas as pd
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from drift import cli  # noqa: E402
-from drift.diff import Drift, SEVERITY_ERROR, SEVERITY_WARNING  # noqa: E402
+from drift.diff import Drift, SEVERITY_ERROR  # noqa: E402
 from drift.intent import FabricIntent  # noqa: E402
 from drift.state import FabricState  # noqa: E402
 
@@ -112,7 +111,6 @@ class TestRun:
     def test_warning_only_does_not_set_exit_1(self, monkeypatch, capsys):
         """Per Phase 6 contract: only error-severity drifts soft-fail
         the CI stage. Warnings still appear in output but exit 0."""
-        from drift.intent import DeviceIntent
         # Empty intent + non-empty state => warning-only drift
         # (polled-but-not-modeled)
         df = pd.DataFrame([{"hostname": "stale-device"}])

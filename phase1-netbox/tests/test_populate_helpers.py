@@ -24,8 +24,6 @@ Not tested (intentionally):
                       Phase 1 README documents the clean-baseline + run
                       verification path
 """
-import os
-from pathlib import Path
 
 import pytest
 

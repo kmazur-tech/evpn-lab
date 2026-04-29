@@ -1,0 +1,36 @@
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+extend-exclude = [
+    ".work",
+    "phase3-nornir/build",
+    "phase3-nornir/tests/cassettes",
+    "phase4-batfish/build",
+]
+
+[tool.ruff.lint]
+# Pyflakes (F) catches real bugs (unused imports, undefined names).
+# pycodestyle errors (E) catch real syntax/structure issues.
+# We deliberately do NOT enable style-only rules (W, formatting,
+# naming) -- this is a network automation project, not a Python
+# style guide, and the existing code uses domain-driven naming.
+select = ["E", "F"]
+
+# E501 (line-too-long) is handled by line-length above; we run with
+# 120 cols which is comfortable for Junos-flavored config strings.
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# __init__.py files re-export public API; unused-import is the point.
+"**/__init__.py" = ["F401"]
+# Scripts that bootstrap sys.path before importing project modules.
+"phase6-cicd/scripts/*.py" = ["E402"]
+# Test cassette recorder needs sys.path setup before vcrpy import.
+"**/refresh-*.py" = ["E402"]
+# deploy.py registers a Nornir transform plugin BEFORE the imports
+# that depend on it (Nornir 3.x plugin registry contract).
+"phase3-nornir/deploy.py" = ["E402"]
+# vcrpy tests use pytest.importorskip BEFORE importing project code,
+# so the test still collects when vcrpy is not installed.
+"**/test_*_vcr.py" = ["E402"]

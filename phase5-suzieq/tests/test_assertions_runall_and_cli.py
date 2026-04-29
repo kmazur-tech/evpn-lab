@@ -5,7 +5,6 @@ These are the integration points between the individual assertion
 modules and the CLI. Unit tests for each assertion function live
 in their own test_assertions_*.py files.
 """
-import json
 import sys
 from pathlib import Path
 

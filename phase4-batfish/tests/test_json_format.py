@@ -8,7 +8,6 @@ disagree.
 """
 import json
 
-import pytest
 
 from questions import CheckResult
 from validate import render_json_report

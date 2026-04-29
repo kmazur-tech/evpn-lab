@@ -23,7 +23,6 @@ What this test guards:
     junos-mx, junos-qfx, etc. - junos-vjunos-switch is purely additive)
 """
 import importlib.util
-import sys
 from pathlib import Path
 
 import pytest

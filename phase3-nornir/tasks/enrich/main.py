@@ -9,7 +9,6 @@ render. Templates see plain dicts via .model_dump().
 
 import os
 from pathlib import Path
-from typing import List
 
 import pynetbox
 import yaml

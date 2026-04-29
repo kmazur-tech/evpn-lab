@@ -232,7 +232,7 @@ def generate(devices, netbox_url="", warn_stream=None, strict_host_keys=None):
     for (site, devtype), hosts in sorted(grouped.items()):
         source_name = f"{site}-{devtype}"
         out.write(f"  - name: {source_name}\n")
-        out.write(f"    hosts:\n")
+        out.write("    hosts:\n")
         for h in hosts:
             out.write(
                 f"      - url: ssh://{h['address']}  # {h['name']} ({h['model']})\n"
@@ -256,7 +256,7 @@ def generate(devices, netbox_url="", warn_stream=None, strict_host_keys=None):
     ignore_value = "false" if strict_host_keys else "true"
     for (_, devtype), _hosts in sorted(grouped.items()):
         out.write(f"  - name: dev-{devtype}\n")
-        out.write(f"    transport: ssh\n")
+        out.write("    transport: ssh\n")
         out.write(f"    devtype: {devtype}\n")
         out.write(f"    ignore-known-hosts: {ignore_value}\n")
     out.write("\n")
@@ -272,7 +272,7 @@ def generate(devices, netbox_url="", warn_stream=None, strict_host_keys=None):
         out.write(f"  - name: {site}\n")
         out.write(f"    source: {source_name}\n")
         out.write(f"    device: dev-{devtype}\n")
-        out.write(f"    auth: junos-creds\n")
+        out.write("    auth: junos-creds\n")
 
     return out.getvalue()
 

@@ -23,7 +23,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from drift.timeseries.partition import (  # noqa: E402
-    CoalescedFile,
     COALESCED_FILENAME_RE,
     filter_files_in_window,
     parse_coalesced_filename,

@@ -19,7 +19,7 @@ from .models import BgpUnderlayNeighbor, FabricLink
 def collect_underlay_neighbors(fabric_links: List[FabricLink]) -> List[BgpUnderlayNeighbor]:
     """One neighbor per fabric P2P link, sorted by IP."""
     return sorted(
-        (BgpUnderlayNeighbor(ip=l.peer_ip, asn=l.peer_asn) for l in fabric_links),
+        (BgpUnderlayNeighbor(ip=link.peer_ip, asn=link.peer_asn) for link in fabric_links),
         key=lambda n: ipaddress.ip_address(n.ip),
     )
 

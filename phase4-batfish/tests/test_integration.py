@@ -17,7 +17,6 @@ tests in the file, so the ~30s init cost is amortized across the
 whole integration run rather than paid per-test.
 """
 import os
-import shutil
 import tempfile
 from pathlib import Path
 
@@ -31,11 +30,9 @@ from questions import (
     check_bgp_sessions,
     check_init_issues,
     check_overlay_loopback_reachability,
-    check_parse_status,
     check_undefined_references,
 )
 from validate import (
-    BATFISH_COORDINATOR_PORT,
     check_reachable,
     render_json_report,
     run_checks,
@@ -193,10 +190,10 @@ def test_ignored_ref_struct_types_still_appear(bf_session):
     df = bf_session.q.undefinedReferences().answer().frame()
     if df.empty:
         pytest.fail(
-            f"undefinedReferences returned no rows at all. Either Batfish "
-            f"fixed batfish#5036 (delete IGNORED_REF_STRUCT_TYPES) or the "
-            f"Phase 3 render no longer emits mac-vrf-scoped vlan references. "
-            f"Regenerate the fixture via tests/fixtures/capture_raw_output.py."
+            "undefinedReferences returned no rows at all. Either Batfish "
+            "fixed batfish#5036 (delete IGNORED_REF_STRUCT_TYPES) or the "
+            "Phase 3 render no longer emits mac-vrf-scoped vlan references. "
+            "Regenerate the fixture via tests/fixtures/capture_raw_output.py."
         )
     types_seen = set(df["Struct_Type"].astype(str))
     unmatched = IGNORED_REF_STRUCT_TYPES - types_seen

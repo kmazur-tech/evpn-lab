@@ -26,7 +26,6 @@ has an opinion about WHICH sessions should exist - that's drift's
 job. These assertions only care that sessions that DO exist are
 healthy.
 """
-from dataclasses import asdict
 from typing import List
 
 from ..diff import Drift, SEVERITY_ERROR, CATEGORY_CONTROL_PLANE

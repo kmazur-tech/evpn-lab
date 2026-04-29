@@ -3,7 +3,6 @@
 These functions take primitive inputs and return primitives - no
 NetBox, no Nornir context. Easy to test, regress easily on refactor.
 """
-import os
 
 import pytest
 

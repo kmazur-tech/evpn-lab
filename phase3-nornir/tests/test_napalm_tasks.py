@@ -7,9 +7,7 @@ covers the remaining tasks and the flow-level contracts that deploy.py
 relies on.
 """
 
-from pathlib import Path
 
-import pytest
 from nornir.core.task import Result
 
 from tasks.deploy import liveness_check, napalm_deploy, REVERT_IN_SECONDS

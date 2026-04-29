@@ -9,7 +9,6 @@ warning path.
 import sys
 from pathlib import Path
 
-import pytest
 
 from deploy import run_batfish_validation, _BATFISH_SCRIPT_MISSING
 

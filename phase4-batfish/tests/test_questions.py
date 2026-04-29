@@ -11,7 +11,6 @@ These tests pin behaviors that are easy to break on refactor:
 - All checks fail closed when the relevant frame is empty
 """
 from dataclasses import dataclass
-from typing import Any
 
 import pandas as pd
 import pytest

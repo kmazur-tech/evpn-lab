@@ -20,7 +20,6 @@ Part D additions:
 import argparse
 import json
 import sys
-from io import StringIO
 from pathlib import Path
 
 import pandas as pd
@@ -29,7 +28,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from drift import cli  # noqa: E402
-from drift.timeseries.queries import TimeseriesResult  # noqa: E402
 from drift.timeseries.reader import TimeWindow, WindowedTable  # noqa: E402
 
 

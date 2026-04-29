@@ -11,10 +11,8 @@ known Result with diff='[edit] sample diff', call our napalm_deploy
 task via Nornir's task runner, and verify the displayed string
 contains the diff text.
 """
-from pathlib import Path
 
-import pytest
-from nornir.core.task import Result, Task
+from nornir.core.task import Result
 
 from tasks.deploy import napalm_deploy
 
