@@ -1,6 +1,7 @@
 # EVPN-VXLAN Data Center Fabric - NetDevOps Lab
 
 [![CI](https://github.com/kmazur-tech/evpn-lab/actions/workflows/fabric-ci.yml/badge.svg)](https://github.com/kmazur-tech/evpn-lab/actions/workflows/fabric-ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/kmazur-tech/evpn-lab?display_name=tag&sort=semver)](https://github.com/kmazur-tech/evpn-lab/releases)
 
 A Juniper EVPN-VXLAN fabric built end-to-end as code: NetBox is the source of truth, Nornir renders Junos configs from it, Batfish validates them offline, NAPALM commits with a 5-minute auto-rollback timer, smoke tests gate the deploy, and SuzieQ watches for drift afterwards. Every change goes through CI before it reaches a device.
 
