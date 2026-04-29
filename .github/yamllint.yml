@@ -25,3 +25,15 @@ rules:
     max-spaces-inside: 1
   brackets:
     max-spaces-inside: 1
+  # netbox-data.yml uses column-aligned commas in tag/object lists for
+  # readability. The aligned form is preferred over single-space lint.
+  commas:
+    max-spaces-after: -1
+    max-spaces-before: 0
+  # CRLF on Windows checkouts normalizes to LF on Linux runners; the
+  # rule fires only locally and adds no value.
+  new-lines: disable
+  # vars/junos_defaults.yml aligns nested map values with extra spaces
+  # after colons for readability. Same rationale as commas above.
+  colons:
+    max-spaces-after: -1

@@ -4,3 +4,9 @@ PyYAML>=6.0
 # `scripts/coverage.sh` for the canonical config. Adding the dep only -
 # the default test suite does NOT collect coverage so runtime stays flat.
 pytest-cov>=4.1
+# Drift harness deps. The drift sibling container runs against parquet
+# files written by Suzieq, so the offline test suite needs the same
+# stack to reproduce the schema and shape assertions.
+pandas>=2.0
+pyarrow>=14.0
+pynetbox>=7.0
