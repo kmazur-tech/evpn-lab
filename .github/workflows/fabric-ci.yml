@@ -171,13 +171,16 @@ jobs:
             echo "::warning::Cassettes older than 30 days, refresh recommended (phase6-cicd/scripts/refresh-netbox-cassettes.py)"
           fi
 
+      # Coverage is enforced by the unit-phase3 job (full suite, 87%).
+      # This job runs a subset for visibility and artifact upload, so
+      # we disable the cov-fail-under gate here.
       - name: Render + golden file diff
         working-directory: phase3-nornir
-        run: python -m pytest tests/test_render_golden.py tests/test_nornir_per_device.py -v
+        run: python -m pytest tests/test_render_golden.py tests/test_nornir_per_device.py -v --no-cov
 
       - name: Deploy guard tests
         working-directory: phase3-nornir
-        run: python -m pytest tests/test_deploy_guard.py tests/test_normalize.py -v
+        run: python -m pytest tests/test_deploy_guard.py tests/test_normalize.py -v --no-cov
 
       - name: Upload rendered configs
         if: always()
