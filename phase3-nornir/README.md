@@ -4,17 +4,19 @@ NetBox-driven Junos configuration rendering and deployment for the DC1 EVPN-VXLA
 
 ## Pipeline
 
-```
-NetBox (SoT)
-    -> Nornir NetBoxInventory2 (hosts, platform, primary_ip)
-    -> tasks/enrich/ package (pynetbox: VLANs, VNIs, VRFs, anycast GW, cables,
-                              interfaces; pydantic-validated HostData)
-    -> Jinja2 templates (templates/junos/)
-    -> build/<host>.conf
-    -> diff vs phase3-nornir/expected/<host>.conf  (regression gate)
-    -> on-disk deploy guard (independent grep, see Safety section)
-    -> NAPALM load_replace_candidate + commit
-    -> phase2-fabric/smoke-tests.sh  (run separately, wired into CI in Phase 6)
+```mermaid
+flowchart TB
+    nb["NetBox (SoT)"]
+    inv["Nornir NetBoxInventory2<br/>hosts, platform, primary_ip"]
+    enrich["tasks/enrich/<br/>pynetbox: VLANs, VNIs, VRFs,<br/>anycast GW, cables, interfaces<br/>pydantic-validated HostData"]
+    j2["Jinja2 templates<br/>templates/junos/"]
+    build["build/&lt;host&gt;.conf"]
+    diff["Regression gate<br/>diff vs expected/&lt;host&gt;.conf"]
+    guard["On-disk deploy guard<br/>independent grep"]
+    napalm["NAPALM load_replace_candidate<br/>+ commit-confirmed"]
+    smoke["phase2-fabric/smoke-tests.sh<br/>(wired into CI in Phase 6)"]
+
+    nb --> inv --> enrich --> j2 --> build --> diff --> guard --> napalm --> smoke
 ```
 
 ## Success criterion - the regression gate authority

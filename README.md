@@ -4,38 +4,43 @@ An automated EVPN-VXLAN data center fabric built with Infrastructure as Code pri
 
 ## Architecture
 
+```mermaid
+flowchart TB
+    subgraph DC1["DC1 (Juniper vJunos)"]
+        sp1["dc1-spine1"]
+        sp2["dc1-spine2"]
+
+        lf1["dc1-leaf1"]
+        lf2["dc1-leaf2"]
+
+        h1["dc1-host1<br/>single-homed to leaf1"]
+        h2["dc1-host2<br/>single-homed to leaf2"]
+        h3["dc1-host3<br/>dual-homed<br/>ESI-LAG (ae0)"]
+        h4["dc1-host4<br/>dual-homed<br/>ESI-LAG (ae1)"]
+
+        sp1 --- lf1
+        sp1 --- lf2
+        sp2 --- lf1
+        sp2 --- lf2
+
+        lf1 --- h1
+        lf2 --- h2
+
+        lf1 --- h3
+        lf2 --- h3
+
+        lf1 --- h4
+        lf2 --- h4
+    end
+
+    dc2["DC2 (Arista cEOS - Phase 10)"]
 ```
-                        DC1 (Juniper vJunos)
 
-                +--------------+  +--------------+
-                |  dc1-spine1  |  |  dc1-spine2  |
-                +------+---+--+  +--+---+-------+
-                       |   |        |   |
-                   +---+   +----+---+   +---+
-                   |            X           |
-                   +---+   +----+---+   +---+
-                       |   |        |   |
-                +------+---+--+  +--+---+-------+
-                |  dc1-leaf1  |  |  dc1-leaf2   |
-                +-+--+--+--+-+  +-+--+--+--+---+
-                  |  |  |  |      |  |  |  |
-                  |  |  |  +--++--+  |  |  |
-                  |  |  +--+--||--+--+  |  |
-                  |  |     |  ||  |     |  |
-               +--+-++ +--+--++--+--+ ++-+--+
-               |host1| |    host3   | |host2|
-               +-----+ +---(ae0)---+ +-----+
-              (leaf1    (ESI-LAG,      (leaf2
-              only)     dual-homed)    only)
-
-                       +------------+
-                       |   host4    |
-                       +---(ae0)----+
-                       (ESI-LAG,
-                       dual-homed)
-
-                DC2 (Arista cEOS - Phase 10)
-```
+**Topology summary:**
+- Full-mesh spine-leaf fabric in DC1, each spine connects to each leaf.
+- `dc1-host1` is single-homed to `dc1-leaf1`, and `dc1-host2` is single-homed to `dc1-leaf2`.
+- `dc1-host3` is dual-homed to both leaves using ESI-LAG on `ae0`.
+- `dc1-host4` is dual-homed to both leaves using ESI-LAG on `ae1`.
 
 **Fabric design:**
 - Juniper ERB (Edge-Routed Bridging) architecture on vJunos-switch (EX9214)

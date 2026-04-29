@@ -14,37 +14,36 @@ Objects are split into two groups:
 
 ## Lab Topology
 
-```
-                        DC1 (Juniper vJunos)
+```mermaid
+flowchart TB
+    subgraph DC1["DC1 (Juniper vJunos)"]
+        sp1["dc1-spine1"]
+        sp2["dc1-spine2"]
 
-                +--------------+  +--------------+
-                |  dc1-spine1  |  |  dc1-spine2  |
-                +------+---+--+  +--+---+-------+
-                       |   |        |   |
-                   +---+   +----+---+   +---+
-                   |            X           |
-                   +---+   +----+---+   +---+
-                       |   |        |   |
-                +------+---+--+  +--+---+-------+
-                |  dc1-leaf1  |  |  dc1-leaf2   |
-                +-+--+--+--+-+  +-+--+--+--+---+
-                  |  |  |  |      |  |  |  |
-                  |  |  |  +--++--+  |  |  |
-                  |  |  +--+--||--+--+  |  |
-                  |  |     |  ||  |     |  |
-               +--+-++ +--+--++--+--+ ++-+--+
-               |host1| |    host3   | |host2|
-               +-----+ +---(ae0)---+ +-----+
-              (leaf1    (ESI-LAG,      (leaf2
-              only)     dual-homed)    only)
+        lf1["dc1-leaf1"]
+        lf2["dc1-leaf2"]
 
-                       +------------+
-                       |   host4    |
-                       +---(ae0)----+
-                       (ESI-LAG,
-                       dual-homed)
+        h1["dc1-host1<br/>single-homed to leaf1"]
+        h2["dc1-host2<br/>single-homed to leaf2"]
+        h3["dc1-host3<br/>dual-homed<br/>ESI-LAG (ae0)"]
+        h4["dc1-host4<br/>dual-homed<br/>ESI-LAG (ae1)"]
 
-                DC2 (Arista cEOS - project Phase 10)
+        sp1 --- lf1
+        sp1 --- lf2
+        sp2 --- lf1
+        sp2 --- lf2
+
+        lf1 --- h1
+        lf2 --- h2
+
+        lf1 --- h3
+        lf2 --- h3
+
+        lf1 --- h4
+        lf2 --- h4
+    end
+
+    dc2["DC2 (Arista cEOS - project Phase 10)"]
 ```
 
 - 2x spine (vJunos-switch, EX9214 model)

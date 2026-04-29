@@ -598,71 +598,53 @@ Phase 12 gives the lab an AI copilot that helps during real incidents and capaci
 
 ## Pipeline - Full Workflow
 
-```
-NetBox (SoT)
-    │
-    ▼
-Nornir: fetch intent from NetBox API
-    │
-    ▼
-Jinja2: render configurations (Junos / EOS)
-    │
-    ▼
-Batfish: offline validation (BGP, ACL, routing, diff)
-    │
-    ├── FAIL -> error report, stop
-    │
-    ▼ PASS
-Nornir + NAPALM: deploy to devices
-    │
-    ▼
-smoke-tests.sh: 76-check deploy-time gate (BGP, EVPN, failover, ECMP, MTU, ESI/DF, ...)
-    │
-    ├── FAIL -> block merge, dump diagnostics, teardown
-    │
-    ▼ PASS
-Suzieq: continuous state monitor + NetBox drift check
-    │
-    ├── DRIFT -> warn (cron-driven, not deploy-blocking)
-    │
-    ▼ in-spec
-OK Fabric matches intent
+```mermaid
+flowchart TB
+    nb["NetBox (SoT)"]
+    nornir["Nornir: fetch intent from NetBox API"]
+    j2["Jinja2: render configurations (Junos / EOS)"]
+    bf["Batfish: offline validation<br/>(BGP, ACL, routing, diff)"]
+    bf_fail["error report, stop"]
+    napalm["Nornir + NAPALM: deploy to devices"]
+    smoke["smoke-tests.sh: 76-check deploy-time gate<br/>(BGP, EVPN, failover, ECMP, MTU, ESI/DF, ...)"]
+    smoke_fail["block merge, dump diagnostics, teardown"]
+    sq["Suzieq: continuous state monitor<br/>+ NetBox drift check"]
+    sq_warn["warn (cron-driven, not deploy-blocking)"]
+    ok["Fabric matches intent"]
+
+    nb --> nornir --> j2 --> bf
+    bf -- FAIL --> bf_fail
+    bf -- PASS --> napalm --> smoke
+    smoke -- FAIL --> smoke_fail
+    smoke -- PASS --> sq
+    sq -- DRIFT --> sq_warn
+    sq -- in-spec --> ok
 ```
 
 The diagram above is the **default add/update flow**: PR -> CI -> render -> validate -> deploy -> verify. It's PR-driven and runs on every merge.
 
 Phase 11 introduces a **separate operator-driven lifecycle workflow** for destructive operations (prune of allowlisted classes, drain for safe maintenance, decommission of a whole device or link). It is NOT part of the automatic deploy loop above:
 
-```
-Operator decides to remove or temporarily drain something
-    │
-    ▼
-phase11-lifecycle/{prune,maintenance,decommission}.py --plan
-    │  (NetBox read-only / Suzieq peer-health read for drain;
-    │   no mutation, no device contact)
-    ▼
-Plan output: which NetBox objects, which dependencies, which devices affected
-    │  (drain plan also shows: rendered drain overlay diff +
-    │   peer-health pre-flight result + predicted convergence)
-    │
-    ├── REJECT -> abandon
-    │
-    ▼ APPROVE (interactive confirmation, typed device name for decommission)
-phase11-lifecycle/{prune,maintenance,decommission}.py --apply
-    │  (NetBox mutation only - dependency-ordered, journal-tagged)
-    ▼
-Operator reviews `python phase3-nornir/deploy.py --check` diff
-    │
-    ├── unexpected diff -> abort, investigate, manually revert NetBox
-    │
-    ▼ expected diff
-python phase3-nornir/deploy.py --commit
-    │  (Phase 3 commit-confirmed flow takes over from here)
-    ▼
-phase2-fabric/smoke-tests.sh on lab server
-    │
-    ▼ PASS
-OK Lifecycle change complete
+```mermaid
+flowchart TB
+    op["Operator decides to remove or temporarily drain something"]
+    plan["phase11-lifecycle/{prune,maintenance,decommission}.py --plan<br/>(NetBox read-only / Suzieq peer-health read for drain;<br/>no mutation, no device contact)"]
+    plan_out["Plan output: which NetBox objects,<br/>which dependencies, which devices affected<br/>(drain plan also shows: rendered drain overlay diff<br/>+ peer-health pre-flight result + predicted convergence)"]
+    abandon["abandon"]
+    apply["phase11-lifecycle/{prune,maintenance,decommission}.py --apply<br/>(NetBox mutation only - dependency-ordered, journal-tagged)"]
+    review["Operator reviews 'deploy.py --check' diff"]
+    abort["abort, investigate, manually revert NetBox"]
+    commit["python phase3-nornir/deploy.py --commit<br/>(Phase 3 commit-confirmed flow takes over)"]
+    smoke["phase2-fabric/smoke-tests.sh on lab server"]
+    ok["Lifecycle change complete"]
+
+    op --> plan --> plan_out
+    plan_out -- REJECT --> abandon
+    plan_out -- "APPROVE (interactive confirmation,<br/>typed device name for decommission)" --> apply
+    apply --> review
+    review -- unexpected diff --> abort
+    review -- expected diff --> commit --> smoke
+    smoke -- PASS --> ok
 ```
 
 Two-step intent: NetBox mutation and device push are NEVER combined in one command. The operator always has a chance to inspect the rendered config delta after the NetBox change, before any device sees the result.
