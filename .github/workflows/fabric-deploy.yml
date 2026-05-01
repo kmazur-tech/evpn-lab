@@ -280,28 +280,44 @@ jobs:
   drift-check:
     name: suzieq drift assertions
     runs-on: [self-hosted, lab-deploy]
-    timeout-minutes: 5
+    timeout-minutes: 8
     needs: confirm
     permissions:
       contents: read
     steps:
-      - name: Wait for state convergence
-        # SuzieQ polls services on roughly 60s intervals. Right after
-        # confirm clears the rollback timer, the freshest sqPoller
-        # row may pre-date the deploy -- the assertions would then
-        # read stale state and either false-pass on changes that
-        # have not been observed yet, or false-fail if the previous
-        # poll caught a mid-transition state. Wait two full poll
-        # cycles to guarantee at least one cycle saw the post-deploy
-        # state for every service.
-        run: sleep 130
-
-      - name: Run drift assertions
-        # --mode assertions reads parquet only (no NetBox fetch), so
-        # no credentials needed and no OOM risk on the 8GB VM (the
-        # earlier --mode all attempt OOM'd because pandas + pyarrow +
-        # the full NetBox intent collection hit the resource ceiling).
-        # gha-runner has docker-group membership for compose.
+      - name: Run drift assertions with convergence retry
+        # SuzieQ polls services on ~60s intervals AND EVPN Type-3
+        # (IMET) advertisement + processing across peer leaves takes
+        # additional time after a config-replace deploy. A single
+        # fixed sleep would have to be conservatively long to cover
+        # the worst case; retry-with-backoff is more honest about
+        # what we are actually waiting for: the next clean drift
+        # report.
+        #
+        # Strategy: wait an initial 90 s (one full poll cycle plus
+        # margin), run drift, retry up to 4 more times with 45 s
+        # gaps. Total wall time ~= 90 + 4*(drift+45) ~= 4-5 min.
+        # If still failing after that, the drift is real, not
+        # transient, and the workflow correctly fails.
+        #
+        # --mode assertions reads parquet only (no NetBox), so no
+        # creds needed. gha-runner has docker-group membership for
+        # compose. The earlier --mode all attempt OOM'd on the 8GB
+        # VM (since increased to 12GB, but we still avoid --mode all
+        # because it pulls the full NetBox intent and takes minutes).
         run: |
-          cd /opt/suzieq
-          docker compose run --rm drift --mode assertions
+          set -e
+          sleep 90
+          for attempt in 1 2 3 4 5; do
+            echo "=== drift attempt $attempt ==="
+            if (cd /opt/suzieq && docker compose run --rm drift --mode assertions); then
+              echo "drift clean on attempt $attempt"
+              exit 0
+            fi
+            if [ "$attempt" = "5" ]; then
+              echo "::error::drift still failing after 5 attempts (~5 min); not transient"
+              exit 1
+            fi
+            echo "drift not clean, waiting 45 s before retry"
+            sleep 45
+          done

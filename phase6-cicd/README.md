@@ -73,7 +73,7 @@ The PR-time loop on the left runs on GitHub-hosted runners, fully offline, on ev
 | `commit-no-confirm` (commit-confirmed) | -- | Yes |
 | `smoke-gate` (76-check live) | -- | Yes - if fails, no confirm fires and Junos auto-rolls back |
 | `confirm` | -- | Yes |
-| `drift-check` (Phase 5 assertions, post-confirm) | -- | Yes - waits 130 s for poll convergence then asserts |
+| `drift-check` (Phase 5 assertions, post-confirm) | -- | Yes - 90 s initial wait + up to 4 retries at 45 s intervals; fails only on persistent drift |
 
 The PR side is biased toward fast feedback and offline checks. The deploy side is biased toward safety: every device-touching step has a fail-safe (commit-confirmed timer, manual approval gate, post-deploy drift verification).
 
@@ -143,7 +143,7 @@ render-and-guard -> commit-no-confirm -> smoke-gate -> { confirm | rollback-noti
 - **smoke-gate**: SSH to `gha-smoke@172.16.18.108`, run `sudo /usr/local/bin/lab-smoke`. The 76-check smoke suite runs against the live fabric. Pass -> the next job runs. Fail -> the rollback-notice job logs what's about to happen, and Junos auto-rolls back when the timer fires. ~2 min.
 - **confirm**: `deploy.py --confirm-only`. Runs only on smoke pass. Clears the rollback timer on every device. ~10 s.
 - **rollback-notice**: runs only on smoke fail (`if: failure()` on `smoke-gate`). Just prints what's happening. The rollback itself is automatic.
-- **drift-check**: Phase 5 drift harness in `--mode assertions` (the lightweight, NetBox-free path). Runs only after a successful confirm. **Hard-fail** -- the deploy is already committed and confirmed by smoke, so a drift here means the runtime state does not match NetBox intent on something the smoke suite did not directly check (anycast MAC, EVPN Type-2 ARP, peer VTEP learning). Worth surfacing as a workflow failure even though the device is alive. The job waits 130 s before reading parquet so SuzieQ has at least two full 60 s poll cycles after confirm to capture the post-deploy state. ~3 min.
+- **drift-check**: Phase 5 drift harness in `--mode assertions` (the lightweight, NetBox-free path). Runs only after a successful confirm. **Hard-fail** -- the deploy is already committed and confirmed by smoke, so a drift here means the runtime state does not match NetBox intent on something the smoke suite did not directly check (anycast MAC, EVPN Type-2 ARP, peer VTEP learning). Worth surfacing as a workflow failure even though the device is alive. The job sleeps 90 s for an initial poll cycle, then runs drift with up to 4 more retries at 45 s intervals to absorb post-deploy EVPN Type-3 IMET propagation latency without false-failing. If drift is still firing after ~5 min total, it is no longer transient and the workflow fails correctly. ~5 min wall-time worst case.
 
 The integration of all five prior phases is the architectural point of this workflow: Phase 1 (NetBox source of truth) drives Phase 3 (Nornir render) which is gated by Phase 4 (Batfish) before deploy and verified by Phase 2 smoke + Phase 5 drift after deploy. Each gate is independent, each catches a different class of failure.
 
