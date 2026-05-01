@@ -22,6 +22,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from drift.state import collect, read_table  # noqa: E402
+from drift.state import _cleanup_sq_poller_phantom_rows  # noqa: E402
 
 
 def _write_table(parquet_dir, table, namespace, hostname, df):
@@ -422,14 +423,23 @@ class TestTableRegistry:
         # And the hook is actually a function the user expects
         assert bgp_spec.cleanup.__name__ == "_cleanup_bgp_phantom_rows"
 
-    def test_only_bgp_has_cleanup_in_current_registry(self):
+    def test_sq_poller_spec_has_cleanup_hook(self):
+        """sqPoller cleanup drops IP-keyed phantom rows that survive
+        SuzieQ's transient-unreachable window post-redeploy. Pin the
+        hook here so a future refactor cannot quietly re-introduce
+        the false-positive class in assert_poll_health."""
+        sp = next(s for s in TABLE_REGISTRY if s.name == "sqPoller")
+        assert sp.cleanup is not None
+        assert sp.cleanup.__name__ == "_cleanup_sq_poller_phantom_rows"
+
+    def test_only_bgp_and_sq_poller_have_cleanup_in_current_registry(self):
         """Pinning the current shape. If a future contributor adds
         a cleanup to another table, they should update this test
         with intent, not drift past it by accident."""
-        tables_with_cleanup = [
+        tables_with_cleanup = sorted(
             s.name for s in TABLE_REGISTRY if s.cleanup is not None
-        ]
-        assert tables_with_cleanup == ["bgp"]
+        )
+        assert tables_with_cleanup == ["bgp", "sqPoller"]
 
     def test_collect_uses_the_registry(self, populated_parquet):
         """Smoke test: collect() reads every table in the registry
@@ -470,3 +480,87 @@ class TestReadTableCleanupDispatch:
         )
         assert called["count"] == 1
         assert df.empty  # the marker cleanup dropped everything
+
+
+class TestCleanupSqPollerPhantomRows:
+    """The sqPoller cleanup drops rows whose hostname is a bare IPv4
+    address. SuzieQ writes those during the transient unreachable
+    window after a containerlab redeploy: device booting, sshd not
+    up yet, host key changed, etc. After the device is reachable,
+    SuzieQ uses the real hostname for every subsequent row, so the
+    IP-keyed rows are stale by the time assert_poll_health reads
+    them. Without this cleanup, the assertion flags those stale
+    rows as current poller-falling-behind drifts."""
+
+    def test_drops_bare_ipv4_hostname(self):
+        df = pd.DataFrame([
+            {"namespace": "dc1", "hostname": "dc1-leaf2",
+             "service": "evpnVni", "pollExcdPeriodCount": 0},
+            {"namespace": "dc1", "hostname": "172.16.18.163",
+             "service": "evpnVni", "pollExcdPeriodCount": 1},
+        ])
+        out = _cleanup_sq_poller_phantom_rows(df)
+        assert len(out) == 1
+        assert out["hostname"].iloc[0] == "dc1-leaf2"
+
+    def test_keeps_real_hostname_with_dot(self):
+        """Real hostnames may contain dots (FQDNs); only fully-numeric
+        4-octet patterns get dropped."""
+        df = pd.DataFrame([
+            {"namespace": "dc1", "hostname": "leaf2.dc1.example.com",
+             "service": "device", "pollExcdPeriodCount": 0},
+        ])
+        out = _cleanup_sq_poller_phantom_rows(df)
+        assert len(out) == 1
+
+    def test_drops_every_ipv4_octet_pattern(self):
+        """Triple-digit and single-digit octets all match."""
+        df = pd.DataFrame([
+            {"namespace": "dc1", "hostname": "1.2.3.4",
+             "service": "x", "pollExcdPeriodCount": 1},
+            {"namespace": "dc1", "hostname": "192.168.1.1",
+             "service": "y", "pollExcdPeriodCount": 1},
+            {"namespace": "dc1", "hostname": "10.0.0.0",
+             "service": "z", "pollExcdPeriodCount": 1},
+        ])
+        out = _cleanup_sq_poller_phantom_rows(df)
+        assert len(out) == 0
+
+    def test_does_not_drop_partial_ip_lookalikes(self):
+        """Hostnames that look IPv4-ish but are not full 4-octet
+        addresses (e.g. trailing dot, only 3 octets, embedded text)
+        must survive."""
+        df = pd.DataFrame([
+            {"namespace": "dc1", "hostname": "10.0.0",
+             "service": "x", "pollExcdPeriodCount": 0},
+            {"namespace": "dc1", "hostname": "host-10.0.0.1",
+             "service": "x", "pollExcdPeriodCount": 0},
+            {"namespace": "dc1", "hostname": "1.2.3.4.lab",
+             "service": "x", "pollExcdPeriodCount": 0},
+        ])
+        out = _cleanup_sq_poller_phantom_rows(df)
+        assert len(out) == 3
+
+    def test_empty_df_passthrough(self):
+        out = _cleanup_sq_poller_phantom_rows(pd.DataFrame())
+        assert out.empty
+
+    def test_no_hostname_column_passthrough(self):
+        """If the schema ever drops `hostname`, the cleanup must not
+        crash -- it should just no-op so assert_poll_health surfaces
+        the schema-drift warning instead."""
+        df = pd.DataFrame([{"namespace": "dc1", "service": "x"}])
+        out = _cleanup_sq_poller_phantom_rows(df)
+        assert len(out) == 1
+
+    def test_resets_index_after_filtering(self):
+        """Drop+keep with a pandas mask leaves a non-contiguous index
+        unless we reset_index. The next consumer (drift.diff) does
+        positional iteration in places and expects a clean range index."""
+        df = pd.DataFrame([
+            {"namespace": "dc1", "hostname": "a", "service": "x"},
+            {"namespace": "dc1", "hostname": "1.2.3.4", "service": "y"},
+            {"namespace": "dc1", "hostname": "b", "service": "z"},
+        ])
+        out = _cleanup_sq_poller_phantom_rows(df)
+        assert list(out.index) == [0, 1]

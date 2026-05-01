@@ -29,6 +29,7 @@ once per hour and deletes the raw files (verified at
 pq_coalesce.py:71). Reading both ensures we see state from the
 most recent poll cycles even if the coalescer hasn't run yet.
 """
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional, Tuple
@@ -161,6 +162,64 @@ def _cleanup_bgp_phantom_rows(df: pd.DataFrame) -> pd.DataFrame:
     return df[mask].reset_index(drop=True)
 
 
+# Match a bare IPv4 address (a.b.c.d). We deliberately do NOT match IPv6
+# here -- the only known case is the IPv4 mgmt-plane sentinel SuzieQ
+# writes when it cannot resolve the device's real hostname. IPv6 mgmt
+# would need a similar pattern; not in scope for this lab.
+_IPV4_BARE_RE = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
+
+
+def _cleanup_sq_poller_phantom_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop sqPoller rows whose hostname is a bare IPv4 address.
+
+    ## What these phantom rows actually are
+
+    Verified live 2026-05-02 against the lab after a containerlab
+    redeploy:
+
+      - When SuzieQ first attempts to poll a fresh device, SSH may
+        fail (host key mismatch, sshd not yet up, device booting,
+        etc). In that window the poller cannot read the device's
+        real hostname, so it stores the row with `hostname=<IP>`
+        and a non-zero error status (typically 403).
+
+      - Once SSH succeeds, every later cycle stores rows keyed by
+        the actual hostname (`dc1-leaf2`). The IP-keyed rows from
+        the transient unreachable window remain in raw parquet
+        until the coalescer runs.
+
+      - But the coalescer keys by `(namespace, hostname, service)`
+        like the rest of SuzieQ -- and `172.16.18.163` and
+        `dc1-leaf2` are distinct hostnames from its perspective.
+        So both rows survive coalescing.
+
+    ## Why this matters for assert_poll_health
+
+    The IP-keyed rows have `pollExcdPeriodCount > 0` because the
+    poll genuinely failed to complete. The hostname-keyed rows for
+    the same device + service have `pollExcdPeriodCount == 0`
+    because subsequent polls succeeded.
+
+    Without this cleanup, `assert_poll_health` reads both rows and
+    flags the stale IP-keyed one as a current poller-falling-behind
+    drift. That drift is a transient artifact, not a real signal
+    -- the poller IS keeping up by the time the assertion runs.
+
+    ## What we drop
+
+    Any row whose `hostname` field looks like a bare IPv4 address.
+    SuzieQ's normal mode is to key everything by the device's real
+    hostname; an IPv4 in the hostname column is the sentinel of
+    the transient unreachable window. Other meta-rows that
+    legitimately use IP-as-hostname (none in current SuzieQ) would
+    need a more nuanced filter, but we have not seen any.
+    """
+    if df.empty or "hostname" not in df.columns:
+        return df
+    mask = ~df["hostname"].astype(str).str.match(_IPV4_BARE_RE)
+    return df[mask].reset_index(drop=True)
+
+
 TABLE_REGISTRY: Tuple[TableSpec, ...] = (
     TableSpec(
         name="device",
@@ -212,6 +271,7 @@ TABLE_REGISTRY: Tuple[TableSpec, ...] = (
         name="sqPoller",
         pk=("namespace", "hostname", "service"),
         state_attr="sq_poller",
+        cleanup=_cleanup_sq_poller_phantom_rows,
     ),
 )
 
