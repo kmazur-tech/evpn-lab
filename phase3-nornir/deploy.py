@@ -335,6 +335,12 @@ def main():
     if not (args.check or args.full or args.dry_run or args.commit or args.confirm_only):
         args.check = True
 
+    # build/ must exist before any InitNornir call -- nornir.yml sets
+    # log_file: build/nornir.log and Python's logging handler opens
+    # the file at config-time, so a missing directory crashes Nornir
+    # before the rest of the script runs. Create unconditionally.
+    BUILD_DIR.mkdir(exist_ok=True)
+
     # ----- --confirm-only short circuit -----
     # Used by CI: after a prior `--commit --no-confirm` started a 5-minute
     # rollback timer on every device and the smoke suite proved the deploy
@@ -379,12 +385,11 @@ def main():
     # Clear any stale renders from previous runs. Stale files in
     # build/ can carry obsolete content (e.g. an old PLACEHOLDER hash
     # from a buggy template version) and mislead the deploy guard
-    # if it scans the wrong file. Nuke and recreate every run.
-    if BUILD_DIR.exists():
-        for old in BUILD_DIR.iterdir():
-            if old.is_file():
-                old.unlink()
-    BUILD_DIR.mkdir(exist_ok=True)
+    # if it scans the wrong file. The directory itself is created
+    # before the --confirm-only short circuit above; just wipe files.
+    for old in BUILD_DIR.iterdir():
+        if old.is_file():
+            old.unlink()
     defaults = yaml.safe_load(DEFAULTS_FILE.read_text(encoding="utf-8"))
 
     # Build Jinja env with keep_trailing_newline=True so {% include %}
