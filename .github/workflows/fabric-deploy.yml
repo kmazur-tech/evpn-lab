@@ -1,0 +1,253 @@
+# Phase 6 Stage 3: lab deploy workflow.
+#
+# Manual workflow_dispatch only -- no PR, no push triggers. Runs on
+# the self-hosted lab-deploy runner (netdevops-srv) and is gated by
+# the lab-deploy GitHub Environment, which has a required reviewer
+# protection rule. So a deploy requires:
+#   1. A maintainer with write access to invoke this workflow
+#   2. A separate reviewer (or self, if Environment lets you) to
+#      approve the run before it actually starts
+#
+# Architectural property: the smoke suite is the deploy gate. This
+# workflow runs:
+#   render-and-guard -> commit (no-confirm) -> smoke -> { confirm | rollback-notice }
+#                                                ^
+#                                                +-- if smoke fails, we do NOT
+#                                                    confirm; Junos auto-rolls back
+#                                                    at the 5-min deadline started
+#                                                    by the --commit --no-confirm step.
+#
+# Concretely: deploy.py --commit --no-confirm leaves the device in
+# commit-confirmed state with revert_in=300s. Smoke runs as a separate
+# job (~2 min). If smoke passes, deploy.py --confirm-only clears the
+# timer. If smoke fails, no confirm runs, Junos rolls back. SSH access
+# is preserved either way -- this is what the entire layered safety
+# model is built around.
+
+name: fabric-deploy
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+# Never cancel an in-flight deploy. Concurrency window is the whole
+# workflow because the device's commit-confirmed timer ticks across
+# job boundaries.
+concurrency:
+  group: fabric-deploy
+  cancel-in-progress: false
+
+env:
+  # NetBox is on this host; the runner is on this host; loopback is fine.
+  NETBOX_URL: http://localhost:8000
+  # Lab device management IPs (data plane is stable; same values are
+  # already in test fixtures and golden files). Used by Phase 3
+  # tasks/transform.py to override the inventory primary_ip4 with the
+  # real OOB mgmt IP.
+  MGMT_dc1_spine1: 172.16.18.160/24
+  MGMT_dc1_spine2: 172.16.18.161/24
+  MGMT_dc1_leaf1: 172.16.18.162/24
+  MGMT_dc1_leaf2: 172.16.18.163/24
+
+jobs:
+  # ------------------------------------------------------------------
+  # 1. Render and guard. Live NetBox read, full template render, byte
+  #    diff vs expected/, on-disk sentinel guard. No device contact.
+  # ------------------------------------------------------------------
+  render-and-guard:
+    name: render + guard
+    runs-on: [self-hosted, lab-deploy]
+    timeout-minutes: 10
+    environment: lab-deploy
+    permissions:
+      contents: read
+    env:
+      NETBOX_TOKEN: ${{ secrets.NETBOX_TOKEN }}
+      JUNOS_LOGIN_PASSWORD: ${{ secrets.JUNOS_LOGIN_PASSWORD }}
+      JUNOS_LOGIN_SALT: ${{ secrets.JUNOS_LOGIN_SALT }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r phase3-nornir/requirements.txt
+
+      - name: Render full configs and diff vs golden files
+        working-directory: phase3-nornir
+        run: python deploy.py --full
+
+      # Note: --validate would require the Batfish container reachable
+      # from this job. Lab Batfish runs on this same host but on a
+      # different docker network; reaching it would either need
+      # --network host or BATFISH_HOST=$(hostname -i). Defer the
+      # Batfish gate to a follow-up; the offline pybatfish unit tests
+      # in fabric-ci.yml already cover the pure-static checks.
+
+  # ------------------------------------------------------------------
+  # 2. Commit-confirmed: deploys with revert_in=300s but does NOT
+  #    auto-confirm. Junos will roll back if step 4 doesn't run within
+  #    that window.
+  # ------------------------------------------------------------------
+  commit-no-confirm:
+    name: commit (--no-confirm)
+    runs-on: [self-hosted, lab-deploy]
+    timeout-minutes: 5
+    needs: render-and-guard
+    environment: lab-deploy
+    permissions:
+      contents: read
+    env:
+      NETBOX_TOKEN: ${{ secrets.NETBOX_TOKEN }}
+      JUNOS_LOGIN_PASSWORD: ${{ secrets.JUNOS_LOGIN_PASSWORD }}
+      JUNOS_LOGIN_SALT: ${{ secrets.JUNOS_LOGIN_SALT }}
+      JUNOS_SSH_USER: ${{ secrets.JUNOS_SSH_USER }}
+      JUNOS_SSH_PASSWORD: ${{ secrets.JUNOS_SSH_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r phase3-nornir/requirements.txt
+
+      - name: Mask rendered hash so it does not leak into logs
+        # The encrypted-password hash is derived from secrets but is
+        # not itself a known secret to GitHub's auto-redactor. Mask it
+        # explicitly so any deploy.py log line that prints a config
+        # diff gets the hash redacted to ***.
+        shell: bash
+        run: |
+          cd phase3-nornir
+          python -c "from tasks.enrich.auth import derive_login_hash; print(f'::add-mask::{derive_login_hash()}')"
+
+      - name: deploy.py --commit --no-confirm
+        # 5-minute commit-confirmed timer starts here. From this point
+        # until the confirm step (or the rollback-notice step) finishes,
+        # the device is pending-rollback.
+        working-directory: phase3-nornir
+        run: python deploy.py --commit --no-confirm
+
+  # ------------------------------------------------------------------
+  # 3. Smoke gate. SSHes from the runner (gha-runner@netdevops-srv) to
+  #    gha-smoke@172.16.18.108 (lab server) and runs the 76-check
+  #    smoke suite via the tightly-scoped sudo wrapper. Smoke pass/fail
+  #    is the deploy gate.
+  # ------------------------------------------------------------------
+  smoke-gate:
+    name: smoke gate (76-check)
+    runs-on: [self-hosted, lab-deploy]
+    timeout-minutes: 6
+    needs: commit-no-confirm
+    environment: lab-deploy
+    permissions:
+      contents: read
+    steps:
+      - name: Run smoke via SSH to lab server
+        # The SSH key (gha-runner -> gha-smoke) lives on the runner
+        # filesystem at /home/gha-runner/.ssh/lab_server. It is NOT a
+        # GitHub secret -- the runner setup procedure (see
+        # phase6-cicd/README.md) generates it on the runner and
+        # authorises the public half on the lab server.
+        # gha-smoke can ONLY run /usr/local/bin/lab-smoke via sudo;
+        # any other command needs a password it does not have.
+        run: |
+          ssh -i /home/gha-runner/.ssh/lab_server \
+              -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+              gha-smoke@172.16.18.108 \
+              'sudo /usr/local/bin/lab-smoke'
+
+  # ------------------------------------------------------------------
+  # 4. Confirm. Runs ONLY if smoke passed. Clears the rollback timer.
+  # ------------------------------------------------------------------
+  confirm:
+    name: confirm (clear rollback timer)
+    runs-on: [self-hosted, lab-deploy]
+    timeout-minutes: 5
+    needs: smoke-gate
+    environment: lab-deploy
+    permissions:
+      contents: read
+    env:
+      NETBOX_TOKEN: ${{ secrets.NETBOX_TOKEN }}
+      JUNOS_SSH_USER: ${{ secrets.JUNOS_SSH_USER }}
+      JUNOS_SSH_PASSWORD: ${{ secrets.JUNOS_SSH_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r phase3-nornir/requirements.txt
+
+      - name: deploy.py --confirm-only
+        working-directory: phase3-nornir
+        run: python deploy.py --confirm-only
+
+  # ------------------------------------------------------------------
+  # 5. Rollback notice. Runs ONLY if smoke-gate failed. We do NOT
+  #    confirm. Junos rolls back at the 5-min deadline. This job
+  #    exists so the workflow surface clearly shows what happened.
+  # ------------------------------------------------------------------
+  rollback-notice:
+    name: rollback notice
+    runs-on: [self-hosted, lab-deploy]
+    timeout-minutes: 2
+    needs: smoke-gate
+    if: failure()
+    permissions:
+      contents: read
+    steps:
+      - name: Print rollback details
+        run: |
+          cat <<MSG
+          ===============================================================
+          SMOKE GATE FAILED. NOT calling deploy.py --confirm-only.
+
+          Junos was set into commit-confirmed state with revert_in=300s
+          by the commit-no-confirm job. With no confirm to clear the
+          timer, every fabric device will automatically roll back to
+          its pre-deploy config when the timer fires (~5 minutes from
+          the commit step).
+
+          Operator action: none required; rollback is automatic. Verify
+          afterwards that SSH still works and the previous config is
+          back. Investigate the smoke failure log above.
+          ===============================================================
+          MSG
+
+  # ------------------------------------------------------------------
+  # 6. Suzieq drift. Runs only if confirm succeeded (deploy is alive
+  #    and timer cleared). Soft-fail: failure logs a warning but does
+  #    not fail the workflow -- drift detection is a verification
+  #    layer, not a gate.
+  # ------------------------------------------------------------------
+  drift-check:
+    name: suzieq drift (soft-fail)
+    runs-on: [self-hosted, lab-deploy]
+    timeout-minutes: 5
+    needs: confirm
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - name: Run drift container
+        # The drift sibling container lives in /opt/suzieq on this
+        # host. compose env file has the credentials it needs.
+        run: |
+          cd /opt/suzieq
+          source /opt/evpn-lab-env/env.sh
+          docker compose run --rm drift --mode all
