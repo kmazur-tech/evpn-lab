@@ -268,13 +268,23 @@ jobs:
     timeout-minutes: 5
     needs: confirm
     continue-on-error: true
+    environment: lab-deploy
     permissions:
       contents: read
+    env:
+      # The drift compose service uses ${VAR} substitution for these.
+      # Pass them via the lab-deploy Environment so we do not need a
+      # persisted env file on the host.
+      NETBOX_TOKEN: ${{ secrets.NETBOX_TOKEN }}
+      JUNOS_SSH_USER: ${{ secrets.JUNOS_SSH_USER }}
+      JUNOS_SSH_PASSWORD: ${{ secrets.JUNOS_SSH_PASSWORD }}
     steps:
       - name: Run drift container
-        # The drift sibling container lives in /opt/suzieq on this
-        # host. compose env file has the credentials it needs.
+        # The drift sibling compose service lives in /opt/suzieq on this
+        # host. NETBOX_URL points at the NetBox container on the same
+        # docker network and SUZIEQ_API_KEY only matters for the REST
+        # service (not drift), so we leave both unset for this job.
         run: |
           cd /opt/suzieq
-          source /opt/evpn-lab-env/env.sh
+          export NETBOX_URL=http://localhost:8000
           docker compose run --rm drift --mode all
