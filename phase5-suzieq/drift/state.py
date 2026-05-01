@@ -32,9 +32,11 @@ most recent poll cycles even if the coalescer hasn't run yet.
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+import time
 from typing import Callable, Optional, Tuple
 
 import pandas as pd
+import pyarrow.compute as pc
 import pyarrow.dataset as ds
 
 
@@ -290,11 +292,19 @@ _TABLE_CLEANUP = {
 }
 
 
-def collect(namespace: str, parquet_dir: str = DEFAULT_PARQUET_DIR) -> FabricState:
+def collect(namespace: str, parquet_dir: str = DEFAULT_PARQUET_DIR,
+            max_age_seconds: Optional[int] = 3600) -> FabricState:
     """Read every table in TABLE_REGISTRY for one namespace and
     pack into a FabricState. Returns empty DataFrames for any table
     that has not been polled yet (rather than raising) so first-
     cycle drift runs do not crash before any data has been collected.
+
+    max_age_seconds caps the materialized parquet to recent rows
+    only. Default 3600 (1 hour) -- generous for any drift or
+    assertion query (poll periods are 60-120 s; latest-per-PK is
+    well within the last 5 min). Pass None to disable, but expect
+    a multi-GB pandas footprint on long-lived parquet stores
+    (5.4 M sqPoller rows after ~3 weeks at lab scale).
     """
     state = FabricState(namespace=namespace)
     for spec in TABLE_REGISTRY:
@@ -302,6 +312,7 @@ def collect(namespace: str, parquet_dir: str = DEFAULT_PARQUET_DIR) -> FabricSta
             spec.name, namespace, parquet_dir,
             pk=spec.pk,
             cleanup=spec.cleanup,
+            max_age_seconds=max_age_seconds,
         )
         setattr(state, spec.state_attr, df)
     return state
@@ -313,6 +324,7 @@ def read_table(
     parquet_dir: str = DEFAULT_PARQUET_DIR,
     pk: Optional[tuple] = None,
     cleanup: Optional[Callable[[pd.DataFrame], pd.DataFrame]] = None,
+    max_age_seconds: Optional[int] = None,
 ) -> pd.DataFrame:
     """Read one suzieq table, return latest-row-per-PK as a DataFrame.
 
@@ -336,6 +348,17 @@ def read_table(
         Passing cleanup=None explicitly also respects that.
         Use the sentinel `_UNSET_CLEANUP` to mean "look up from
         registry."
+
+    `max_age_seconds` is a pyarrow read-time filter on the timestamp
+    column: only rows with timestamp newer than `now() - max_age` are
+    materialized. Default is None (no filter) so tests with synthetic
+    fixture timestamps work unchanged. Production callers go through
+    `collect()` which sets max_age_seconds=3600 by default -- plenty
+    for drift and assertion work that only cares about the LATEST
+    row per PK (SuzieQ poll periods are 60-120 s). Verified live
+    2026-05-02: without the filter, sqPoller had 5.4 M rows (~1 GB
+    as pyarrow table, ~3-5 GB as pandas), which OOM-killed the drift
+    container even on the 12 GB netdevops-srv VM.
     """
     # None-vs-default disambiguation: an explicit cleanup=None from
     # a test means "skip cleanup". The default "look up from
@@ -345,6 +368,13 @@ def read_table(
     if cleanup is None and table in _TABLE_CLEANUP:
         cleanup = _TABLE_CLEANUP[table]
 
+    # SuzieQ stores timestamps as int64 milliseconds since epoch.
+    # Build the filter once if max_age_seconds is set.
+    timestamp_filter = None
+    if max_age_seconds is not None:
+        cutoff_ms = int((time.time() - max_age_seconds) * 1000)
+        timestamp_filter = pc.field("timestamp") > cutoff_ms
+
     frames = []
     for subpath in (f"coalesced/{table}", table):
         full = Path(parquet_dir) / subpath
@@ -352,7 +382,10 @@ def read_table(
             continue
         try:
             dataset = ds.dataset(str(full), partitioning="hive")
-            df = dataset.to_table().to_pandas()
+            if timestamp_filter is not None and "timestamp" in dataset.schema.names:
+                df = dataset.to_table(filter=timestamp_filter).to_pandas()
+            else:
+                df = dataset.to_table().to_pandas()
         except (FileNotFoundError, OSError):
             # Empty / partially-written parquet on first cycle
             continue

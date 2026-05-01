@@ -133,7 +133,7 @@ class TestReadTable:
 
 class TestCollect:
     def test_returns_fabric_state_with_all_eight_tables(self, populated_parquet):
-        state = collect("dc1", str(populated_parquet))
+        state = collect("dc1", str(populated_parquet), max_age_seconds=None)
         # device + bgp populated by fixture, the other 6 are empty
         assert len(state.devices) == 2
         assert len(state.bgp) == 1
@@ -169,7 +169,7 @@ class TestCollect:
                                     "state": "reachable",
                                     "timestamp": 1700000000000}]))
 
-        state = collect("dc1", str(populated_parquet))
+        state = collect("dc1", str(populated_parquet), max_age_seconds=None)
         assert len(state.evpn_vnis) == 1
         assert len(state.routes) == 1
         assert len(state.macs) == 1
@@ -445,7 +445,7 @@ class TestTableRegistry:
         """Smoke test: collect() reads every table in the registry
         and sets the right FabricState field on each. This is the
         end-to-end check that the refactor didn't lose any tables."""
-        state = collect("dc1", str(populated_parquet))
+        state = collect("dc1", str(populated_parquet), max_age_seconds=None)
         # Every spec's state_attr should be a non-None DataFrame
         # (may be empty for tables the fixture doesn't populate).
         for spec in TABLE_REGISTRY:
