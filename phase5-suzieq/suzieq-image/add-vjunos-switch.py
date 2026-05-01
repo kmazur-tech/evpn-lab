@@ -63,6 +63,11 @@ from pathlib import Path
 
 # Service yamls that get a simple `copy: <base>` shim. lldp is
 # excluded because it gets a special-cased explicit block below.
+# mlag/time/topcpu have no junos-* block in upstream and are
+# excluded at the POLLER level via sq-poller's --exclude-services
+# flag in docker-compose.yml -- not here. Adding a yaml stub for
+# them would still cost an SSH per poll cycle to run a no-op
+# command; the poller flag avoids the SSH entirely.
 SIMPLE_COPY_SERVICES = [
     "arpnd.yml",
     "bgp.yml",
@@ -74,12 +79,9 @@ SIMPLE_COPY_SERVICES = [
     "interfaces.yml",
     "inventory.yml",
     "macs.yml",
-    "mlag.yml",
     "ospfIf.yml",
     "ospfNbr.yml",
     "routes.yml",
-    "time.yml",
-    "topcpu.yml",
 ]
 
 # Default base devtype: junos-qfx.

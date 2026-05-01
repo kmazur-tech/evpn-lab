@@ -68,7 +68,20 @@ services:
     # entrypoint to the actual python script and put the flags in
     # `command:`. Confirmed against the pinned digest.
     entrypoint: ["/usr/local/bin/sq-poller"]
-    command: ["-I", "/suzieq/inventory.yml", "-c", "/suzieq/suzieq.cfg"]
+    # -x mlag: don't schedule the mlag service. Upstream mlag.yml has
+    # no junos-* block and the lab is single-vendor Junos, so the
+    # poller would otherwise schedule the service, fail to find a
+    # command for the devtype, and record a status-2006
+    # (CMD_NOT_FOUND) row in sqPoller every cycle. Verified live
+    # 2026-05-02. For Phase 10 multi-vendor (Arista cEOS), the
+    # exclude scope will need to be per-namespace not global.
+    command:
+      - "-I"
+      - "/suzieq/inventory.yml"
+      - "-c"
+      - "/suzieq/suzieq.cfg"
+      - "-x"
+      - "mlag"
     volumes:
       - parquet:/suzieq/parquet
       - archive:/suzieq/archive
