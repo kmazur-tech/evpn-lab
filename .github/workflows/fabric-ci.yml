@@ -71,10 +71,13 @@ jobs:
   # ------------------------------------------------------------------
   # 2. Unit tests (matrix over phases)
   #
-  # Phase 3 is hard-fail from day one.  Phase 4 and 5 start as
-  # warn-only via continue-on-error and transition to hard-fail after
-  # 5 consecutive green PRs OR 14 calendar days, whichever comes
-  # first.  See phase6-cicd/CI.md for the transition log.
+  # All three phases are hard-fail. Phase 3 was hard-fail from
+  # day one; Phase 4 and 5 transitioned 2026-05-02 after the
+  # initial warn-only ramp (the plan's "5 green PRs OR 14 days"
+  # rule). The hard_fail field on each matrix entry is kept so
+  # a future intentional warn-only entry stays visible at the
+  # matrix definition rather than buried in a continue-on-error
+  # expression.
   # ------------------------------------------------------------------
   unit:
     name: unit (${{ matrix.phase.dir }})
@@ -87,8 +90,8 @@ jobs:
       matrix:
         phase:
           - { dir: phase3-nornir, hard_fail: true }
-          - { dir: phase4-batfish, hard_fail: false }
-          - { dir: phase5-suzieq, hard_fail: false }
+          - { dir: phase4-batfish, hard_fail: true }
+          - { dir: phase5-suzieq, hard_fail: true }
     continue-on-error: ${{ !matrix.phase.hard_fail }}
     steps:
       - name: Checkout

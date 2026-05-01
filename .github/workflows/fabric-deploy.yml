@@ -268,19 +268,34 @@ jobs:
   #    we get post-deploy verification without re-fetching intent.
   #    The systemd timer on netdevops-srv runs the same mode every
   #    5 minutes; this job tightens the loop to right-after-deploy.
-  #    Soft-fail: a transient assertion failure logs a warning but
-  #    does not fail the workflow -- the deploy itself was already
-  #    confirmed by the smoke gate.
+  #
+  #    Hard-fail. The deploy is already committed (smoke passed,
+  #    confirm cleared the rollback timer); a drift here means the
+  #    runtime state does not match NetBox intent on something the
+  #    smoke suite did not directly verify (anycast MAC missing,
+  #    EVPN Type-2 ARP not advertised, peer VTEP not learned, etc.).
+  #    That is a deploy regression worth surfacing as a workflow
+  #    failure even though the device is now alive and confirmed.
   # ------------------------------------------------------------------
   drift-check:
-    name: suzieq drift assertions (soft-fail)
+    name: suzieq drift assertions
     runs-on: [self-hosted, lab-deploy]
     timeout-minutes: 5
     needs: confirm
-    continue-on-error: true
     permissions:
       contents: read
     steps:
+      - name: Wait for state convergence
+        # SuzieQ polls services on roughly 60s intervals. Right after
+        # confirm clears the rollback timer, the freshest sqPoller
+        # row may pre-date the deploy -- the assertions would then
+        # read stale state and either false-pass on changes that
+        # have not been observed yet, or false-fail if the previous
+        # poll caught a mid-transition state. Wait two full poll
+        # cycles to guarantee at least one cycle saw the post-deploy
+        # state for every service.
+        run: sleep 130
+
       - name: Run drift assertions
         # --mode assertions reads parquet only (no NetBox fetch), so
         # no credentials needed and no OOM risk on the 8GB VM (the

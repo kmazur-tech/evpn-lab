@@ -46,7 +46,7 @@ flowchart LR
     smoke["smoke-tests.sh<br/>76 checks via SSH to lab"]
     confirm["napalm_confirm_commit"]
     rollback["Junos auto-rollback<br/>at 5-min deadline"]
-    drift["suzieq drift check<br/>soft-fail"]
+    drift["suzieq drift check"]
 
     pr --> lint --> unit --> render --> bf --> merge
 
@@ -64,14 +64,16 @@ The PR-time loop on the left runs on GitHub-hosted runners, fully offline, on ev
 |---|---|---|
 | `lint` | Yes | -- |
 | `unit (phase3-nornir)` | Yes | -- |
-| `unit (phase4-batfish)` | Warn-only\* | -- |
-| `unit (phase5-suzieq)` | Warn-only\* | -- |
+| `unit (phase4-batfish)` | Yes | -- |
+| `unit (phase5-suzieq)` | Yes | -- |
 | `render + diff + guard` | Yes | -- |
 | `batfish` | Yes | -- |
 | Required reviewer on `lab-deploy` env | -- | Yes |
-| `nornir-commit` (commit-confirmed) | -- | Yes (planned) |
-| `smoke` (76-check gate) | -- | Yes (planned) - if fails, no confirm fires and Junos auto-rolls back |
-| `suzieq-drift` | -- | Soft-fail (planned) - warn in summary, do not block |
+| `render-and-guard` (Batfish offline analysis) | -- | Yes |
+| `commit-no-confirm` (commit-confirmed) | -- | Yes |
+| `smoke-gate` (76-check live) | -- | Yes - if fails, no confirm fires and Junos auto-rolls back |
+| `confirm` | -- | Yes |
+| `drift-check` (Phase 5 assertions, post-confirm) | -- | Yes - waits 130 s for poll convergence then asserts |
 
 The PR side is biased toward fast feedback and offline checks. The deploy side is biased toward safety: every device-touching step has a fail-safe (commit-confirmed timer, manual approval gate, post-deploy drift verification).
 
@@ -84,13 +86,11 @@ Jobs:
 | Job | What it does | Hard-fail? |
 |---|---|---|
 | `lint` | yamllint + ruff + j2lint across all phase dirs | Yes |
-| `unit (phase3-nornir)` | Full pytest suite, 154 tests, coverage gate at 85% | Yes |
-| `unit (phase4-batfish)` | pybatfish unit tests, 60 tests | Warn-only* |
-| `unit (phase5-suzieq)` | Drift harness suite, 362 tests | Warn-only* |
+| `unit (phase3-nornir)` | Full pytest suite, 163 tests, coverage gate at 85% | Yes |
+| `unit (phase4-batfish)` | pybatfish unit tests, 60 tests | Yes (transitioned 2026-05-02 after the warn-only ramp) |
+| `unit (phase5-suzieq)` | Drift harness suite, 370 tests | Yes (transitioned 2026-05-02 after the warn-only ramp) |
 | `render + diff + guard` | Render templates from cassettes, byte-equality vs `expected/`, deploy-guard scan | Yes |
 | `batfish` | pybatfish unit tests with captured fixtures | Yes |
-
-\* Phase 4 and Phase 5 unit suites start as `continue-on-error: true` and transition to hard-fail after **5 consecutive green PRs OR 14 calendar days** from when this workflow first lands, whichever comes first. The transition date will be recorded here when it happens.
 
 ### Workflow security baseline
 
@@ -135,7 +135,7 @@ Job chain:
 ```
 render-and-guard -> commit-no-confirm -> smoke-gate -> { confirm | rollback-notice }
                                                           \
-                                                           +-> drift-check (soft-fail)
+                                                           +-> drift-check
 ```
 
 - **render-and-guard**: live NetBox read via Phase 3 enrich, full template render, byte-diff vs `expected/`, on-disk sentinel guard, then **Phase 4 Batfish offline analysis** (7 checks + differential vs `main`) against the rendered build. No device contact. ~2 min.
@@ -143,7 +143,7 @@ render-and-guard -> commit-no-confirm -> smoke-gate -> { confirm | rollback-noti
 - **smoke-gate**: SSH to `gha-smoke@172.16.18.108`, run `sudo /usr/local/bin/lab-smoke`. The 76-check smoke suite runs against the live fabric. Pass -> the next job runs. Fail -> the rollback-notice job logs what's about to happen, and Junos auto-rolls back when the timer fires. ~2 min.
 - **confirm**: `deploy.py --confirm-only`. Runs only on smoke pass. Clears the rollback timer on every device. ~10 s.
 - **rollback-notice**: runs only on smoke fail (`if: failure()` on `smoke-gate`). Just prints what's happening. The rollback itself is automatic.
-- **drift-check**: Phase 5 drift harness in `--mode assertions` (the lightweight, NetBox-free path). Runs only after a successful confirm. Soft-fail (`continue-on-error: true`) -- a transient assertion failure here does not roll back the deploy, but it does surface a verification warning. Tightens the verification loop to right-after-deploy; the same harness runs every 5 minutes via `suzieq-drift-assert.timer` regardless. ~10 s.
+- **drift-check**: Phase 5 drift harness in `--mode assertions` (the lightweight, NetBox-free path). Runs only after a successful confirm. **Hard-fail** -- the deploy is already committed and confirmed by smoke, so a drift here means the runtime state does not match NetBox intent on something the smoke suite did not directly check (anycast MAC, EVPN Type-2 ARP, peer VTEP learning). Worth surfacing as a workflow failure even though the device is alive. The job waits 130 s before reading parquet so SuzieQ has at least two full 60 s poll cycles after confirm to capture the post-deploy state. ~3 min.
 
 The integration of all five prior phases is the architectural point of this workflow: Phase 1 (NetBox source of truth) drives Phase 3 (Nornir render) which is gated by Phase 4 (Batfish) before deploy and verified by Phase 2 smoke + Phase 5 drift after deploy. Each gate is independent, each catches a different class of failure.
 
