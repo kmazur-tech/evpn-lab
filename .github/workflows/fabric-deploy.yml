@@ -257,40 +257,12 @@ jobs:
           MSG
 
   # ------------------------------------------------------------------
-  # 6. Suzieq drift. Runs only if confirm succeeded (deploy is alive
-  #    and timer cleared). Soft-fail: failure logs a warning but does
-  #    not fail the workflow -- drift detection is a verification
-  #    layer, not a gate.
-  # ------------------------------------------------------------------
-  drift-check:
-    name: suzieq drift (soft-fail)
-    runs-on: [self-hosted, lab-deploy]
-    timeout-minutes: 5
-    needs: confirm
-    continue-on-error: true
-    environment: lab-deploy
-    permissions:
-      contents: read
-    env:
-      # The drift compose service uses ${VAR} substitution for these.
-      # Pass them via the lab-deploy Environment so we do not need a
-      # persisted env file on the host.
-      NETBOX_TOKEN: ${{ secrets.NETBOX_TOKEN }}
-      JUNOS_SSH_USER: ${{ secrets.JUNOS_SSH_USER }}
-      JUNOS_SSH_PASSWORD: ${{ secrets.JUNOS_SSH_PASSWORD }}
-      # SUZIEQ_API_KEY is only used by the REST service in the same
-      # compose file. drift does not need it, but compose will warn
-      # for any unset ${VAR} during interpolation. Stub to silence.
-      SUZIEQ_API_KEY: not-used-by-drift
-      NETBOX_URL: http://localhost:8000
-    steps:
-      - name: Run drift container
-        # gha-runner is in the docker group on netdevops-srv so it can
-        # talk to /var/run/docker.sock. That permission is effectively
-        # root-on-host; acceptable here because the runner already
-        # holds lab secrets and triggers deploys, but production must
-        # not grant docker group to a CI runner without isolation.
-        # Listed under Production readiness in phase6-cicd/README.md.
-        run: |
-          cd /opt/suzieq
-          docker compose run --rm drift --mode all
+  # NOTE: drift verification is NOT a job here.
+  # netdevops-srv runs `suzieq-drift-assert.timer` every 5 minutes
+  # via systemd (see phase5-suzieq/systemd/), which invokes the same
+  # drift harness in --mode assertions. Re-running it from CI right
+  # after a deploy adds at most a 5-minute window vs the existing
+  # cadence and was OOM'ing the 8GB VM (drift loads pandas+pyarrow
+  # plus the full parquet store). The continuous timer is the
+  # production-shaped verification layer; this workflow ends at
+  # `confirm` and trusts the timer to surface any post-deploy drift.
