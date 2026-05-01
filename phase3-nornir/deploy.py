@@ -306,6 +306,20 @@ def main():
                         help="Render full + NAPALM compare_config against the live device. No commit.")
     parser.add_argument("--commit", action="store_true",
                         help="Render full + NAPALM load_replace_candidate + commit. Requires --full to pass first.")
+    parser.add_argument("--no-confirm", action="store_true",
+                        help="With --commit: skip the Stage 2 liveness check "
+                             "and confirm. The device is left in commit-confirmed "
+                             "state with the rollback timer running (revert_in=300s). "
+                             "The caller MUST invoke --confirm-only within that "
+                             "window or Junos will auto-rollback. Used by CI "
+                             "when the smoke suite is the deploy gate, not the "
+                             "cheap liveness check.")
+    parser.add_argument("--confirm-only", action="store_true",
+                        help="Skip render / diff / guard / deploy. Only call "
+                             "napalm_confirm_commit on each host to clear the "
+                             "rollback timer started by a prior `--commit "
+                             "--no-confirm`. Used by CI after the smoke suite "
+                             "passes.")
     parser.add_argument("--target",
                         help="Restrict deploy to a single host (phased rollout).")
     parser.add_argument("--validate", action="store_true",
@@ -313,8 +327,54 @@ def main():
                              "after render. Requires the Batfish container running on "
                              "netdevops-srv (see phase4-batfish/README.md). Off by default.")
     args = parser.parse_args()
-    if not (args.check or args.full or args.dry_run or args.commit):
+    if args.confirm_only and (args.check or args.full or args.dry_run or args.commit):
+        parser.error("--confirm-only cannot be combined with --check, --full, "
+                     "--dry-run, or --commit (it skips render and deploy entirely)")
+    if args.no_confirm and not args.commit:
+        parser.error("--no-confirm only makes sense with --commit")
+    if not (args.check or args.full or args.dry_run or args.commit or args.confirm_only):
         args.check = True
+
+    # ----- --confirm-only short circuit -----
+    # Used by CI: after a prior `--commit --no-confirm` started a 5-minute
+    # rollback timer on every device and the smoke suite proved the deploy
+    # is healthy, this run clears the timer. We do NOT re-render or
+    # re-validate -- those already ran. We do NOT run the cheap liveness
+    # check either; smoke just exercised every device end-to-end.
+    if args.confirm_only:
+        if not (os.environ.get("JUNOS_SSH_USER") and os.environ.get("JUNOS_SSH_PASSWORD")):
+            print("\nABORT: JUNOS_SSH_USER and JUNOS_SSH_PASSWORD must be set in env.")
+            sys.exit(2)
+        nr = InitNornir(
+            config_file=str(Path(__file__).resolve().parent / "nornir.yml"),
+            inventory={
+                "options": {
+                    "nb_url": os.environ["NETBOX_URL"],
+                    "nb_token": os.environ["NETBOX_TOKEN"],
+                    "ssl_verify": False,
+                    "flatten_custom_fields": True,
+                    "filter_parameters": {
+                        "site": "dc1",
+                        "status": "active",
+                        "platform": "junos",
+                    },
+                },
+            },
+        )
+        deploy_runner = nr.filter(name=args.target) if args.target else nr
+        if args.target:
+            print(f"TARGET: {args.target} (phased rollout)")
+        print("=== Confirm commit (clear rollback timer) ===")
+        confirm_result = deploy_runner.run(task=napalm_confirm_commit)
+        confirm_failed = False
+        for host in sorted(confirm_result):
+            head = confirm_result[host][0]
+            if head.failed:
+                confirm_failed = True
+                print(f"  {host} CONFIRM FAILED: {head.exception}")
+            else:
+                print(f"  {host} confirmed")
+        sys.exit(1 if confirm_failed else 0)
 
     # Clear any stale renders from previous runs. Stale files in
     # build/ can carry obsolete content (e.g. an old PLACEHOLDER hash
@@ -489,9 +549,17 @@ def main():
                 print(f"{host} {head.result}")
 
         # Stage 2 of commit-confirmed: liveness check + confirm.
-        # Only runs in --commit mode (not --dry-run, which doesn't
-        # leave a pending commit on the device).
-        if args.commit and not failed:
+        # Skipped when --dry-run (no pending commit) or when --no-confirm
+        # (CI hands off to the smoke suite as the deploy gate; the smoke
+        # job calls --confirm-only after smoke passes, or lets Junos
+        # auto-rollback if smoke fails).
+        if args.commit and args.no_confirm and not failed:
+            print()
+            print("=== --no-confirm: skipping Stage 2 (liveness + confirm) ===")
+            print(f"Devices in commit-confirmed state. Auto-rollback in {REVERT_IN_SECONDS}s.")
+            print("Caller must invoke `deploy.py --confirm-only` within that window")
+            print("to clear the rollback timer (CI does this after the smoke gate).")
+        if args.commit and not args.no_confirm and not failed:
             print()
             print("=== Stage 2: liveness check ===")
             live_result = deploy_runner.run(task=liveness_check)
