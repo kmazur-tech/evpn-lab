@@ -134,15 +134,18 @@ Job chain:
 
 ```
 render-and-guard -> commit-no-confirm -> smoke-gate -> { confirm | rollback-notice }
+                                                          \
+                                                           +-> drift-check (soft-fail)
 ```
 
-- **render-and-guard**: live NetBox read, full template render, byte-diff vs `expected/`, on-disk sentinel guard. No device contact. ~1 min.
+- **render-and-guard**: live NetBox read via Phase 3 enrich, full template render, byte-diff vs `expected/`, on-disk sentinel guard, then **Phase 4 Batfish offline analysis** (7 checks + differential vs `main`) against the rendered build. No device contact. ~2 min.
 - **commit-no-confirm**: `deploy.py --commit --no-confirm`. Loads candidate config and starts a 5-minute commit-confirmed timer on every device. Job exits as soon as devices acknowledge -- it does NOT confirm. ~30 s.
 - **smoke-gate**: SSH to `gha-smoke@172.16.18.108`, run `sudo /usr/local/bin/lab-smoke`. The 76-check smoke suite runs against the live fabric. Pass -> the next job runs. Fail -> the rollback-notice job logs what's about to happen, and Junos auto-rolls back when the timer fires. ~2 min.
 - **confirm**: `deploy.py --confirm-only`. Runs only on smoke pass. Clears the rollback timer on every device. ~10 s.
 - **rollback-notice**: runs only on smoke fail (`if: failure()` on `smoke-gate`). Just prints what's happening. The rollback itself is automatic.
+- **drift-check**: Phase 5 drift harness in `--mode assertions` (the lightweight, NetBox-free path). Runs only after a successful confirm. Soft-fail (`continue-on-error: true`) -- a transient assertion failure here does not roll back the deploy, but it does surface a verification warning. Tightens the verification loop to right-after-deploy; the same harness runs every 5 minutes via `suzieq-drift-assert.timer` regardless. ~10 s.
 
-Drift verification is intentionally NOT a job here. netdevops-srv runs `suzieq-drift-assert.timer` every 5 minutes via systemd (see [phase5-suzieq/systemd/](../phase5-suzieq/systemd/)), invoking the same drift harness in `--mode assertions`. Re-running drift from CI right after a deploy added at most a 5-minute window vs the existing cadence and was OOM-killing the 8GB netdevops-srv VM (drift loads pandas + pyarrow + the full parquet store). The continuous timer is the production-shaped verification layer; this workflow ends at `confirm` and trusts the timer to surface any post-deploy drift in the next 5 minutes.
+The integration of all five prior phases is the architectural point of this workflow: Phase 1 (NetBox source of truth) drives Phase 3 (Nornir render) which is gated by Phase 4 (Batfish) before deploy and verified by Phase 2 smoke + Phase 5 drift after deploy. Each gate is independent, each catches a different class of failure.
 
 The architectural property: **smoke is the deploy gate, not the cheap liveness check**. `deploy.py --commit` (the manual operator path) uses liveness because a manual deploy has a human running smoke afterwards. CI deploy splits the commit + confirm so the full smoke suite can run between them. The two new flags `--no-confirm` and `--confirm-only` exist exactly for this split.
 

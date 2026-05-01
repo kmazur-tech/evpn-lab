@@ -91,12 +91,18 @@ jobs:
         working-directory: phase3-nornir
         run: ../.venv/bin/python deploy.py --full
 
-      # Note: --validate would require the Batfish container reachable
-      # from this job. Lab Batfish runs on this same host but on a
-      # different docker network; reaching it would either need
-      # --network host or BATFISH_HOST=$(hostname -i). Defer the
-      # Batfish gate to a follow-up; the offline pybatfish unit tests
-      # in fabric-ci.yml already cover the pure-static checks.
+      - name: Install Phase 4 Batfish deps
+        run: .venv/bin/pip install -r phase4-batfish/requirements.txt
+
+      - name: Batfish offline analysis
+        # The Batfish container runs on this host (port 9996 published
+        # on the docker host). validate.py executes the 7 offline
+        # checks (init issues, parse status, BGP topology, undefined
+        # references, IP ownership, loopback reachability) plus
+        # differential analysis against the main-branch baseline.
+        env:
+          BATFISH_HOST: localhost
+        run: .venv/bin/python phase4-batfish/validate.py --snapshot phase3-nornir/build/
 
   # ------------------------------------------------------------------
   # 2. Commit-confirmed: deploys with revert_in=300s but does NOT
@@ -257,12 +263,30 @@ jobs:
           MSG
 
   # ------------------------------------------------------------------
-  # NOTE: drift verification is NOT a job here.
-  # netdevops-srv runs `suzieq-drift-assert.timer` every 5 minutes
-  # via systemd (see phase5-suzieq/systemd/), which invokes the same
-  # drift harness in --mode assertions. Re-running it from CI right
-  # after a deploy adds at most a 5-minute window vs the existing
-  # cadence and was OOM'ing the 8GB VM (drift loads pandas+pyarrow
-  # plus the full parquet store). The continuous timer is the
-  # production-shaped verification layer; this workflow ends at
-  # `confirm` and trusts the timer to surface any post-deploy drift.
+  # 6. Phase 5 drift assertions. Runs only after a successful confirm.
+  #    Uses --mode assertions (the lightweight, NetBox-free path) so
+  #    we get post-deploy verification without re-fetching intent.
+  #    The systemd timer on netdevops-srv runs the same mode every
+  #    5 minutes; this job tightens the loop to right-after-deploy.
+  #    Soft-fail: a transient assertion failure logs a warning but
+  #    does not fail the workflow -- the deploy itself was already
+  #    confirmed by the smoke gate.
+  # ------------------------------------------------------------------
+  drift-check:
+    name: suzieq drift assertions (soft-fail)
+    runs-on: [self-hosted, lab-deploy]
+    timeout-minutes: 5
+    needs: confirm
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - name: Run drift assertions
+        # --mode assertions reads parquet only (no NetBox fetch), so
+        # no credentials needed and no OOM risk on the 8GB VM (the
+        # earlier --mode all attempt OOM'd because pandas + pyarrow +
+        # the full NetBox intent collection hit the resource ceiling).
+        # gha-runner has docker-group membership for compose.
+        run: |
+          cd /opt/suzieq
+          docker compose run --rm drift --mode assertions
