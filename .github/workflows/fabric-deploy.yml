@@ -70,17 +70,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - name: Cache pip
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
-          python-version: '3.11'
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-deploy-${{ hashFiles('phase3-nornir/requirements*.txt') }}
 
-      - name: Install dependencies
-        run: pip install -r phase3-nornir/requirements.txt
+      - name: Set up venv with system Python
+        # actions/setup-python has no Debian 12 build, and the runner
+        # already ships Python 3.11.2 from apt. Build a per-job venv
+        # against the system interpreter so we get the deploy.py deps
+        # without polluting the host (PEP 668 makes that an error
+        # anyway on Debian 12).
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -r phase3-nornir/requirements.txt
 
       - name: Render full configs and diff vs golden files
         working-directory: phase3-nornir
-        run: python deploy.py --full
+        run: ../.venv/bin/python deploy.py --full
 
       # Note: --validate would require the Batfish container reachable
       # from this job. Lab Batfish runs on this same host but on a
@@ -112,13 +121,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - name: Cache pip
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
-          python-version: '3.11'
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-deploy-${{ hashFiles('phase3-nornir/requirements*.txt') }}
 
-      - name: Install dependencies
-        run: pip install -r phase3-nornir/requirements.txt
+      - name: Set up venv with system Python
+        # actions/setup-python has no Debian 12 build, and the runner
+        # already ships Python 3.11.2 from apt. Build a per-job venv
+        # against the system interpreter so we get the deploy.py deps
+        # without polluting the host (PEP 668 makes that an error
+        # anyway on Debian 12).
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -r phase3-nornir/requirements.txt
 
       - name: Mask rendered hash so it does not leak into logs
         # The encrypted-password hash is derived from secrets but is
@@ -128,14 +146,14 @@ jobs:
         shell: bash
         run: |
           cd phase3-nornir
-          python -c "from tasks.enrich.auth import derive_login_hash; print(f'::add-mask::{derive_login_hash()}')"
+          ../.venv/bin/python -c "from tasks.enrich.auth import derive_login_hash; print(f'::add-mask::{derive_login_hash()}')"
 
       - name: deploy.py --commit --no-confirm
         # 5-minute commit-confirmed timer starts here. From this point
         # until the confirm step (or the rollback-notice step) finishes,
         # the device is pending-rollback.
         working-directory: phase3-nornir
-        run: python deploy.py --commit --no-confirm
+        run: ../.venv/bin/python deploy.py --commit --no-confirm
 
   # ------------------------------------------------------------------
   # 3. Smoke gate. SSHes from the runner (gha-runner@netdevops-srv) to
@@ -185,17 +203,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - name: Cache pip
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
-          python-version: '3.11'
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-deploy-${{ hashFiles('phase3-nornir/requirements*.txt') }}
 
-      - name: Install dependencies
-        run: pip install -r phase3-nornir/requirements.txt
+      - name: Set up venv with system Python
+        # actions/setup-python has no Debian 12 build, and the runner
+        # already ships Python 3.11.2 from apt. Build a per-job venv
+        # against the system interpreter so we get the deploy.py deps
+        # without polluting the host (PEP 668 makes that an error
+        # anyway on Debian 12).
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -r phase3-nornir/requirements.txt
 
       - name: deploy.py --confirm-only
         working-directory: phase3-nornir
-        run: python deploy.py --confirm-only
+        run: ../.venv/bin/python deploy.py --confirm-only
 
   # ------------------------------------------------------------------
   # 5. Rollback notice. Runs ONLY if smoke-gate failed. We do NOT
