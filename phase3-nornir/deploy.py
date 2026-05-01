@@ -44,7 +44,7 @@ TransformFunctionRegister.register("fabric_inventory_transform", fabric_inventor
 from nornir_napalm.plugins.tasks import napalm_confirm_commit
 
 from tasks.enrich import enrich_from_netbox, derive_login_hash
-from tasks.deploy import napalm_deploy, liveness_check
+from tasks.deploy import napalm_deploy, liveness_check, REVERT_IN_SECONDS
 from tasks.backup import pre_commit_backup
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
