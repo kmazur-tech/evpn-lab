@@ -9,8 +9,8 @@ GitHub Actions workflow files **must** live at `.github/workflows/` in the repo 
 ```
 .github/                                <- repo root, required by GitHub
   workflows/
-    fabric-ci.yml                       PR-time CI (this phase)
-    fabric-deploy.yml                   Lab deploy workflow (Phase 6.3, planned)
+    fabric-ci.yml                       PR-time CI on GitHub-hosted runners
+    fabric-deploy.yml                   Lab deploy workflow on self-hosted lab-deploy runner
   yamllint.yml                          yamllint config used by the lint job
   dependabot.yml                        Weekly Action SHA updates
 
@@ -24,10 +24,10 @@ phase6-cicd/                            this directory
 
 Stage | Scope | State
 ---|---|---
-6.1 | Test framework extensions (golden-file render, vcrpy enrich, mocked NAPALM, pytest-nornir) | Done. 154 phase-3 tests, 87% coverage, all offline.
+6.1 | Test framework extensions (golden-file render, vcrpy enrich, mocked NAPALM, pytest-nornir) | Done. 177 phase-3 tests, 87% coverage, all offline.
 6.2 | PR-time `fabric-ci.yml`: lint + unit matrix + render-pipeline + batfish | Done. Runs on every PR and push to `main`.
-6.3 | Deploy `fabric-deploy.yml`: render-and-guard, deploy with marker, smoke gate, suzieq drift, marker-based rollback on failure | Done. Self-hosted runner, manual `workflow_dispatch`.
-6.4 | Documentation, status badge, `phase6-cicd/CI.md` operations runbook | Partial - this README covers what's live; runbook follows when deploy lands.
+6.3 | Deploy `fabric-deploy.yml`: render-and-guard, deploy with inner liveness gate + marker, smoke, drift, marker-based rollback on failure, auto-rollback notice | Done. Verified live 2026-05-02 (happy path + smoke-fail variant). Self-hosted runner, manual `workflow_dispatch`.
+6.4 | Documentation, status badge, this README | Done. Operational commands inline in this file; no separate runbook needed.
 
 ## End-to-end pipeline
 
@@ -91,7 +91,7 @@ Jobs:
 | Job | What it does | Hard-fail? |
 |---|---|---|
 | `lint` | yamllint + ruff + j2lint across all phase dirs | Yes |
-| `unit (phase3-nornir)` | Full pytest suite, 163 tests, coverage gate at 85% | Yes |
+| `unit (phase3-nornir)` | Full pytest suite, 177 tests, coverage gate at 85% (currently 87%) | Yes |
 | `unit (phase4-batfish)` | pybatfish unit tests, 60 tests | Yes (transitioned 2026-05-02 after the warn-only ramp) |
 | `unit (phase5-suzieq)` | Drift harness suite, 370 tests | Yes (transitioned 2026-05-02 after the warn-only ramp) |
 | `render + diff + guard` | Render templates from cassettes, byte-equality vs `expected/`, deploy-guard scan | Yes |

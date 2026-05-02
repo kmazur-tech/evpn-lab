@@ -3,7 +3,7 @@
 [![CI](https://github.com/kmazur-tech/evpn-lab/actions/workflows/fabric-ci.yml/badge.svg)](https://github.com/kmazur-tech/evpn-lab/actions/workflows/fabric-ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/kmazur-tech/evpn-lab?display_name=tag&sort=semver)](https://github.com/kmazur-tech/evpn-lab/releases)
 
-A Juniper EVPN-VXLAN fabric built end-to-end as code: NetBox is the source of truth, Nornir renders Junos configs from it, Batfish validates them offline, NAPALM commits with a 5-minute auto-rollback timer, smoke tests gate the deploy, and SuzieQ watches for drift afterwards. Every change goes through CI before it reaches a device.
+A Juniper EVPN-VXLAN fabric built end-to-end as code: NetBox is the source of truth, Nornir renders Junos configs from it, Batfish validates them offline, NAPALM commits behind a two-layer rollback (inner liveness gate + outer marker walk), smoke tests gate the deploy, and SuzieQ watches for drift afterwards. Every change goes through CI before it reaches a device, and every deploy can be reverted automatically when smoke or drift fails.
 
 ## What works today
 
@@ -11,10 +11,10 @@ A Juniper EVPN-VXLAN fabric built end-to-end as code: NetBox is the source of tr
 - **NetBox-driven configs**: device data, VRFs, VLANs, VNIs, cabling, anycast MACs, RT scheme. `populate.py` is idempotent. Nornir's `enrich_from_netbox()` collects it all into a pydantic-validated `HostData` per device.
 - **Render -> diff -> guard pipeline**: Jinja2 templates produce per-device configs, byte-diffed against checked-in golden files, then scanned for placeholders / malformed password hashes before any NAPALM call.
 - **Batfish validation**: 7 offline checks (BGP topology, undefined references, parse status, IP ownership conflicts, ...) plus differential analysis vs `main`.
-- **Commit-confirmed deploys** via NAPALM: `commit confirmed 5m`, then liveness check, then explicit confirm. If liveness fails, Junos auto-rolls back.
+- **Two-layer rollback on the deploy path.** Inner gate: `commit confirmed 120` + 30 s settle + per-host liveness check + `napalm_confirm_commit`; if any host loses SSH the confirm is skipped and Junos auto-rolls back at the deadline. Outer gate: every deploy commit carries a unique marker as the Junos commit comment, so `deploy.py --rollback-marker $MARKER` can walk `show system commit` per device and revert to pre-deploy state even after smoke's mid-run failover commits.
 - **76-check smoke suite** runs after every commit (control plane, data plane, ESI failover, core isolation, spine failover, EVPN type 2/3/5 routes, ECMP, jumbo MTU). Roughly 2 minutes, all green on the live lab.
 - **SuzieQ drift harness**: continuous state polling, NetBox-vs-runtime diff with strict assertion mode, time-series queries, schema-drift smoke test. 362 default tests + 12 live tests.
-- **GitHub Actions CI** on every PR: lint, unit-test matrix across phases 3/4/5, render pipeline, Batfish - all on GitHub-hosted runners with zero lab exposure.
+- **GitHub Actions CI/CD.** PR-time `fabric-ci.yml` on GitHub-hosted runners (lint, unit-test matrix across phases 3/4/5, render pipeline, Batfish - zero lab exposure). Manual `fabric-deploy.yml` on a self-hosted runner (lab-deploy environment with required reviewer): render-and-guard -> deploy with inner liveness gate -> smoke -> drift, with marker-based rollback if smoke or drift fails.
 
 ## Why this project is different
 
@@ -22,7 +22,7 @@ This isn't an EVPN tutorial repo. It's a working model of how to operate a netwo
 
 - **Single source of truth.** No config drift between docs, scripts, and devices: NetBox owns intent, everything else is derived from it.
 - **Multiple independent validation layers** before a device sees a candidate config: golden-file regression, on-disk deploy guard, Batfish semantic checks, then NAPALM compare.
-- **Self-correcting deploys.** Commit-confirmed + liveness check means a broken push rolls itself back without operator intervention. The credential-lockout postmortem in Phase 3 is the reason this was built that way.
+- **Self-correcting deploys, two ways.** A broken management plane (placeholder hash, mgmt VRF misconfig) trips the inner `commit confirmed 120` gate and Junos auto-rolls back. A passing inner gate that later fails smoke or drift triggers `deploy.py --rollback-marker`, which walks each device's commit history by the deploy's unique log line and reverts to pre-deploy state. The credential-lockout postmortem in Phase 3 is the reason this was built that way.
 - **Continuous drift detection** post-deploy. SuzieQ keeps polling and a strict-assertions cron compares observed state against NetBox intent every 5 minutes.
 - **CI gates real device-touching changes**, not just code style. Public repo, Actions runners sandboxed, secrets scoped to environments, all third-party Actions pinned to commit SHAs.
 
@@ -44,15 +44,24 @@ python deploy.py --check                  # offline diff per stanza
 # 4. Validate the rendered configs offline (Batfish on netdevops-srv)
 python ../phase4-batfish/validate.py --snapshot build/
 
-# 5. Deploy with commit-confirmed (5-min rollback timer)
-python deploy.py --commit                 # liveness check + auto-confirm
+# 5. Deploy. Two-layer rollback: --liveness-gate runs `commit confirmed 120`,
+#    waits 30s, runs liveness on every host, then napalm_confirm_commit.
+#    --commit-message stamps a unique marker for the outer rollback.
+python deploy.py --commit \
+    --commit-message "manual-$(date +%s)" \
+    --liveness-gate
 
 # 6. Run the smoke gate (76 checks, ~2 min)
 bash ../phase2-fabric/smoke-tests.sh
 
-# 7. Compare runtime state vs NetBox intent
+# 7. If smoke or drift later fails, revert via the marker:
+#    python deploy.py --rollback-marker "manual-<timestamp>"
+
+# 8. Compare runtime state vs NetBox intent
 docker compose -f /opt/suzieq/docker-compose.yml run --rm drift --mode all
 ```
+
+CI runs the same flow non-interactively via `fabric-deploy.yml` (workflow_dispatch on the self-hosted lab-deploy runner) where the marker is `cicd-${{ github.run_id }}-${{ github.run_attempt }}`.
 
 If you don't have the lab, the offline pieces still run: `cd phase3-nornir && pytest` exercises the full render pipeline with vcrpy cassettes (zero NetBox / device dependencies, ~10 seconds).
 
@@ -65,8 +74,9 @@ If you don't have the lab, the offline pieces still run: `cd phase3-nornir && py
 | Regression gate | `deploy.py --check` | Rendered configs | Byte-diff vs `phase3-nornir/expected/*.conf` |
 | Deploy guard | `assert_safe_to_deploy` | Rendered configs on disk | Reject placeholders, validate hash shape |
 | Validate | Batfish | Rendered configs + main baseline | 7 offline checks + differential snapshot |
-| Deploy | NAPALM | Candidate config | `commit confirmed 5`, then confirm or auto-rollback |
+| Deploy (inner gate) | NAPALM | Candidate config | `commit confirmed 120` + 30s settle + liveness + `napalm_confirm_commit`; auto-rollback if liveness fails |
 | Smoke | `smoke-tests.sh` | Live fabric | 76-check pass/fail matrix |
+| Rollback (outer gate) | `deploy.py --rollback-marker` | Device commit history | Walk `show system commit` per device, revert to pre-marker state if smoke or drift fails |
 | Observe | SuzieQ + drift harness | Runtime state | Continuous diff vs NetBox intent |
 
 ## Architecture
@@ -156,10 +166,10 @@ flowchart TB
 | Phase | Tests | Coverage | Runtime |
 |---|---|---|---|
 | Phase 1 (NetBox populate) | 18 | -- | <1 s |
-| Phase 3 (Nornir IaC) | 154 | 87% | ~12 s |
+| Phase 3 (Nornir IaC) | 177 | 87% | ~22 s |
 | Phase 4 (Batfish) | 60 unit + 9 integration | -- | ~2 s |
-| Phase 5 (SuzieQ) | 362 default + 12 live | 91.9% | ~4 s |
-| **Total (default)** | **594** | -- | ~20 s |
+| Phase 5 (SuzieQ) | 370 default + 12 live | 91.9% | ~4 s |
+| **Total (default)** | **625** | -- | ~30 s |
 
 ### Render pipeline (offline)
 
@@ -187,7 +197,7 @@ Same shape on all 4 devices. Any structural drift in a template surfaces here as
 | [Containerlab](https://containerlab.dev/) | Virtual network lab (vJunos-switch, Linux hosts) |
 | [pynetbox](https://github.com/netbox-community/pynetbox) | Idempotent NetBox population via Python |
 | [Nornir](https://nornir.readthedocs.io/) | Configuration rendering and deployment |
-| [NAPALM](https://napalm.readthedocs.io/) | Vendor-abstract device API; commit-confirmed deploys |
+| [NAPALM](https://napalm.readthedocs.io/) | Vendor-abstract device API; `commit confirmed` for the inner liveness gate, plain commit + Junos commit comment for the marker-based outer rollback |
 | [Batfish](https://www.batfish.org/) | Pre-deployment config validation |
 | [SuzieQ](https://suzieq.readthedocs.io/) | Continuous state observation + drift detection |
 | Juniper Junos | Network OS (EVPN-VXLAN, ERB, ESI-LAG) |
@@ -202,7 +212,7 @@ Same shape on all 4 devices. Any structural drift in a template surfaces here as
 | 3 | [Nornir IaC Framework](phase3-nornir/) | Done |
 | 4 | [Batfish Pre-Deployment Validation](phase4-batfish/) | Done |
 | 5 | [SuzieQ Continuous State + Drift Detection](phase5-suzieq/) | Done |
-| 6 | [GitHub Actions CI/CD Pipeline](phase6-cicd/) | In progress (Stage 6.1+6.2 done, 6.3 deploy planned) |
+| 6 | [GitHub Actions CI/CD Pipeline](phase6-cicd/) | Done (PR-time fabric-ci.yml + deploy fabric-deploy.yml with two-layer rollback, verified live 2026-05-02) |
 | 7 | Forwarding Scale + Convergence Tuning | Planned |
 | 8 | CIS/PCI-DSS Hardening | Planned |
 | 9 | gNMI Streaming Telemetry | Planned |
@@ -231,11 +241,11 @@ evpn-lab/
 +-- README.md                    # This file
 +-- PROJECT_PLAN.md               # 12-phase roadmap
 +-- .env.example                  # Environment variable template
-+-- .github/workflows/            # GitHub Actions (fabric-ci.yml)
++-- .github/workflows/            # GitHub Actions (fabric-ci.yml + fabric-deploy.yml)
 +-- phase1-netbox/                # NetBox as Source of Truth
 +-- phase2-fabric/                # EVPN+VXLAN+ESI-LAG fabric (containerlab + smoke)
 +-- phase3-nornir/                # Nornir IaC: render, guard, deploy
-|   +-- tests/                    # 154 unit/integration tests, vcrpy cassettes
+|   +-- tests/                    # 177 unit/integration tests, vcrpy cassettes
 |   +-- expected/                 # Golden file regression baselines
 |   +-- templates/junos/          # Jinja2 templates per stanza
 +-- phase4-batfish/               # Pre-deployment offline validation

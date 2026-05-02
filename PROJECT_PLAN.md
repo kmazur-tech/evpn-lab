@@ -400,7 +400,7 @@ How `maintenance.py` is bounded:
 
 - **Pure config-overlay drain, never an interface shut**: an interface shut on the wrong port can take down a host LACP bundle in a way that hard-loses traffic during the drain itself. The BGP / EVPN / DF approach reroutes BEFORE removing the device from the path.
 - **Single device per invocation**: the script refuses to drain two devices at once. Operators who want to drain a whole pair (e.g. both spines for a fabric-wide upgrade) run the script twice with explicit confirmation between runs.
-- **Reversible by design**: drain mutates only the rendered config push (a small overlay applied via Phase 3's commit-confirmed flow), not NetBox. The drain config is its own commit-confirm stage with the same 300s rollback timer Phase 3 uses, so a botched drain self-recovers if the SSH session dies.
+- **Reversible by design**: drain mutates only the rendered config push (a small overlay applied via Phase 3's deploy flow), not NetBox. The drain push uses the same `--liveness-gate` inner safety net Phase 3 uses (commit confirmed 120s + liveness + napalm_confirm_commit), so a botched drain that breaks SSH self-recovers via Junos auto-rollback. If the drain commits successfully but downstream verification (smoke, BGP convergence checks) fails, the same `--rollback-marker` outer gate reverts via commit-history walk.
 - **No NetBox mutation**: maintenance is a runtime state, not an intent change. The device remains a fully-modeled member of the fabric in NetBox throughout. A separate `maintenance_until: <timestamp>` custom field on the device records WHEN the drain started, for the Suzieq drift harness to suppress drift alerts on the drained device while it's down.
 - **Drain artifact is the audit trail**: the JSON snapshot in `phase11-lifecycle/maintenance-state/` is the operator's evidence that the drain landed cleanly before the maintenance window started.
 
@@ -419,7 +419,7 @@ Steps for device decommission:
 4. **Explicit confirmation**: typed device name, not just `--yes`.
 5. **Pre-action snapshot**: one final pre-decommission backup of every affected device's running config (reuses `tasks/backup.py` from Phase 3).
 6. **Application**: device removed from NetBox; cables and interface IPs cleaned up in dependency order.
-7. **Re-run Phase 3 deploy**: rendered configs on remaining devices get the BGP-peer-gone delta; commit-confirmed two-stage flow handles the actual change.
+7. **Re-run Phase 3 deploy**: rendered configs on remaining devices get the BGP-peer-gone delta; the two-layer rollback (inner liveness gate + outer marker walk) handles the actual change with the same safety guarantees as a normal deploy.
 8. **Smoke gate**: re-run smoke from the lab server.
 
 Same shape for link decommission (cable + endpoint cleanup) with a smaller dependency scan.
@@ -429,7 +429,7 @@ Same shape for link decommission (cable + endpoint cleanup) with a smaller depen
 These are the things a full reconciler would do that Phase 11 explicitly does NOT:
 
 - **No blind mass prune** ("remove from NetBox everything Phase 3 enrich didn't see"). Every prune is allowlist-class scoped and operator-invoked.
-- **No mixed atomic actions**. Tier 2 / Tier 4 mutations to NetBox are NEVER combined with destructive push to devices in one step. Plan in NetBox first → review → apply to NetBox → run Phase 3 deploy as a separate explicit invocation. Tier 3 (maintenance) does push config to a device, but its push is ONLY the drain overlay (BGP attributes / community / DF preference) and rides the same Phase 3 commit-confirmed 300s rollback timer.
+- **No mixed atomic actions**. Tier 2 / Tier 4 mutations to NetBox are NEVER combined with destructive push to devices in one step. Plan in NetBox first → review → apply to NetBox → run Phase 3 deploy as a separate explicit invocation. Tier 3 (maintenance) does push config to a device, but its push is ONLY the drain overlay (BGP attributes / community / DF preference) and rides the same Phase 3 inner liveness gate (commit confirmed 120s) plus marker-based outer rollback.
 - **No automatic cable / link delete without dependency check**.
 - **No automatic device delete without typed-name confirmation**.
 - **No reverse-direction reconciliation** (NetBox UI edits becoming yaml PRs). Out of scope; possible Phase 12+ if it ever becomes relevant.
@@ -476,7 +476,7 @@ The phase has two parts. Part A is read-only. Part B is read-write to the repo, 
 
 ### Why this is bounded the way it is
 
-The earlier phases worked hard to build a safe deploy pipeline (Phase 3 commit-confirmed + golden files, Phase 4 Batfish offline checks, Phase 5 drift harness, Phase 11 explicit lifecycle tiers). The fastest way to undermine that is to let an LLM author changes the human pipeline never sees, or to let "while we're here" repo cleanup creep in under the AI banner. Phase 12 is structured so the AI is a **narrator and proposer over runtime state**, never an author of project work.
+The earlier phases worked hard to build a safe deploy pipeline (Phase 3 two-layer rollback + golden files, Phase 4 Batfish offline checks, Phase 5 drift harness, Phase 6 CI/CD gates, Phase 11 explicit lifecycle tiers). The fastest way to undermine that is to let an LLM author changes the human pipeline never sees, or to let "while we're here" repo cleanup creep in under the AI banner. Phase 12 is structured so the AI is a **narrator and proposer over runtime state**, never an author of project work.
 
 ### Part A - Runtime read-only (narrator + explainer)
 
@@ -510,7 +510,7 @@ Part B extends the assistant to **propose** repo changes (NetBox data, Jinja tem
 4. **Logged**: every Part B suggestion (accepted, rejected, modified) is recorded with its triggering evidence. After a month of runtime use, the log answers whether Part B is earning its keep or generating plausible noise.
 
 Hard rules for Part B:
-- **Never auto-merged, never auto-applied to a device.** The Phase 3 commit-confirmed flow remains the only path to a device.
+- **Never auto-merged, never auto-applied to a device.** The Phase 3 deploy flow (two-layer rollback) remains the only path to a device.
 - **No proposals against Phase 3-5 code itself** (Nornir tasks, render scripts, Batfish checks, smoke tests, drift harness, gen-inventory). Those are tools, not runtime state. If they're wrong, that's a human-driven dev task, not a Phase 12 output.
 - **DESIGN.md / NETBOX_DATA_MODEL.md edits are proposed only when the runtime contradicts the doc**, not when the AI thinks the doc could be clearer.
 - **No proposals invent NetBox schema fields or Junos knobs.** Every proposal cites a file path + line that already exists. If it can't cite, it's hallucinating and is dropped.
@@ -634,7 +634,7 @@ flowchart TB
     apply["phase11-lifecycle/{prune,maintenance,decommission}.py --apply<br/>(NetBox mutation only - dependency-ordered, journal-tagged)"]
     review["Operator reviews 'deploy.py --check' diff"]
     abort["abort, investigate, manually revert NetBox"]
-    commit["python phase3-nornir/deploy.py --commit<br/>(Phase 3 commit-confirmed flow takes over)"]
+    commit["python phase3-nornir/deploy.py --commit<br/>(Phase 3 two-layer rollback takes over)"]
     smoke["phase2-fabric/smoke-tests.sh on lab server"]
     ok["Lifecycle change complete"]
 
