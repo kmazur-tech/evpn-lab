@@ -2,27 +2,40 @@
 #
 # Manual workflow_dispatch only -- no PR, no push triggers. Runs on
 # the self-hosted lab-deploy runner (netdevops-srv) and is gated by
-# the lab-deploy GitHub Environment, which has a required reviewer
+# the lab-deploy GitHub Environment, which has a required-reviewer
 # protection rule. So a deploy requires:
 #   1. A maintainer with write access to invoke this workflow
 #   2. A separate reviewer (or self, if Environment lets you) to
 #      approve the run before it actually starts
 #
-# Architectural property: the smoke suite is the deploy gate. This
-# workflow runs:
-#   render-and-guard -> commit (no-confirm) -> smoke -> { confirm | rollback-notice }
-#                                                ^
-#                                                +-- if smoke fails, we do NOT
-#                                                    confirm; Junos auto-rolls back
-#                                                    at the 5-min deadline started
-#                                                    by the --commit --no-confirm step.
+# Two layered rollback gates:
 #
-# Concretely: deploy.py --commit --no-confirm leaves the device in
-# commit-confirmed state with revert_in=300s. Smoke runs as a separate
-# job (~2 min). If smoke passes, deploy.py --confirm-only clears the
-# timer. If smoke fails, no confirm runs, Junos rolls back. SSH access
-# is preserved either way -- this is what the entire layered safety
-# model is built around.
+#   render-and-guard -> deploy (--liveness-gate) -> smoke -> drift
+#         |                       |                   \         /
+#         |                       v                    v       v
+#         |               auto-rollback-notice    rollback-on-failure
+#         |          (Junos timer fires if            (--rollback-marker
+#         |          inner liveness fails)             walks history)
+#
+# **Inner gate** (inside `deploy` job): commit confirmed 120 + sleep 30 +
+# liveness on every host + napalm_confirm_commit. Catches mgmt-plane
+# breakage (broken SSH, broken mgmt VRF, placeholder hash). If liveness
+# fails, deploy job exits nonzero, no confirm fires, Junos rolls back
+# at the 120 s deadline. Smoke and drift skip; rollback-on-failure is
+# also skipped (Junos handles it).
+#
+# **Outer gate** (across jobs): unique marker (cicd-<run_id>-<attempt>)
+# is the Junos commit comment of the deploy commit. If smoke or drift
+# fails AFTER the inner gate passed, rollback-on-failure runs
+# `deploy.py --rollback-marker $MARKER` which walks each device's
+# `show system commit`, finds the marker, and rolls back to the
+# configuration as it was BEFORE that commit.
+#
+# The two gates protect different failure modes. Commit-confirmed is
+# fine as the inner gate because it fires BEFORE smoke runs (smoke
+# would otherwise clear the timer with its mid-run failover commits).
+# The marker walk is the only reliable outer gate because it survives
+# any intermediate commits.
 
 name: fabric-deploy
 
@@ -31,9 +44,9 @@ on:
 
 permissions: {}
 
-# Never cancel an in-flight deploy. Concurrency window is the whole
-# workflow because the device's commit-confirmed timer ticks across
-# job boundaries.
+# Never cancel an in-flight deploy. The rollback path runs as a
+# downstream job; cancelling mid-deploy could orphan the device in a
+# committed-but-untested state.
 concurrency:
   group: fabric-deploy
   cancel-in-progress: false
@@ -49,6 +62,10 @@ env:
   MGMT_dc1_spine2: 172.16.18.161/24
   MGMT_dc1_leaf1: 172.16.18.162/24
   MGMT_dc1_leaf2: 172.16.18.163/24
+  # Unique marker for this run. Becomes the Junos commit comment, then
+  # the lookup key for the rollback job. github.run_attempt distinguishes
+  # re-runs of the same workflow run.
+  COMMIT_MARKER: cicd-${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:
   # ------------------------------------------------------------------
@@ -105,14 +122,13 @@ jobs:
         run: .venv/bin/python phase4-batfish/validate.py --snapshot phase3-nornir/build/
 
   # ------------------------------------------------------------------
-  # 2. Commit-confirmed: deploys with revert_in=300s but does NOT
-  #    auto-confirm. Junos will roll back if step 4 doesn't run within
-  #    that window.
+  # 2. Deploy. Plain commit with COMMIT_MARKER as the Junos commit
+  #    comment. No revert_in timer.
   # ------------------------------------------------------------------
-  commit-no-confirm:
-    name: commit (--no-confirm)
+  deploy:
+    name: deploy (commit with marker + inner liveness gate)
     runs-on: [self-hosted, lab-deploy]
-    timeout-minutes: 5
+    timeout-minutes: 8
     needs: render-and-guard
     environment: lab-deploy
     permissions:
@@ -134,11 +150,6 @@ jobs:
           key: ${{ runner.os }}-pip-deploy-${{ hashFiles('phase3-nornir/requirements*.txt') }}
 
       - name: Set up venv with system Python
-        # actions/setup-python has no Debian 12 build, and the runner
-        # already ships Python 3.11.2 from apt. Build a per-job venv
-        # against the system interpreter so we get the deploy.py deps
-        # without polluting the host (PEP 668 makes that an error
-        # anyway on Debian 12).
         run: |
           python3 -m venv .venv
           .venv/bin/pip install --upgrade pip
@@ -154,24 +165,30 @@ jobs:
           cd phase3-nornir
           ../.venv/bin/python -c "from tasks.enrich.auth import derive_login_hash; print(f'::add-mask::{derive_login_hash()}')"
 
-      - name: deploy.py --commit --no-confirm
-        # 5-minute commit-confirmed timer starts here. From this point
-        # until the confirm step (or the rollback-notice step) finishes,
-        # the device is pending-rollback.
+      - name: deploy.py --commit --commit-message $COMMIT_MARKER --liveness-gate
+        # `--liveness-gate` enables the inner safety net:
+        #   1. commit confirmed 120 with marker as Junos commit comment
+        #   2. sleep 30 s for the new config to settle
+        #   3. liveness check (SSH + show version) on every host
+        #   4. if all alive: napalm_confirm_commit (clears the 120 s timer)
+        #   5. if any host failed liveness: exit nonzero, no confirm,
+        #      Junos auto-rolls back at the 120 s deadline
+        # Smoke runs as a separate downstream job AFTER this. By then
+        # the inner timer is cleared (or the deploy already failed),
+        # so smoke's mid-run failover commits cannot race the timer.
         working-directory: phase3-nornir
-        run: ../.venv/bin/python deploy.py --commit --no-confirm
+        run: ../.venv/bin/python deploy.py --commit --commit-message "$COMMIT_MARKER" --liveness-gate
 
   # ------------------------------------------------------------------
   # 3. Smoke gate. SSHes from the runner (gha-runner@netdevops-srv) to
   #    gha-smoke@172.16.18.108 (lab server) and runs the 76-check
-  #    smoke suite via the tightly-scoped sudo wrapper. Smoke pass/fail
-  #    is the deploy gate.
+  #    smoke suite via the tightly-scoped sudo wrapper.
   # ------------------------------------------------------------------
   smoke-gate:
     name: smoke gate (76-check)
     runs-on: [self-hosted, lab-deploy]
     timeout-minutes: 6
-    needs: commit-no-confirm
+    needs: deploy
     environment: lab-deploy
     permissions:
       contents: read
@@ -191,13 +208,71 @@ jobs:
               'sudo /usr/local/bin/lab-smoke'
 
   # ------------------------------------------------------------------
-  # 4. Confirm. Runs ONLY if smoke passed. Clears the rollback timer.
+  # 4. Phase 5 drift assertions. Runs after smoke passes.
+  #
+  #    Hard-fail. A persistent drift here means the runtime state
+  #    does not match NetBox intent on something the smoke suite did
+  #    not directly verify.
   # ------------------------------------------------------------------
-  confirm:
-    name: confirm (clear rollback timer)
+  drift-check:
+    name: suzieq drift assertions
     runs-on: [self-hosted, lab-deploy]
-    timeout-minutes: 5
+    timeout-minutes: 8
     needs: smoke-gate
+    permissions:
+      contents: read
+    steps:
+      - name: Run drift assertions with convergence retry
+        # SuzieQ polls services on ~60s intervals AND EVPN Type-3
+        # (IMET) advertisement + processing across peer leaves takes
+        # additional time after a config-replace deploy. A single
+        # fixed sleep would have to be conservatively long to cover
+        # the worst case; retry-with-backoff is more honest about
+        # what we are actually waiting for: the next clean drift
+        # report.
+        #
+        # Strategy: wait an initial 90 s (one full poll cycle plus
+        # margin), run drift, retry up to 4 more times with 45 s
+        # gaps. Total wall time ~= 90 + 4*(drift+45) ~= 4-5 min.
+        # If still failing after that, the drift is real, not
+        # transient, and the workflow correctly fails -- which then
+        # triggers rollback-on-failure.
+        run: |
+          set -e
+          sleep 90
+          for attempt in 1 2 3 4 5; do
+            echo "=== drift attempt $attempt ==="
+            if (cd /opt/suzieq && docker compose run --rm drift --mode assertions); then
+              echo "drift clean on attempt $attempt"
+              exit 0
+            fi
+            if [ "$attempt" = "5" ]; then
+              echo "::error::drift still failing after 5 attempts (~5 min); not transient"
+              exit 1
+            fi
+            echo "drift not clean, waiting 45 s before retry"
+            sleep 45
+          done
+
+  # ------------------------------------------------------------------
+  # 5. Rollback on failure. Runs ONLY if the deploy succeeded but
+  #    smoke or drift then failed. Calls deploy.py --rollback-marker
+  #    $COMMIT_MARKER which walks `show system commit` per device,
+  #    locates the marker, and reverts to the configuration as it
+  #    was BEFORE that commit.
+  #
+  #    Skipped if render-and-guard or deploy itself failed (no commit
+  #    landed on the devices, so nothing to revert).
+  # ------------------------------------------------------------------
+  rollback-on-failure:
+    name: rollback on failure (--rollback-marker)
+    runs-on: [self-hosted, lab-deploy]
+    timeout-minutes: 8
+    needs: [deploy, smoke-gate, drift-check]
+    if: |
+      always() &&
+      needs.deploy.result == 'success' &&
+      (needs.smoke-gate.result != 'success' || needs.drift-check.result != 'success')
     environment: lab-deploy
     permissions:
       contents: read
@@ -216,108 +291,78 @@ jobs:
           key: ${{ runner.os }}-pip-deploy-${{ hashFiles('phase3-nornir/requirements*.txt') }}
 
       - name: Set up venv with system Python
-        # actions/setup-python has no Debian 12 build, and the runner
-        # already ships Python 3.11.2 from apt. Build a per-job venv
-        # against the system interpreter so we get the deploy.py deps
-        # without polluting the host (PEP 668 makes that an error
-        # anyway on Debian 12).
         run: |
           python3 -m venv .venv
           .venv/bin/pip install --upgrade pip
           .venv/bin/pip install -r phase3-nornir/requirements.txt
 
-      - name: deploy.py --confirm-only
+      - name: deploy.py --rollback-marker $COMMIT_MARKER
+        # restore_from_marker walks each device's commit history,
+        # finds the entry whose log == $COMMIT_MARKER, and rolls
+        # back to commit-index (marker_index + 1). Any commits the
+        # smoke suite issued mid-run are walked over rather than
+        # blocking the rollback (the whole reason for the marker
+        # approach -- plain `rollback 1` would only revert the most
+        # recent commit, which may be smoke's, not ours).
         working-directory: phase3-nornir
-        run: ../.venv/bin/python deploy.py --confirm-only
+        run: ../.venv/bin/python deploy.py --rollback-marker "$COMMIT_MARKER"
 
-  # ------------------------------------------------------------------
-  # 5. Rollback notice. Runs ONLY if smoke-gate failed. We do NOT
-  #    confirm. Junos rolls back at the 5-min deadline. This job
-  #    exists so the workflow surface clearly shows what happened.
-  # ------------------------------------------------------------------
-  rollback-notice:
-    name: rollback notice
-    runs-on: [self-hosted, lab-deploy]
-    timeout-minutes: 2
-    needs: smoke-gate
-    if: failure()
-    permissions:
-      contents: read
-    steps:
-      - name: Print rollback details
+      - name: Print rollback narrative
+        if: always()
         run: |
           cat <<MSG
           ===============================================================
-          SMOKE GATE FAILED. NOT calling deploy.py --confirm-only.
+          DEPLOY ROLLED BACK (outer gate).
 
-          Junos was set into commit-confirmed state with revert_in=300s
-          by the commit-no-confirm job. With no confirm to clear the
-          timer, every fabric device will automatically roll back to
-          its pre-deploy config when the timer fires (~5 minutes from
-          the commit step).
+          Marker: $COMMIT_MARKER
+          Trigger: smoke-gate=${{ needs.smoke-gate.result }} drift-check=${{ needs.drift-check.result }}
 
-          Operator action: none required; rollback is automatic. Verify
-          afterwards that SSH still works and the previous config is
-          back. Investigate the smoke failure log above.
+          Each device was rolled back to the configuration as it was
+          BEFORE the commit whose Junos log == $COMMIT_MARKER. Any
+          commits issued between the deploy and now (e.g. smoke
+          failover tests) were walked over.
+
+          Operator action: investigate the smoke / drift failure log
+          above. Verify the fabric is healthy with smoke-tests.sh
+          before re-dispatching a fresh deploy.
           ===============================================================
           MSG
 
   # ------------------------------------------------------------------
-  # 6. Phase 5 drift assertions. Runs only after a successful confirm.
-  #    Uses --mode assertions (the lightweight, NetBox-free path) so
-  #    we get post-deploy verification without re-fetching intent.
-  #    The systemd timer on netdevops-srv runs the same mode every
-  #    5 minutes; this job tightens the loop to right-after-deploy.
-  #
-  #    Hard-fail. The deploy is already committed (smoke passed,
-  #    confirm cleared the rollback timer); a drift here means the
-  #    runtime state does not match NetBox intent on something the
-  #    smoke suite did not directly verify (anycast MAC missing,
-  #    EVPN Type-2 ARP not advertised, peer VTEP not learned, etc.).
-  #    That is a deploy regression worth surfacing as a workflow
-  #    failure even though the device is now alive and confirmed.
+  # 6. Auto-rollback notice. Runs ONLY if the deploy job itself failed
+  #    -- meaning the inner liveness gate tripped. The Junos
+  #    `commit confirmed 120` timer is already counting down on every
+  #    device; this job exists so the workflow surface clearly shows
+  #    what happened and what to expect. The rollback itself is
+  #    automatic and happens on the device, not via this job.
   # ------------------------------------------------------------------
-  drift-check:
-    name: suzieq drift assertions
+  auto-rollback-notice:
+    name: auto-rollback notice (inner gate tripped)
     runs-on: [self-hosted, lab-deploy]
-    timeout-minutes: 8
-    needs: confirm
+    timeout-minutes: 2
+    needs: deploy
+    if: always() && needs.deploy.result == 'failure'
     permissions:
       contents: read
     steps:
-      - name: Run drift assertions with convergence retry
-        # SuzieQ polls services on ~60s intervals AND EVPN Type-3
-        # (IMET) advertisement + processing across peer leaves takes
-        # additional time after a config-replace deploy. A single
-        # fixed sleep would have to be conservatively long to cover
-        # the worst case; retry-with-backoff is more honest about
-        # what we are actually waiting for: the next clean drift
-        # report.
-        #
-        # Strategy: wait an initial 90 s (one full poll cycle plus
-        # margin), run drift, retry up to 4 more times with 45 s
-        # gaps. Total wall time ~= 90 + 4*(drift+45) ~= 4-5 min.
-        # If still failing after that, the drift is real, not
-        # transient, and the workflow correctly fails.
-        #
-        # --mode assertions reads parquet only (no NetBox), so no
-        # creds needed. gha-runner has docker-group membership for
-        # compose. The earlier --mode all attempt OOM'd on the 8GB
-        # VM (since increased to 12GB, but we still avoid --mode all
-        # because it pulls the full NetBox intent and takes minutes).
+      - name: Print auto-rollback narrative
         run: |
-          set -e
-          sleep 90
-          for attempt in 1 2 3 4 5; do
-            echo "=== drift attempt $attempt ==="
-            if (cd /opt/suzieq && docker compose run --rm drift --mode assertions); then
-              echo "drift clean on attempt $attempt"
-              exit 0
-            fi
-            if [ "$attempt" = "5" ]; then
-              echo "::error::drift still failing after 5 attempts (~5 min); not transient"
-              exit 1
-            fi
-            echo "drift not clean, waiting 45 s before retry"
-            sleep 45
-          done
+          cat <<MSG
+          ===============================================================
+          INNER LIVENESS GATE TRIPPED.
+
+          Marker: $COMMIT_MARKER
+          Result: deploy=${{ needs.deploy.result }}
+
+          The deploy job ran `commit confirmed 120` and then failed to
+          confirm (liveness probe could not reach every device). No
+          napalm_confirm_commit was issued. Junos will auto-rollback
+          on every device at the 120 s revert_in deadline (counting
+          from the original commit timestamp in the deploy job log).
+
+          Operator action: wait for the timer to fire (~2 min from
+          the commit step), verify SSH access is restored on every
+          device, then investigate the deploy log for the host(s)
+          that failed liveness.
+          ===============================================================
+          MSG

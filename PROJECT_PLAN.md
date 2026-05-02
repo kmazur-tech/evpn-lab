@@ -194,7 +194,7 @@ Phase 3 landed `phase3-nornir/tests/` (60 pure-function unit tests, ~2 sec, no e
 
 - **Full template rendering tests**: golden-file tests that render `main.j2` against a complete fixture `host.data` for each device role (spine, leaf) and assert byte-equality with checked-in expected output. Catches template regressions without needing NetBox or devices.
 - **`enrich_from_netbox()` integration tests**: use `vcrpy` (or `pytest-recording`) to record one real pynetbox session against a known-good NetBox snapshot, then replay it in CI. Catches NetBox schema/model drift and pynetbox query bugs without needing a running NetBox in CI.
-- **NAPALM task tests**: mock the NAPALM Junos driver (`napalm.base.test.double.MockDevice` or pure `unittest.mock`) so `napalm_deploy`, `napalm_get`, `liveness_check`, and the two-stage commit-confirmed flow can be exercised without devices. Pin the `revert_in=300` contract and the confirm-after-liveness ordering as tests.
+- **NAPALM task tests**: mock the NAPALM Junos driver (`napalm.base.test.double.MockDevice` or pure `unittest.mock`) so `napalm_deploy`, `napalm_get`, `liveness_check`, and the marker-based rollback (`restore_from_marker`) can be exercised without devices. Pin: `napalm_deploy` never sets `revert_in`; `commit_message` propagates as the Junos commit log; `restore_from_marker` walks history by log text and rolls back to (marker-index + 1).
 - **`pytest-nornir` runner**: wire Nornir runs as pytest fixtures so each device becomes a parametrized test case in CI output (per-device PASS/FAIL row in the GitHub Actions summary).
 - **Coverage reporting**: `pytest --cov=phase3-nornir --cov-report=html --cov-fail-under=80` as a CI gate. The Phase 3 unit tests are at ~roughly that level for the safety-critical surfaces; the integration tests bring it up across the whole module.
 
@@ -211,7 +211,7 @@ Phase 3 landed `phase3-nornir/tests/` (60 pure-function unit tests, ~2 sec, no e
   7. **Batfish Results -> PR Comment** - bot posts to PR what will change (new BGP sessions, modified ACLs, affected prefixes)
   8. **Deploy** - containerlab up + Nornir `--commit` (optional, `workflow_dispatch` on **self-hosted runner ON the lab server**; the smoke suite reaches into Docker network namespaces via `nsenter`, so it must run on the host where containerlab/Docker live, not a remote CI worker)
   9. **Smoke gate** - run `phase2-fabric/smoke-tests.sh` from the same self-hosted runner (~2 min). Hard fail = block merge.
-  10. **Commit-confirm second stage** - if smoke passes, the workflow ALSO calls `napalm_confirm_commit` to clear the rollback timer; if smoke fails or the stage doesn't run, Junos auto-rolls back at the `revert_in` deadline. This is the architectural fail-safe that complements the pre-deploy gates.
+  10. **Marker-based rollback on failure** - if smoke or drift fails, the workflow runs `deploy.py --rollback-marker $COMMIT_MARKER` which walks each device's commit history, finds the entry whose log == marker, and rolls back to the configuration immediately before that commit. Replaces the older commit-confirmed approach because the smoke suite's failover commits would clear `revert_in` mid-run.
   11. **Suzieq drift check** - NetBox-vs-state diff (Phase 5 Python harness). Soft fail = warn.
   12. **Teardown** - containerlab destroy (only if the workflow stood it up; do not destroy a long-running dev lab)
 - Stages 8-12 live in a separate `fabric-deploy.yml` workflow (spinning up the lab in CI is resource-intensive; PRs run lint/unit/render/diff/guard/Batfish only)
@@ -221,7 +221,7 @@ Phase 3 landed `phase3-nornir/tests/` (60 pure-function unit tests, ~2 sec, no e
 
 Phase 3 reads `JUNOS_LOGIN_PASSWORD`, `JUNOS_LOGIN_SALT`, `JUNOS_SSH_USER`, `JUNOS_SSH_PASSWORD`, `NETBOX_TOKEN` from a shell env file outside the repo. CI must inject the same env vars from GitHub Actions encrypted secrets (or, for production, a vault-backed entry script - see `phase3-nornir/README.md` "Secrets and credential material" section for the vault wrapper pattern). Never commit secrets to the repo, never pass them as workflow inputs.
 
-Result: every change to NetBox/templates/code is automatically validated through unit -> render -> diff -> guard -> Batfish -> (optional) deploy + smoke. PRs include an impact analysis report. Failed deploys self-correct via commit-confirmed auto-rollback. The Phase 3 test foundation extends into a full integration suite mocked against vcrpy/double drivers so CI runs in seconds without external dependencies.
+Result: every change to NetBox/templates/code is automatically validated through unit -> render -> diff -> guard -> Batfish -> (optional) deploy + smoke. PRs include an impact analysis report. Failed deploys self-correct via marker-based rollback (CI walks each device's commit history by the unique deploy marker and reverts). The Phase 3 test foundation extends into a full integration suite mocked against vcrpy/double drivers so CI runs in seconds without external dependencies.
 
 ---
 

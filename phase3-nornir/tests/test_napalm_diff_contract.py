@@ -76,36 +76,50 @@ def test_napalm_deploy_handles_empty_diff(tmp_path):
 
 
 def test_napalm_deploy_commit_label(tmp_path):
-    """Commit mode shows the commit-confirmed label, not DRY-RUN."""
+    """Commit mode shows COMMIT, not DRY-RUN, and includes the diff."""
     cfg = tmp_path / "dc1-spine1.conf"
     cfg.write_text("system { host-name dc1-spine1; }\n")
 
     task = _FakeTask("dc1-spine1", fake_diff="[edit] - foo;")
     result = napalm_deploy(task, build_dir=tmp_path, commit=True)
 
-    assert "COMMIT-CONFIRMED" in result.result
-    assert "300s rollback timer" in result.result
+    assert "COMMIT" in result.result
+    assert "DRY-RUN" not in result.result
     assert "[edit] - foo;" in result.result
 
 
-def test_napalm_deploy_passes_revert_in_only_when_committing(tmp_path):
-    """Dry-run must NOT pass revert_in (otherwise we'd start a rollback
-    timer on the device for a no-commit operation)."""
+def test_napalm_deploy_commit_label_includes_marker(tmp_path):
+    """When --commit-message is passed, the printed label surfaces the
+    marker so it's visible in the deploy log alongside the diff."""
     cfg = tmp_path / "dc1-spine1.conf"
     cfg.write_text("system { host-name dc1-spine1; }\n")
 
-    # Dry-run: no revert_in
+    task = _FakeTask("dc1-spine1", fake_diff="[edit] - foo;")
+    result = napalm_deploy(
+        task, build_dir=tmp_path, commit=True, commit_message="cicd-42-1"
+    )
+
+    assert "cicd-42-1" in result.result
+
+
+def test_napalm_deploy_does_not_set_revert_in(tmp_path):
+    """Plain-commit flow: napalm_configure must NOT receive revert_in
+    in either dry-run or commit mode. Any plain commit (smoke failover,
+    operator commit) would clear a commit-confirmed timer mid-run, so
+    the flag-and-revert design avoids the timer entirely."""
+    cfg = tmp_path / "dc1-spine1.conf"
+    cfg.write_text("system { host-name dc1-spine1; }\n")
+
     task = _FakeTask("dc1-spine1", fake_diff="some diff")
     napalm_deploy(task, build_dir=tmp_path, commit=False)
     _, kwargs = task.run_calls[0]
     assert "revert_in" not in kwargs
     assert kwargs["dry_run"] is True
 
-    # Commit: revert_in=300
     task2 = _FakeTask("dc1-spine1", fake_diff="some diff")
     napalm_deploy(task2, build_dir=tmp_path, commit=True)
     _, kwargs2 = task2.run_calls[0]
-    assert kwargs2.get("revert_in") == 300
+    assert "revert_in" not in kwargs2
     assert kwargs2["dry_run"] is False
 
 

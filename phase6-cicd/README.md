@@ -26,7 +26,7 @@ Stage | Scope | State
 ---|---|---
 6.1 | Test framework extensions (golden-file render, vcrpy enrich, mocked NAPALM, pytest-nornir) | Done. 154 phase-3 tests, 87% coverage, all offline.
 6.2 | PR-time `fabric-ci.yml`: lint + unit matrix + render-pipeline + batfish | Done. Runs on every PR and push to `main`.
-6.3 | Deploy `fabric-deploy.yml`: containerlab up, commit-confirmed, smoke gate, suzieq drift, teardown | Planned. Self-hosted runner, manual `workflow_dispatch`.
+6.3 | Deploy `fabric-deploy.yml`: render-and-guard, deploy with marker, smoke gate, suzieq drift, marker-based rollback on failure | Done. Self-hosted runner, manual `workflow_dispatch`.
 6.4 | Documentation, status badge, `phase6-cicd/CI.md` operations runbook | Partial - this README covers what's live; runbook follows when deploy lands.
 
 ## End-to-end pipeline
@@ -42,18 +42,22 @@ flowchart LR
 
     dispatch["operator triggers<br/>workflow_dispatch"]
     env["lab-deploy environment<br/>required reviewer"]
-    deploy["nornir-commit<br/>commit-confirmed (revert_in=300)"]
+    deploy["deploy.py --commit<br/>--commit-message $MARKER<br/>--liveness-gate"]
+    inner["inner gate:<br/>commit confirmed 120 +<br/>sleep 30 + liveness +<br/>napalm_confirm_commit"]
+    junosrb["Junos auto-rollback<br/>at 120 s deadline"]
     smoke["smoke-tests.sh<br/>76 checks via SSH to lab"]
-    confirm["napalm_confirm_commit"]
-    rollback["Junos auto-rollback<br/>at 5-min deadline"]
-    drift["suzieq drift check"]
+    drift["suzieq drift check<br/>(retry-with-backoff)"]
+    rollback["deploy.py --rollback-marker<br/>$MARKER"]
 
     pr --> lint --> unit --> render --> bf --> merge
 
     merge -.-> dispatch
-    dispatch --> env --> deploy --> smoke
-    smoke -- PASS --> confirm --> drift
+    dispatch --> env --> deploy --> inner
+    inner -- ALIVE --> smoke
+    inner -- DEAD --> junosrb
+    smoke -- PASS --> drift
     smoke -- FAIL --> rollback
+    drift -- FAIL --> rollback
 ```
 
 The PR-time loop on the left runs on GitHub-hosted runners, fully offline, on every push. The deploy loop on the right is manual `workflow_dispatch`, runs on a self-hosted runner gated by the `lab-deploy` GitHub Environment with required reviewer.
@@ -70,12 +74,13 @@ The PR-time loop on the left runs on GitHub-hosted runners, fully offline, on ev
 | `batfish` | Yes | -- |
 | Required reviewer on `lab-deploy` env | -- | Yes |
 | `render-and-guard` (Batfish offline analysis) | -- | Yes |
-| `commit-no-confirm` (commit-confirmed) | -- | Yes |
-| `smoke-gate` (76-check live) | -- | Yes - if fails, no confirm fires and Junos auto-rolls back |
-| `confirm` | -- | Yes |
-| `drift-check` (Phase 5 assertions, post-confirm) | -- | Yes - 90 s initial wait + up to 4 retries at 45 s intervals; fails only on persistent drift |
+| `deploy` (commit + marker + inner liveness gate) | -- | Yes - on liveness fail, Junos auto-rolls back at 120 s |
+| `smoke-gate` (76-check live) | -- | Yes - on fail, `rollback-on-failure` runs |
+| `drift-check` (Phase 5 assertions) | -- | Yes - 90 s initial wait + up to 4 retries at 45 s intervals; on persistent drift, `rollback-on-failure` runs |
+| `rollback-on-failure` | -- | runs only when deploy succeeded but smoke or drift then failed |
+| `auto-rollback-notice` | -- | runs only when the deploy job's inner gate tripped (Junos handles the actual rollback) |
 
-The PR side is biased toward fast feedback and offline checks. The deploy side is biased toward safety: every device-touching step has a fail-safe (commit-confirmed timer, manual approval gate, post-deploy drift verification).
+The PR side is biased toward fast feedback and offline checks. The deploy side is biased toward safety: every device-touching step has a fail-safe (inner liveness gate via commit-confirmed, marker-based outer rollback, manual approval gate, post-deploy drift verification).
 
 ## fabric-ci.yml - PR-time workflow
 
@@ -133,21 +138,45 @@ The CI render job warns when cassettes are older than 30 days. The warning doesn
 Job chain:
 
 ```
-render-and-guard -> commit-no-confirm -> smoke-gate -> { confirm | rollback-notice }
-                                                          \
-                                                           +-> drift-check
+render-and-guard -> deploy -> smoke-gate -> drift-check
+                      |  \           \             \
+                      |   \           +-------------+--> rollback-on-failure
+                      |    \                            (smoke or drift fail)
+                      |     +---------------------------> auto-rollback-notice
+                      |       (inner liveness gate failed, Junos auto-rolls back)
+                      +-- skipped on render failure
 ```
 
+A unique marker, `cicd-${{ github.run_id }}-${{ github.run_attempt }}`, is the Junos commit comment of the deploy commit. Two layered rollback gates protect different failure classes:
+
+#### Inner gate (inside `deploy` job, fast)
+
+`deploy.py --commit --commit-message "$COMMIT_MARKER" --liveness-gate` runs:
+
+1. NAPALM `load_replace_candidate` + **`commit confirmed 120`** with the marker as Junos commit comment. Junos starts a 120 s auto-rollback timer.
+2. Sleep 30 s for the new config to settle (interfaces reapplied, BGP sessions re-established).
+3. `liveness_check` on every host: `napalm_get` of `facts` (SSH + `show version`).
+4. If every host responds: `napalm_confirm_commit` clears the 120 s timer. Deploy job exits 0; smoke runs next.
+5. If any host failed liveness: confirm is NOT issued. Deploy job exits nonzero. Junos rolls back automatically at the 120 s deadline. The `auto-rollback-notice` job prints the narrative.
+
+This gate catches mgmt-plane breakage: SSH dead, mgmt VRF misconfig, broken interface config that would have locked the operator out. The 120 s timer is comfortable headroom over the 30 s wait + ~10 s liveness RPCs + confirm RPC.
+
+Why commit-confirmed works as the inner gate but didn't work as the outer gate: nothing else commits to the device in the inner-gate window. By the time smoke starts running its mid-run failover commits, the inner timer is already cleared.
+
+#### Outer gate (across jobs, slow)
+
+If the inner gate passed but `smoke-gate` or `drift-check` then fails, `rollback-on-failure` runs `deploy.py --rollback-marker "$COMMIT_MARKER"`. This walks each device's `show system commit`, finds the entry whose log matches the marker, and rolls back to the configuration as it was BEFORE that commit. Intermediate commits issued by the smoke suite are walked over, not blocked by. Plain `rollback 1` would only revert the most recent commit (which may be smoke's, not the deploy's), so the marker walk is the only reliable mechanism here.
+
+#### Job summaries
+
 - **render-and-guard**: live NetBox read via Phase 3 enrich, full template render, byte-diff vs `expected/`, on-disk sentinel guard, then **Phase 4 Batfish offline analysis** (7 checks + differential vs `main`) against the rendered build. No device contact. ~2 min.
-- **commit-no-confirm**: `deploy.py --commit --no-confirm`. Loads candidate config and starts a 5-minute commit-confirmed timer on every device. Job exits as soon as devices acknowledge -- it does NOT confirm. ~30 s.
-- **smoke-gate**: SSH to `gha-smoke@172.16.18.108`, run `sudo /usr/local/bin/lab-smoke`. The 76-check smoke suite runs against the live fabric. Pass -> the next job runs. Fail -> the rollback-notice job logs what's about to happen, and Junos auto-rolls back when the timer fires. ~2 min.
-- **confirm**: `deploy.py --confirm-only`. Runs only on smoke pass. Clears the rollback timer on every device. ~10 s.
-- **rollback-notice**: runs only on smoke fail (`if: failure()` on `smoke-gate`). Just prints what's happening. The rollback itself is automatic.
-- **drift-check**: Phase 5 drift harness in `--mode assertions` (the lightweight, NetBox-free path). Runs only after a successful confirm. **Hard-fail** -- the deploy is already committed and confirmed by smoke, so a drift here means the runtime state does not match NetBox intent on something the smoke suite did not directly check (anycast MAC, EVPN Type-2 ARP, peer VTEP learning). Worth surfacing as a workflow failure even though the device is alive. The job sleeps 90 s for an initial poll cycle, then runs drift with up to 4 more retries at 45 s intervals to absorb post-deploy EVPN Type-3 IMET propagation latency without false-failing. If drift is still firing after ~5 min total, it is no longer transient and the workflow fails correctly. ~5 min wall-time worst case.
+- **deploy**: `deploy.py --commit --commit-message "$COMMIT_MARKER" --liveness-gate`. Inner gate as described above. ~1.5 min worst case (30 s settle + liveness + confirm).
+- **smoke-gate**: SSH to `gha-smoke@172.16.18.108`, run `sudo /usr/local/bin/lab-smoke`. The 76-check smoke suite runs against the live fabric. Pass -> drift-check runs. Fail -> `rollback-on-failure` runs. ~2 min.
+- **drift-check**: Phase 5 drift harness in `--mode assertions` (the lightweight, NetBox-free path). Runs only after smoke passes. **Hard-fail** -- a drift here means the runtime state does not match NetBox intent on something the smoke suite did not directly check (anycast MAC, EVPN Type-2 ARP, peer VTEP learning). Job sleeps 90 s for an initial poll cycle, then runs drift with up to 4 more retries at 45 s intervals to absorb post-deploy EVPN Type-3 IMET propagation latency without false-failing. If drift is still firing after ~5 min total, it is no longer transient and the workflow fails -> rollback-on-failure runs. ~5 min wall-time worst case.
+- **rollback-on-failure**: outer-gate rollback as described above. Runs only when `deploy` succeeded but `smoke-gate` or `drift-check` then failed. ~30 s.
+- **auto-rollback-notice**: prints the narrative when the inner gate tripped. Runs only when `deploy.result == 'failure'`. The actual rollback is on the device, not in this job. ~5 s.
 
 The integration of all five prior phases is the architectural point of this workflow: Phase 1 (NetBox source of truth) drives Phase 3 (Nornir render) which is gated by Phase 4 (Batfish) before deploy and verified by Phase 2 smoke + Phase 5 drift after deploy. Each gate is independent, each catches a different class of failure.
-
-The architectural property: **smoke is the deploy gate, not the cheap liveness check**. `deploy.py --commit` (the manual operator path) uses liveness because a manual deploy has a human running smoke afterwards. CI deploy splits the commit + confirm so the full smoke suite can run between them. The two new flags `--no-confirm` and `--confirm-only` exist exactly for this split.
 
 ### Self-hosted runner setup
 
@@ -277,17 +306,40 @@ This lab is a showcase, not a production deployment. The CI is designed to be ho
 - [ ] **Replace the runner's docker-group membership with a scoped alternative.** The lab grants `gha-runner` membership in the `docker` group so the drift-check job can call `docker compose`. That is functionally root-on-host. Production options: rootless Docker, a sidecar with a unix-domain socket proxy that only allows the specific compose calls drift needs, or moving drift to a non-Docker invocation path so the runner stops needing the socket.
 - [ ] **Branch protection.** Required status checks on `main` (`lint`, all `unit (...)`, `render-pipeline`, `batfish`), no force-push, CODEOWNERS for `templates/`, `phase3-nornir/expected/`, `.github/workflows/`. Required N approving reviews with explicit dismiss-review policy. CODEOWNER review required on workflow / deploy paths.
 - [ ] **Secret rotation + short-lived credentials.** Lab uses long-lived env-file secrets; production must rotate `JUNOS_SSH_PASSWORD` and `NETBOX_TOKEN` on a schedule. Prefer OIDC where the provider supports it to eliminate static secrets entirely.
-- [ ] **Deploy failure alerting.** Lab is content with a `github-script` commit comment on `failure()`. Production needs Slack/email/PagerDuty with an explicit escalation path - a failed deploy means a Junos commit-confirmed window is counting down to auto-rollback, and the operator must know immediately.
+- [ ] **Deploy failure alerting.** Lab is content with a `github-script` commit comment on `failure()`. Production needs Slack/email/PagerDuty with an explicit escalation path - a failed deploy triggers `rollback-on-failure` automatically, but the operator must know about both the failure and the rollback's success/failure immediately.
 - [ ] **Artifact retention review.** Rendered configs and Batfish output may contain operational data. 14-day retention is fine for the lab; review for compliance in a real environment.
 - [ ] **Supply-chain controls beyond SHA pinning.** Dependency review, secret scanning, SAST. Worth enabling on the public repo regardless.
 
 ## Critical post-implementation test
 
-Once `fabric-deploy.yml` lands and is wired up to the lab, the test that validates the entire safety architecture is **intentionally failing the smoke gate** (e.g. break ARP on one host, or stop a leaf container before smoke runs) and confirming that:
+Three variants validate the layered safety architecture. Each fails one gate at a time and confirms the corresponding rollback path fires.
 
-1. The smoke job fails.
-2. `napalm_confirm_commit` is **not** called.
-3. The Junos `commit confirmed 5` timer fires after 5 minutes and rolls back to the pre-deploy config.
-4. SSH access remains intact throughout.
+### Variant 1: smoke-gate failure (outer gate via marker walk)
 
-Without that end-to-end verification, the rest of the pipeline is theatre. The whole reason this is built around commit-confirmed is to prove the auto-rollback works on the real device, not just in a unit test.
+Intentionally break smoke (e.g. `docker pause clab-dc1-dc1-host3` before dispatch). Expect:
+
+1. `deploy` succeeds; the marker shows up in `show system commit` on all four devices; the inner gate clears the 120 s timer.
+2. `smoke-gate` fails.
+3. `drift-check` is skipped (`needs: smoke-gate`).
+4. `rollback-on-failure` runs and `deploy.py --rollback-marker $COMMIT_MARKER` succeeds on every device.
+5. After rollback, every device's running config matches what it was BEFORE the deploy.
+6. SSH access remains intact throughout.
+
+### Variant 2: drift-check failure (outer gate via marker walk)
+
+Pass smoke but fail drift (e.g. take down EVPN Type-3 advertisement long enough that the drift retries exhaust). Expect `rollback-on-failure` still triggers via the `drift-check.result != 'success'` branch of the if-condition.
+
+### Variant 3: liveness failure (inner gate via Junos auto-rollback)
+
+Render a config that breaks the management plane on one device (e.g. block SSH on dc1-spine1 via a deliberate firewall stanza pushed for this test only). Expect:
+
+1. `deploy` runs `commit confirmed 120` with the marker successfully on all four devices.
+2. After the 30 s settle, `liveness_check` fails on the broken host.
+3. `napalm_confirm_commit` is NOT issued.
+4. `deploy` job exits nonzero.
+5. `smoke-gate`, `drift-check`, `rollback-on-failure` are all skipped.
+6. `auto-rollback-notice` runs and prints the narrative.
+7. Within ~120 s of the original commit, Junos auto-rolls back on every device.
+8. After rollback, SSH access is restored to the broken host and every device's running config matches what it was BEFORE the deploy.
+
+Without these end-to-end verifications, the rest of the pipeline is theatre. The whole point of the layered design is to prove both rollback paths work on real devices, not just in unit tests.

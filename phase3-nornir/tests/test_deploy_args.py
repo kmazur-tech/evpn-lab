@@ -1,17 +1,17 @@
 """Argument validation tests for deploy.py.
 
-Two new flags from Phase 6 Stage 3 (--no-confirm and --confirm-only)
-introduce mutually-exclusive combinations and dependency rules. These
-tests pin the validation so a future flag-combo refactor can't quietly
-break the safety contract:
+Phase 6 Stage 3 flag-and-revert flow introduces:
 
-- `--commit --no-confirm` is the CI deploy step; smoke is the gate, not
-  liveness. The device is left in commit-confirmed state with the
-  rollback timer running.
-- `--confirm-only` is the CI's post-smoke step; it MUST NOT re-render
-  or re-touch the device beyond clearing the timer.
+- `--commit-message <marker>` -- only valid with --commit; sets the
+  Junos commit comment so a later --rollback-marker can find this
+  commit in the device commit history.
+- `--rollback-marker <marker>` -- mutually exclusive with the
+  render/deploy modes; walks each device's commit history and
+  rolls back to the state before the commit whose log matches
+  the marker.
 
-Tests exercise argparse only -- no Nornir, no NetBox, no devices.
+These tests pin argparse so a future flag-combo change can't quietly
+break the safety contract. No Nornir, NetBox, or device contact.
 """
 
 import subprocess
@@ -32,8 +32,6 @@ def _run(args, env=None):
     """
     proc_env = {
         "PATH": "/usr/bin:/bin",
-        # Argparse failures hit before these are read, but set them
-        # anyway so accidental code paths don't trip on KeyError.
         "NETBOX_URL": "http://placeholder",
         "NETBOX_TOKEN": "placeholder",
         "JUNOS_LOGIN_PASSWORD": "x",
@@ -48,52 +46,73 @@ def _run(args, env=None):
 
 
 def test_help_lists_new_flags():
-    """--no-confirm and --confirm-only must show in --help."""
+    """--commit-message, --liveness-gate and --rollback-marker
+    must show in --help."""
     r = _run(["--help"])
     assert r.returncode == 0
-    assert "--no-confirm" in r.stdout
-    assert "--confirm-only" in r.stdout
+    assert "--commit-message" in r.stdout
+    assert "--liveness-gate" in r.stdout
+    assert "--rollback-marker" in r.stdout
 
 
-def test_no_confirm_without_commit_rejected():
-    """--no-confirm only makes sense with --commit; argparse must reject."""
-    r = _run(["--no-confirm"])
+def test_help_does_not_list_removed_flags():
+    """--no-confirm and --confirm-only were removed when commit-confirmed
+    was replaced by flag-and-revert. They must NOT appear in --help."""
+    r = _run(["--help"])
+    assert r.returncode == 0
+    assert "--no-confirm" not in r.stdout
+    assert "--confirm-only" not in r.stdout
+
+
+def test_commit_message_without_commit_rejected():
+    """--commit-message only makes sense alongside --commit."""
+    r = _run(["--commit-message", "cicd-1-1"])
     assert r.returncode != 0
-    assert "--no-confirm only makes sense with --commit" in r.stderr
+    assert "--commit-message only makes sense with --commit" in r.stderr
 
 
-def test_no_confirm_with_dry_run_rejected():
-    """--dry-run does not leave a pending commit; --no-confirm is meaningless."""
-    r = _run(["--dry-run", "--no-confirm"])
+def test_commit_message_with_dry_run_rejected():
+    """--dry-run does no commit, so --commit-message is meaningless there."""
+    r = _run(["--dry-run", "--commit-message", "cicd-1-1"])
     assert r.returncode != 0
-    assert "--no-confirm only makes sense with --commit" in r.stderr
+    assert "--commit-message only makes sense with --commit" in r.stderr
+
+
+def test_liveness_gate_without_commit_rejected():
+    """--liveness-gate orchestrates a `commit confirmed` flow; without
+    --commit there is nothing to confirm."""
+    r = _run(["--liveness-gate"])
+    assert r.returncode != 0
+    assert "--liveness-gate only makes sense with --commit" in r.stderr
+
+
+def test_liveness_gate_with_dry_run_rejected():
+    """--dry-run never commits; --liveness-gate must reject."""
+    r = _run(["--dry-run", "--liveness-gate"])
+    assert r.returncode != 0
+    assert "--liveness-gate only makes sense with --commit" in r.stderr
 
 
 @pytest.mark.parametrize("conflicting", ["--check", "--full", "--dry-run", "--commit"])
-def test_confirm_only_rejects_render_and_deploy_flags(conflicting):
-    """--confirm-only skips render/deploy entirely; combining it with
-    any of those flags is a contradiction the CLI must surface."""
-    r = _run(["--confirm-only", conflicting])
+def test_rollback_marker_rejects_render_and_deploy_flags(conflicting):
+    """--rollback-marker walks commit history; combining it with any
+    render/deploy mode is a contradiction the CLI must surface."""
+    r = _run(["--rollback-marker", "cicd-1-1", conflicting])
     assert r.returncode != 0
-    assert "--confirm-only cannot be combined with" in r.stderr
+    assert "--rollback-marker cannot be combined with" in r.stderr
 
 
-def test_confirm_only_with_target_accepted():
-    """--confirm-only --target dc1-leaf1 is valid (phased rollback recovery).
+def test_rollback_marker_with_target_accepted():
+    """--rollback-marker --target dc1-leaf1 is valid (single-host rollback).
 
     We can't actually invoke Nornir without real env + lab, so we just
-    verify argparse does not reject the combination. Code paths beyond
-    argparse will fail on missing env, which is fine -- argparse-level
-    rejection is what we're testing here.
+    verify argparse does not reject the combination.
     """
-    r = _run(["--confirm-only", "--target", "dc1-leaf1"])
-    # argparse accepts; later code aborts with our env check or Nornir setup.
-    # Either way, the failure must NOT mention the argparse rejection.
+    r = _run(["--rollback-marker", "cicd-1-1", "--target", "dc1-leaf1"])
     assert "cannot be combined with" not in r.stderr
 
 
 def test_default_when_no_args_is_check():
-    """No flags = --check. Verified by the help text the existing path
-    prints, but here we just confirm the argparse layer does not error."""
-    r = _run(["--help"])  # safest no-side-effect check
+    """No flags = --check. Verified indirectly via --help."""
+    r = _run(["--help"])
     assert r.returncode == 0

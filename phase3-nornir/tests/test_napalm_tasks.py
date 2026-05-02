@@ -1,17 +1,39 @@
 """Mocked NAPALM task tests covering liveness_check, pre_commit_backup,
-and the two-stage commit-confirm flow invariants.
+and napalm_deploy contracts under the flag-and-revert flow.
 
-napalm_deploy is already exercised in test_napalm_diff_contract.py
-(diff attribute, revert_in, replace, config-from-disk).  This file
-covers the remaining tasks and the flow-level contracts that deploy.py
-relies on.
+napalm_deploy diff handling lives in test_napalm_diff_contract.py;
+this file covers the surrounding tasks and the commit-comment plumbing
+deploy.py relies on for the marker-based rollback path.
 """
 
 
 from nornir.core.task import Result
 
-from tasks.deploy import liveness_check, napalm_deploy, REVERT_IN_SECONDS
+from tasks.deploy import (
+    LIVENESS_REVERT_IN_SECONDS,
+    LIVENESS_WAIT_SECONDS,
+    liveness_check,
+    napalm_deploy,
+)
 from tasks.backup import pre_commit_backup
+
+
+# --- timing constants ---
+
+def test_liveness_revert_in_is_120_and_multiple_of_60():
+    """NAPALM Junos requires revert_in to be a multiple of 60.
+    LIVENESS_REVERT_IN_SECONDS must satisfy that contract or
+    `commit confirmed` will reject the value at the device."""
+    assert LIVENESS_REVERT_IN_SECONDS == 120
+    assert LIVENESS_REVERT_IN_SECONDS % 60 == 0
+
+
+def test_liveness_wait_leaves_headroom():
+    """The wait MUST be strictly less than the revert deadline. We need
+    time after the wait to run liveness RPCs and issue the confirm.
+    30 s wait + 120 s deadline gives ~90 s of headroom."""
+    assert LIVENESS_WAIT_SECONDS == 30
+    assert LIVENESS_WAIT_SECONDS < LIVENESS_REVERT_IN_SECONDS
 
 
 # --- helpers ---
@@ -36,14 +58,6 @@ class _FakeTask:
         if self._responses:
             return self._responses.pop(0)
         return _FakeMultiResult([Result(host=self.host)])
-
-
-# --- REVERT_IN constant ---
-
-def test_revert_in_is_300():
-    """The commit-confirmed timer must be exactly 300s (5 min).
-    deploy.py, CI smoke, and the Phase 6 plan all depend on this."""
-    assert REVERT_IN_SECONDS == 300
 
 
 # --- liveness_check ---
@@ -119,24 +133,81 @@ def test_pre_commit_backup_calls_napalm_get_config(tmp_path):
     assert kwargs["getters"] == ["config"]
 
 
-# --- two-stage flow invariants ---
+# --- napalm_deploy plumbing ---
 
-def test_dry_run_does_not_set_revert_in(tmp_path):
-    """Dry-run must never start a rollback timer."""
+def test_dry_run_does_not_set_revert_in_or_commit_message(tmp_path):
+    """Dry-run must never start a rollback timer or write a commit comment."""
     cfg = tmp_path / "dc1-spine1.conf"
     cfg.write_text("system { host-name dc1-spine1; }\n")
 
     diff_result = Result(host=None, diff="some changes")
     task = _FakeTask("dc1-spine1", responses=[_FakeMultiResult([diff_result])])
-    napalm_deploy(task, build_dir=tmp_path, commit=False)
+    napalm_deploy(task, build_dir=tmp_path, commit=False, revert_in=120)
 
     _, kwargs = task.run_calls[0]
+    # Even when revert_in is passed, dry-run must NOT start a timer on
+    # the device -- the dry-run path doesn't issue a real commit.
     assert "revert_in" not in kwargs
+    assert "commit_message" not in kwargs
     assert kwargs["dry_run"] is True
 
 
-def test_commit_sets_revert_in_300(tmp_path):
-    """Commit mode must start the 300s rollback timer."""
+def test_commit_without_revert_in_omits_it(tmp_path):
+    """Plain --commit (no inner gate) must NOT pass revert_in. That path
+    is for ad-hoc operator deploys where the human handles rollback if
+    needed; the inner gate is opt-in via --liveness-gate."""
+    cfg = tmp_path / "dc1-spine1.conf"
+    cfg.write_text("system { host-name dc1-spine1; }\n")
+
+    diff_result = Result(host=None, diff="some changes")
+    task = _FakeTask("dc1-spine1", responses=[_FakeMultiResult([diff_result])])
+    napalm_deploy(task, build_dir=tmp_path, commit=True, commit_message="cicd-42-1")
+
+    _, kwargs = task.run_calls[0]
+    assert "revert_in" not in kwargs
+    assert kwargs["dry_run"] is False
+
+
+def test_commit_with_revert_in_passes_it_through(tmp_path):
+    """When --liveness-gate is on, deploy.py passes revert_in=120 and
+    napalm_deploy must surface it to napalm_configure as the
+    `commit confirmed` timer."""
+    cfg = tmp_path / "dc1-spine1.conf"
+    cfg.write_text("system { host-name dc1-spine1; }\n")
+
+    diff_result = Result(host=None, diff="some changes")
+    task = _FakeTask("dc1-spine1", responses=[_FakeMultiResult([diff_result])])
+    napalm_deploy(
+        task,
+        build_dir=tmp_path,
+        commit=True,
+        commit_message="cicd-42-1",
+        revert_in=120,
+    )
+
+    _, kwargs = task.run_calls[0]
+    assert kwargs["revert_in"] == 120
+    assert kwargs["commit_message"] == "cicd-42-1"
+
+
+def test_commit_with_marker_sets_commit_message(tmp_path):
+    """The marker travels through napalm_configure as commit_message and
+    becomes the Junos commit log that --rollback-marker later locates."""
+    cfg = tmp_path / "dc1-spine1.conf"
+    cfg.write_text("system { host-name dc1-spine1; }\n")
+
+    diff_result = Result(host=None, diff="some changes")
+    task = _FakeTask("dc1-spine1", responses=[_FakeMultiResult([diff_result])])
+    napalm_deploy(task, build_dir=tmp_path, commit=True, commit_message="cicd-42-1")
+
+    _, kwargs = task.run_calls[0]
+    assert kwargs["commit_message"] == "cicd-42-1"
+
+
+def test_commit_without_marker_omits_commit_message(tmp_path):
+    """Local --commit (no --commit-message) does a plain commit with no
+    log. Useful for ad-hoc operator deploys where the rollback path
+    isn't via CI."""
     cfg = tmp_path / "dc1-spine1.conf"
     cfg.write_text("system { host-name dc1-spine1; }\n")
 
@@ -145,8 +216,7 @@ def test_commit_sets_revert_in_300(tmp_path):
     napalm_deploy(task, build_dir=tmp_path, commit=True)
 
     _, kwargs = task.run_calls[0]
-    assert kwargs["revert_in"] == 300
-    assert kwargs["dry_run"] is False
+    assert "commit_message" not in kwargs
 
 
 def test_commit_always_uses_replace(tmp_path):

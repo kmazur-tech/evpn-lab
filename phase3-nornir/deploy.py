@@ -1,19 +1,28 @@
 #!/usr/bin/env python3
 """Phase 3 entry point: NetBox -> Nornir -> render -> guard -> deploy.
 
-Modes (mutually compatible flags):
-  --check     Per-stanza render + byte-diff vs phase3-nornir/expected/.
-              No device contact. Fast feedback loop during template work.
-  --full      Render full main.j2 + byte-diff the whole config vs
-              phase3-nornir/expected/<host>.conf.
-  --dry-run   Implies --full + on-disk deploy guard + NAPALM
-              compare_config against the live device. No commit.
-  --commit    Implies --full + on-disk guard + NAPALM
-              load_replace_candidate + `commit confirmed 5min` (Stage 1),
-              then a liveness check + napalm_confirm_commit to clear
-              the rollback timer (Stage 2). If liveness fails on any
-              host, that host's confirm is skipped and Junos
-              auto-rolls back at the deadline.
+Modes:
+  --check               Per-stanza render + byte-diff vs phase3-nornir/expected/.
+                        No device contact.
+  --full                Render full main.j2 + byte-diff the whole config vs
+                        phase3-nornir/expected/<host>.conf.
+  --dry-run             Implies --full + on-disk deploy guard + NAPALM
+                        compare_config against the live device. No commit.
+  --commit              Implies --full + on-disk guard + NAPALM
+                        load_replace_candidate + plain commit. Pair with
+                        --commit-message <marker> in CI so a later
+                        --rollback-marker run can find this commit.
+  --liveness-gate       Inner safety net for --commit: do `commit confirmed N`
+                        with revert_in=LIVENESS_REVERT_IN_SECONDS, sleep
+                        LIVENESS_WAIT_SECONDS, run liveness on every host,
+                        and only then call napalm_confirm_commit. If any
+                        host fails liveness, exit nonzero and let Junos
+                        auto-rollback at the deadline.
+  --rollback-marker M   Walks each device's commit history for an entry
+                        whose log == M, then rolls back to the state
+                        BEFORE that commit and commits the rollback.
+                        Used by CI when smoke or drift fails after a
+                        flagged --commit.
 
 Per-stanza checks (--check) are driven by the STANZAS table below;
 adding a template = one row. The regression baselines live in
@@ -26,6 +35,7 @@ import difflib
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 import yaml
@@ -44,7 +54,13 @@ TransformFunctionRegister.register("fabric_inventory_transform", fabric_inventor
 from nornir_napalm.plugins.tasks import napalm_confirm_commit
 
 from tasks.enrich import enrich_from_netbox, derive_login_hash
-from tasks.deploy import napalm_deploy, liveness_check, REVERT_IN_SECONDS
+from tasks.deploy import (
+    LIVENESS_REVERT_IN_SECONDS,
+    LIVENESS_WAIT_SECONDS,
+    liveness_check,
+    napalm_deploy,
+    restore_from_marker,
+)
 from tasks.backup import pre_commit_backup
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -305,21 +321,28 @@ def main():
     parser.add_argument("--dry-run", action="store_true",
                         help="Render full + NAPALM compare_config against the live device. No commit.")
     parser.add_argument("--commit", action="store_true",
-                        help="Render full + NAPALM load_replace_candidate + commit. Requires --full to pass first.")
-    parser.add_argument("--no-confirm", action="store_true",
-                        help="With --commit: skip the Stage 2 liveness check "
-                             "and confirm. The device is left in commit-confirmed "
-                             "state with the rollback timer running (revert_in=300s). "
-                             "The caller MUST invoke --confirm-only within that "
-                             "window or Junos will auto-rollback. Used by CI "
-                             "when the smoke suite is the deploy gate, not the "
-                             "cheap liveness check.")
-    parser.add_argument("--confirm-only", action="store_true",
-                        help="Skip render / diff / guard / deploy. Only call "
-                             "napalm_confirm_commit on each host to clear the "
-                             "rollback timer started by a prior `--commit "
-                             "--no-confirm`. Used by CI after the smoke suite "
-                             "passes.")
+                        help="Render full + NAPALM load_replace_candidate + commit. "
+                             "Requires --full to pass first.")
+    parser.add_argument("--commit-message",
+                        help="With --commit: set the Junos commit comment (log) "
+                             "to this string. Used by CI as a unique marker so a "
+                             "later --rollback-marker run can locate this commit "
+                             "in `show system commit` and revert to its predecessor.")
+    parser.add_argument("--liveness-gate", action="store_true",
+                        help="With --commit: enable the inner safety net. The "
+                             f"commit becomes `commit confirmed "
+                             f"{LIVENESS_REVERT_IN_SECONDS}`; deploy.py then "
+                             f"waits {LIVENESS_WAIT_SECONDS}s, runs liveness on "
+                             "every host, and calls napalm_confirm_commit. If any "
+                             "host is unreachable, the confirm is skipped and "
+                             "Junos auto-rolls back at the deadline. CI uses this "
+                             "to catch mgmt-plane breakage before smoke runs.")
+    parser.add_argument("--rollback-marker",
+                        help="Skip render / guard / deploy. For each host, walk "
+                             "`show system commit`, find the entry whose log "
+                             "matches this string, and roll back to the state "
+                             "BEFORE that commit. Used by CI when smoke or drift "
+                             "fails after a flagged --commit.")
     parser.add_argument("--target",
                         help="Restrict deploy to a single host (phased rollout).")
     parser.add_argument("--validate", action="store_true",
@@ -327,12 +350,15 @@ def main():
                              "after render. Requires the Batfish container running on "
                              "netdevops-srv (see phase4-batfish/README.md). Off by default.")
     args = parser.parse_args()
-    if args.confirm_only and (args.check or args.full or args.dry_run or args.commit):
-        parser.error("--confirm-only cannot be combined with --check, --full, "
-                     "--dry-run, or --commit (it skips render and deploy entirely)")
-    if args.no_confirm and not args.commit:
-        parser.error("--no-confirm only makes sense with --commit")
-    if not (args.check or args.full or args.dry_run or args.commit or args.confirm_only):
+    if args.rollback_marker and (args.check or args.full or args.dry_run or args.commit):
+        parser.error("--rollback-marker cannot be combined with --check, --full, "
+                     "--dry-run, or --commit (it walks commit history and reverts; "
+                     "it does not render or deploy)")
+    if args.commit_message and not args.commit:
+        parser.error("--commit-message only makes sense with --commit")
+    if args.liveness_gate and not args.commit:
+        parser.error("--liveness-gate only makes sense with --commit")
+    if not (args.check or args.full or args.dry_run or args.commit or args.rollback_marker):
         args.check = True
 
     # build/ must exist before any InitNornir call -- nornir.yml sets
@@ -341,13 +367,13 @@ def main():
     # before the rest of the script runs. Create unconditionally.
     BUILD_DIR.mkdir(exist_ok=True)
 
-    # ----- --confirm-only short circuit -----
-    # Used by CI: after a prior `--commit --no-confirm` started a 5-minute
-    # rollback timer on every device and the smoke suite proved the deploy
-    # is healthy, this run clears the timer. We do NOT re-render or
-    # re-validate -- those already ran. We do NOT run the cheap liveness
-    # check either; smoke just exercised every device end-to-end.
-    if args.confirm_only:
+    # ----- --rollback-marker short circuit -----
+    # Used by CI when smoke or drift fails after a flagged --commit. We
+    # do NOT render or guard - those ran before the original commit.
+    # restore_from_marker walks `show system commit` per device, locates
+    # the entry whose log matches the marker, and rolls back to the
+    # state BEFORE that commit.
+    if args.rollback_marker:
         if not (os.environ.get("JUNOS_SSH_USER") and os.environ.get("JUNOS_SSH_PASSWORD")):
             print("\nABORT: JUNOS_SSH_USER and JUNOS_SSH_PASSWORD must be set in env.")
             sys.exit(2)
@@ -369,24 +395,24 @@ def main():
         )
         deploy_runner = nr.filter(name=args.target) if args.target else nr
         if args.target:
-            print(f"TARGET: {args.target} (phased rollout)")
-        print("=== Confirm commit (clear rollback timer) ===")
-        confirm_result = deploy_runner.run(task=napalm_confirm_commit)
-        confirm_failed = False
-        for host in sorted(confirm_result):
-            head = confirm_result[host][0]
+            print(f"TARGET: {args.target} (phased rollback)")
+        print(f"=== Rollback to state before marker {args.rollback_marker!r} ===")
+        rb_result = deploy_runner.run(task=restore_from_marker, marker=args.rollback_marker)
+        rb_failed = False
+        for host in sorted(rb_result):
+            head = rb_result[host][0]
             if head.failed:
-                confirm_failed = True
-                print(f"  {host} CONFIRM FAILED: {head.exception}")
+                rb_failed = True
+                print(f"  {host} ROLLBACK FAILED: {head.exception}")
             else:
-                print(f"  {host} confirmed")
-        sys.exit(1 if confirm_failed else 0)
+                print(f"  {host} {head.result}")
+        sys.exit(1 if rb_failed else 0)
 
     # Clear any stale renders from previous runs. Stale files in
     # build/ can carry obsolete content (e.g. an old PLACEHOLDER hash
     # from a buggy template version) and mislead the deploy guard
     # if it scans the wrong file. The directory itself is created
-    # before the --confirm-only short circuit above; just wipe files.
+    # before the --rollback-marker short circuit above; just wipe files.
     for old in BUILD_DIR.iterdir():
         if old.is_file():
             old.unlink()
@@ -539,10 +565,17 @@ def main():
 
         print()
         print(f"=== NAPALM {'COMMIT' if args.commit else 'DRY-RUN'} ===")
+        if args.commit and args.commit_message:
+            print(f"  commit marker: {args.commit_message!r}")
+        if args.commit and args.liveness_gate:
+            print(f"  inner gate: commit confirmed {LIVENESS_REVERT_IN_SECONDS}, "
+                  f"liveness wait {LIVENESS_WAIT_SECONDS}s")
         deploy_result = deploy_runner.run(
             task=napalm_deploy,
             build_dir=BUILD_DIR,
             commit=args.commit,
+            commit_message=args.commit_message,
+            revert_in=LIVENESS_REVERT_IN_SECONDS if (args.commit and args.liveness_gate) else None,
         )
         for host in sorted(deploy_result):
             multi = deploy_result[host]
@@ -553,38 +586,33 @@ def main():
             else:
                 print(f"{host} {head.result}")
 
-        # Stage 2 of commit-confirmed: liveness check + confirm.
-        # Skipped when --dry-run (no pending commit) or when --no-confirm
-        # (CI hands off to the smoke suite as the deploy gate; the smoke
-        # job calls --confirm-only after smoke passes, or lets Junos
-        # auto-rollback if smoke fails).
-        if args.commit and args.no_confirm and not failed:
+        # Inner safety net: wait for the commit to settle, prove SSH still
+        # works on every host, then confirm. If the new config broke the
+        # mgmt plane (placeholder hash, mgmt VRF misconfig, etc.) liveness
+        # fails on that host, we skip confirm, and Junos auto-rolls back
+        # at the revert_in deadline.
+        if args.commit and args.liveness_gate and not failed:
             print()
-            print("=== --no-confirm: skipping Stage 2 (liveness + confirm) ===")
-            print(f"Devices in commit-confirmed state. Auto-rollback in {REVERT_IN_SECONDS}s.")
-            print("Caller must invoke `deploy.py --confirm-only` within that window")
-            print("to clear the rollback timer (CI does this after the smoke gate).")
-        if args.commit and not args.no_confirm and not failed:
-            print()
-            print("=== Stage 2: liveness check ===")
+            print(f"=== Inner gate: sleep {LIVENESS_WAIT_SECONDS}s, then liveness ===")
+            time.sleep(LIVENESS_WAIT_SECONDS)
             live_result = deploy_runner.run(task=liveness_check)
             live_failed = []
             for host in sorted(live_result):
                 head = live_result[host][0]
                 if head.failed:
-                    print(f"  {host} FAILED: {head.exception}")
+                    print(f"  {host} LIVENESS FAILED: {head.exception}")
                     live_failed.append(host)
                 else:
                     print(f"  {host} {head.result}")
             if live_failed:
                 print()
                 print(f"LIVENESS FAILED on: {', '.join(live_failed)}")
-                print("NOT confirming commit - Junos will auto-rollback at "
-                      "the revert_in deadline (default 300s).")
+                print("NOT confirming commit. Junos will auto-rollback at the "
+                      f"revert_in={LIVENESS_REVERT_IN_SECONDS}s deadline.")
                 failed = True
             else:
                 print()
-                print("=== Stage 2: confirm commit (clear rollback timer) ===")
+                print("=== Inner gate: confirm commit (clear rollback timer) ===")
                 confirm_result = deploy_runner.run(task=napalm_confirm_commit)
                 for host in sorted(confirm_result):
                     head = confirm_result[host][0]
@@ -593,6 +621,11 @@ def main():
                         print(f"  {host} CONFIRM FAILED: {head.exception}")
                     else:
                         print(f"  {host} confirmed")
+
+        if args.commit and args.commit_message and not failed:
+            print()
+            print(f"Marker {args.commit_message!r} now in `show system commit` on each "
+                  f"device. To revert: deploy.py --rollback-marker '{args.commit_message}'")
 
     sys.exit(1 if failed else 0)
 
