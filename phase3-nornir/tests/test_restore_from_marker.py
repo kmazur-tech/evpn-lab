@@ -10,7 +10,6 @@ to the imports inside restore_from_marker so the production code stays
 import-free until called.
 """
 
-import os
 import sys
 import types
 from xml.etree import ElementTree as ET
