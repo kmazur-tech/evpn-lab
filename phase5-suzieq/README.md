@@ -340,7 +340,7 @@ Exit codes - the contract Phase 6 CI relies on:
 | Code | Meaning |
 |---|---|
 | 0 | No error-severity drift (warnings allowed) |
-| 1 | One or more error-severity drifts found (Phase 6 stage 11 soft-fails per `PROJECT_PLAN.md:200`) |
+| 1 | One or more error-severity drifts found. Phase 6 `fabric-deploy.yml` drift-check hard-fails on this; persistent exit 1 past the retry budget triggers `rollback-on-failure`. (Earlier plan was soft-fail / warn; promoted to hard-fail when the marker-based outer rollback landed in Phase 6.3.) |
 | 2 | Tooling error (NetBox unreachable, parquet path missing). Phase 6 should distinguish this from "drift found" - the second is a real failure of the harness itself. |
 
 ### Verification (run on netdevops-srv 2026-04-07)

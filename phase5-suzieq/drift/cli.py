@@ -9,11 +9,16 @@ state.collect() -> diff.compare() -> output. Two output formats:
             netdevops-srv.
 
 Exit codes (the contract Phase 6 CI relies on):
-  0  no drift (or for --mode timeseries: harness ran cleanly,
-     timeseries results are observations not pass/fail and
-     never produce a non-zero exit on their own)
-  1  drift / assertion failure found (Phase 6 treats this as
-     soft-fail / warn, per PROJECT_PLAN.md:200 "Soft fail = warn")
+  0  no error-severity drift (warning-severity drifts allowed; or
+     for --mode timeseries: harness ran cleanly, timeseries results
+     are observations not pass/fail and never produce a non-zero
+     exit on their own)
+  1  one or more error-severity drifts / assertion failures found.
+     Phase 6 deploy workflow hard-fails on this (drift-check job
+     uses retry-with-backoff; persistent exit 1 triggers
+     rollback-on-failure). The earlier "soft-fail / warn" plan was
+     promoted to hard-fail when the marker-based outer rollback
+     landed in Phase 6.3.
   2  tooling error (NetBox unreachable, parquet path missing,
      bad CLI args, etc.). CI should distinguish "drift found"
      from "harness could not run" - the second is a real failure.

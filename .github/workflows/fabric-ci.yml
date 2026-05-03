@@ -195,12 +195,29 @@ jobs:
           if-no-files-found: ignore
 
   # ------------------------------------------------------------------
-  # 4. Batfish offline analysis
+  # 4. Batfish offline analysis + PR-comment differential
   #
-  # PR-time CI runs only the pybatfish unit tests (60 tests with
-  # captured fixtures, no live container).  Differential analysis
-  # against a real Batfish container belongs in fabric-deploy.yml on
-  # the self-hosted runner where the container actually lives.
+  # PR-time CI runs the pybatfish unit tests (60 tests with FakeSession
+  # fixtures, no live container) AND -- new in this revision -- runs
+  # validate.py against a Batfish coordinator service container with
+  # the PR's expected/ as the candidate snapshot and main's expected/
+  # as the reference snapshot. The diff is posted as a markdown PR
+  # comment via the gh CLI (find-or-update keyed off an HTML marker
+  # in the comment body, so re-runs replace the previous comment
+  # rather than spamming new ones).
+  #
+  # Why this is safe in PR-time CI: the only inputs are the rendered
+  # configs already in the PR (phase3-nornir/expected/) and main's
+  # equivalent fetched via `git show`. No NetBox, no SSH to devices,
+  # no secrets. The Batfish coordinator is a pinned-by-digest official
+  # image, no third-party action.
+  #
+  # The reference snapshot is main's phase3-nornir/expected/ -- those
+  # files ARE the canonical "what main currently renders to" output
+  # (the byte-equality regression gate makes this true by construction).
+  # So PR's expected/ vs main's expected/ shows exactly what BGP
+  # topology / IP ownership / loopback reachability changes the PR
+  # introduces, modelled by Batfish.
   # ------------------------------------------------------------------
   batfish:
     name: batfish
@@ -210,9 +227,25 @@ jobs:
       contents: read
       pull-requests: write   # for the PR comment
     needs: [render-pipeline]
+    services:
+      # Same image digest the lab's own Batfish container uses (see
+      # phase4-batfish/docker-compose.yml). Locking to the same digest
+      # in PR-time CI means a Batfish version bump is a single change
+      # to two files, and PR-time analysis can never disagree with
+      # production analysis because of a model version mismatch.
+      batfish:
+        image: batfish/allinone@sha256:09817554db90e2f2674b72562c2d659427094187de0a3dfc23534ab58bf26207
+        ports:
+          - 9996:9996
+          - 9997:9997
+        # Batfish JVM takes ~30-60 s to fully come up. The validate.py
+        # Reachability probe in check_reachable() handles this with a
+        # short retry; no need for a healthcheck here.
     steps:
-      - name: Checkout
+      - name: Checkout PR head
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0  # need full history for `git show origin/main:...`
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -228,19 +261,86 @@ jobs:
       - name: Install dependencies
         run: pip install -r phase4-batfish/requirements-dev.txt
 
-      - name: Run Batfish unit tests
+      - name: Run Batfish unit tests (FakeSession fixtures, no container)
         working-directory: phase4-batfish
         run: python -m pytest -v
+
+      # ---------- PR-comment differential ----------
+      # Skipped on push-to-main (no PR exists, nothing to comment on).
+      - name: Stage PR snapshot from PR's expected/
+        if: github.event_name == 'pull_request'
+        run: |
+          mkdir -p /tmp/bf-snapshots/pr/
+          cp phase3-nornir/expected/dc1-spine1.conf /tmp/bf-snapshots/pr/dc1-spine1.conf
+          cp phase3-nornir/expected/dc1-spine2.conf /tmp/bf-snapshots/pr/dc1-spine2.conf
+          cp phase3-nornir/expected/dc1-leaf1.conf  /tmp/bf-snapshots/pr/dc1-leaf1.conf
+          cp phase3-nornir/expected/dc1-leaf2.conf  /tmp/bf-snapshots/pr/dc1-leaf2.conf
+
+      - name: Stage main baseline snapshot via git show
+        if: github.event_name == 'pull_request'
+        run: |
+          mkdir -p /tmp/bf-snapshots/main/
+          for host in dc1-spine1 dc1-spine2 dc1-leaf1 dc1-leaf2; do
+            git show origin/main:phase3-nornir/expected/${host}.conf \
+              > /tmp/bf-snapshots/main/${host}.conf
+          done
+
+      - name: Run validate.py with reference snapshot, JSON output
+        if: github.event_name == 'pull_request'
+        env:
+          BATFISH_HOST: localhost
+        run: |
+          python phase4-batfish/validate.py \
+            --snapshot /tmp/bf-snapshots/pr/ \
+            --reference-snapshot /tmp/bf-snapshots/main/ \
+            --format json \
+            > batfish-report.json
+          # Print the human-readable version too, for the workflow log.
+          python phase4-batfish/validate.py \
+            --snapshot /tmp/bf-snapshots/pr/ \
+            --reference-snapshot /tmp/bf-snapshots/main/
+
+      - name: Format JSON as markdown PR comment
+        if: github.event_name == 'pull_request'
+        run: |
+          python phase6-cicd/scripts/format_batfish_comment.py \
+            --input batfish-report.json \
+            --output batfish-comment.md
+          echo "--- comment preview ---"
+          cat batfish-comment.md
+
+      - name: Post or update PR comment
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          # Single source of truth for the find-or-update marker.
+          MARKER: '<!-- batfish-diff-bot -->'
+        run: |
+          # Find an existing comment that contains the marker and
+          # update it; otherwise create a new one. Keeps the PR
+          # conversation clean across re-runs of the same PR.
+          existing_id=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+            --paginate --jq ".[] | select(.body | contains(\"${MARKER}\")) | .id" \
+            | head -n 1)
+          if [ -n "${existing_id}" ]; then
+            echo "Updating existing comment ${existing_id}"
+            gh api --method PATCH \
+              "repos/${{ github.repository }}/issues/comments/${existing_id}" \
+              -F body=@batfish-comment.md > /dev/null
+          else
+            echo "Creating new PR comment"
+            gh pr comment "${PR_NUMBER}" --body-file batfish-comment.md
+          fi
 
       - name: Upload Batfish output
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: batfish-results
-          path: phase4-batfish/build/
+          path: |
+            phase4-batfish/build/
+            batfish-report.json
+            batfish-comment.md
           retention-days: 14
           if-no-files-found: ignore
-
-      # PR comment with Batfish diff is wired in a follow-up commit
-      # once the differential snapshot logic is moved out of validate.py
-      # into a CI-callable helper.  Tracked in phase6-cicd/CI.md.

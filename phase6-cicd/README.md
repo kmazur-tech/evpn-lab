@@ -110,7 +110,7 @@ Jobs:
 | `unit (phase4-batfish)` | pybatfish unit tests, 60 tests | Yes (transitioned 2026-05-02 after the warn-only ramp) |
 | `unit (phase5-suzieq)` | Drift harness suite, 370 tests | Yes (transitioned 2026-05-02 after the warn-only ramp) |
 | `render + diff + guard` | Render templates from cassettes, byte-equality vs `expected/`, deploy-guard scan | Yes |
-| `batfish` | pybatfish unit tests with captured fixtures | Yes |
+| `batfish` | pybatfish unit tests with FakeSession fixtures + (on PRs only) live `batfish/allinone` service container running `validate.py` with PR's `expected/` as candidate and main's `expected/` as reference; posts find-or-update markdown PR comment | Yes (unit tests); PR comment is best-effort |
 
 ### Workflow security baseline
 

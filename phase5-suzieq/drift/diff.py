@@ -45,8 +45,8 @@ from .state import FabricState
 # Drift record - the unit of output
 # ---------------------------------------------------------------------------
 
-SEVERITY_ERROR = "error"      # CI should soft-fail (warn loudly, do not block merge per Phase 6 plan)
-SEVERITY_WARNING = "warning"  # CI should log
+SEVERITY_ERROR = "error"      # Phase 6 deploy workflow hard-fails on this; rollback-on-failure runs
+SEVERITY_WARNING = "warning"  # CI should log; does not affect drift-check exit code
 
 # Drift categories. A coarser axis than dimension: a Phase 6 consumer
 # can filter/prioritize by category without having to enumerate every

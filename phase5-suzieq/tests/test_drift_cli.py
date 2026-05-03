@@ -109,8 +109,9 @@ class TestRun:
         assert out["error_count"] >= 1
 
     def test_warning_only_does_not_set_exit_1(self, monkeypatch, capsys):
-        """Per Phase 6 contract: only error-severity drifts soft-fail
-        the CI stage. Warnings still appear in output but exit 0."""
+        """Harness contract: only error-severity drifts return exit 1.
+        Warnings still appear in output but exit 0. Phase 6 deploy
+        workflow hard-fails on exit 1; warnings never trigger rollback."""
         # Empty intent + non-empty state => warning-only drift
         # (polled-but-not-modeled)
         df = pd.DataFrame([{"hostname": "stale-device"}])
