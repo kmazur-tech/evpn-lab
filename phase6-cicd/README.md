@@ -407,6 +407,7 @@ This lab is a showcase, not a production deployment. The CI is designed to be ho
 - [ ] **Deploy failure alerting.** Lab is content with a `github-script` commit comment on `failure()`. Production needs Slack/email/PagerDuty with an explicit escalation path - a failed deploy triggers `rollback-on-failure` automatically, but the operator must know about both the failure and the rollback's success/failure immediately.
 - [ ] **Artifact retention review.** Rendered configs and Batfish output may contain operational data. 14-day retention is fine for the lab; review for compliance in a real environment.
 - [ ] **Supply-chain controls beyond SHA pinning.** Dependency review, secret scanning, SAST. Worth enabling on the public repo regardless.
+- [ ] **Compatibility with `force-commit-log` (Junos 24.2R1+).** When `set system commit force-commit-log` is configured on a device, every commit must carry a comment or it is rejected. The CI deploy path (`deploy.py --commit --commit-message $MARKER --liveness-gate`) is already compatible because it always supplies a marker comment via NAPALM's `commit_message`. The bare operator path (`deploy.py --commit` with no `--commit-message`) is NOT compatible and would be rejected -- pair it with `--commit-message <reason>` on hardened devices.
 
 ## Critical post-implementation test
 
