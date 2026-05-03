@@ -39,6 +39,7 @@ protocols {
             cluster {{ host['router_id'] }};
 {% endif %}
             local-as {{ defaults.bgp.overlay_asn }};
+            multipath;
             bfd-liveness-detection {
                 minimum-interval {{ defaults.bgp.bfd_min_interval }};
                 multiplier {{ defaults.bgp.bfd_multiplier }};
