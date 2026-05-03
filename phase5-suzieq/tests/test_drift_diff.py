@@ -405,7 +405,8 @@ class TestEvpnVniDiff:
     def test_extra_vni_in_state_not_in_intent_is_ignored(self):
         """One-directional check: SuzieQ-only VNIs are not flagged.
         We only care that intent VNIs exist in state, not the
-        reverse. (Phase 7 multi-tenant might add a reverse check.)"""
+        reverse. (Phase 10 multi-tenant work might add a reverse
+        check.)"""
         intent = _intent(vnis=[])
         state = _state(evpn_vnis=[
             {"hostname": "dc1-leaf1", "vni": 99999, "type": "L2", "state": "up"},

@@ -365,7 +365,7 @@ def _collect_vnis(nb, leaf_names) -> List[VniIntent]:
     emit one VniIntent per (leaf, vni). The lab assumption is that
     every leaf in the namespace participates in every tenant VLAN
     and every tenant VRF - true for the Phase 1+2 single-tenant
-    fabric. Phase 7 multi-tenant work will need to filter by
+    fabric. Phase 10 multi-tenant work will need to filter by
     per-leaf participation."""
     out: List[VniIntent] = []
     if not leaf_names:
@@ -468,7 +468,7 @@ def _collect_anycast_macs(nb, leaf_names) -> List[AnycastMacIntent]:
     MAC should appear in every tenant leaf's MAC table for every
     VLAN bound to the tenant L2VPN. The lab assumption is that
     every leaf serves every tenant VLAN - same simplification as
-    _collect_vnis(). Phase 7 multi-tenant work will refine this.
+    _collect_vnis(). Phase 10 multi-tenant work will refine this.
     """
     out: List[AnycastMacIntent] = []
     if not leaf_names:

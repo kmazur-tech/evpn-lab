@@ -6,7 +6,7 @@
    for the route-distinguisher tenant_id and the vrf-import/export
    policy names because there is only ever one tenant in the list.
 
-   For Phase 7 (multi-tenant), this needs to become either:
+   For Phase 10 (multi-tenant), this needs to become either:
      (a) one mac-vrf instance per tenant (loop over host.tenants and
          emit one EVPN-VXLAN-<TENANT> block per entry), or
      (b) a single mac-vrf instance carrying all tenants' VNIs and

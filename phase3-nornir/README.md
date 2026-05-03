@@ -157,6 +157,8 @@ NAPALM `compare_config` is honest: it shows full encrypted-password changes in i
 
 If you add a new template that emits a secret field, you MUST extend the guard's shape regex (or sentinel list) to validate it. The guard exists because diff normalizers (which strip salted-hash noise so the regression gate can compare configs cleanly) must never touch the file on disk - the bytes NAPALM commits have to be the real values, and the guard catches bad bytes before NAPALM ever sees them.
 
+Do not enable NAPALM's `config_private` optional argument. The inner liveness gate uses `commit confirmed`, which Junos rejects in `configure private` mode (each private session has its own candidate, but `commit confirmed` requires a shared candidate). NAPALM's default `configure exclusive` is what the gate needs.
+
 ## Tests
 
 Unit tests and integration tests under `tests/`. No NetBox, no devices, no env vars (each test that needs env uses `monkeypatch`). Run from WSL2:
@@ -217,7 +219,7 @@ These are deliberate Phase 3 simplifications, not bugs. Each is scoped to a spec
 
 `templates/junos/routing_instances.j2` renders a single `EVPN-VXLAN` MAC-VRF instance and indexes `host.tenants[0]` for the route-distinguisher's `tenant_id` and for the `vrf-import` / `vrf-export` policy names. This works because the Phase 3 lab has exactly one tenant (TENANT-1).
 
-The pydantic `HostData.tenants` list shape already supports multiple tenants - the limitation is **in this template only**. Phase 7 (multi-tenant) will replace `host.tenants[0]` with explicit iteration in one of two ways:
+The pydantic `HostData.tenants` list shape already supports multiple tenants - the limitation is **in this template only**. Phase 10 (multi-tenant) will replace `host.tenants[0]` with explicit iteration in one of two ways:
 
 - **(a)** one `mac-vrf` instance per tenant (`EVPN-VXLAN-<TENANT>` blocks)
 - **(b)** a single `mac-vrf` instance carrying all tenants' VNIs and importing/exporting every tenant route-target

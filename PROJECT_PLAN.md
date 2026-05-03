@@ -225,25 +225,20 @@ Result: every change to NetBox/templates/code is automatically validated through
 
 ---
 
-## Phase 7 - Forwarding Scale + Convergence Tuning
+## Phase 7 - Dissolved (originally "Routing Policy + Multi-Tenancy Preview")
 
-Most originally-scoped Phase 7 items landed in Phase 2 during the JVD best-practice review:
-- Per-packet ECMP via forwarding-table export LOAD-BALANCE - DONE in Phase 2 (was a critical bug fix; the PFE was installing only one next-hop until the policy was added)
-- Anycast gateway, IRB interfaces, Type-5 routing - DONE in Phase 2
-- ESI-LAG failover, leaf failure traffic takeover - DONE in Phase 2 (smoke tests Section 4)
-- proxy-macip-advertisement - DROPPED. Not supported on vJunos-switch and not needed in ERB anyway (CRB construct for L2-only leaves)
+**Status: dissolved 2026-05-03. Not planned for future implementation under this number.**
 
-Remaining scope - things that genuinely need a dedicated phase:
-- VXLAN routing scale tuning: `interface-num`, `next-hop` table sizing, `shared-tunnels` (production-class scale, not relevant in a 4-device lab but worth modeling)
-- Richer BGP export policy: per-subnet direct route advertisement instead of loopback-only export, with explicit allow/deny terms
-- ECMP fast-reroute (BGP PIC + FRR) for sub-second failover under specific failure modes
-- BGP add-path / multipath multiple-as tuning across spine RR boundary
-- BFD micro-BFD on aggregated interfaces (would need physical hardware to validate)
-- Selective route leaking between tenant VRFs (preview of multi-tenant work)
+History: the original Phase 7 scope ("Forwarding Scale + Convergence Tuning") was absorbed into Phase 2 during the JVD best-practice review (per-packet ECMP, anycast gateway, ESI-LAG failover, Type-5 routing). A subsequent pivot toward routing policy + multi-tenancy preview was attempted; the live PoCs revealed two structural blockers:
 
-Most of these need real hardware to actually validate. May be re-scoped or merged into Phase 10 (multi-DC) where scale starts to matter.
+- vJunos 23.2R1.14 does not install novel EVPN Type-5 prefixes into the receiver's `routing-instance.inet.0`. Tested across five origin configurations (rib-group static-discard, direct static-discard, direct static with real next-hop, attempted lo0 unit, fresh /29 prefix) - none propagate to the remote leaf. Likely cause: incomplete PFE programming (the `forwarding-options vxlan-routing` hierarchy is parser-rejected on vJunos). Real EX9214 hardware does this correctly. Without fabric-wide Type-5 install on the lab platform, the "border-leaf selective leak distributed via Type-5" demonstration cannot be validated end-to-end.
+- `add-path` under `family evpn signaling` is rejected at commit-check time on every Junos release tested (23.2 / 23.4 / 24.2). The YANG parser accepts the syntax but the BGP module returns `BGP: Add-path configured on unsupported address-family` - the `add-path` family enum is restricted to `inet | inet6 | inet-vpn | inet6-vpn | iso-vpn`. The documented mechanism for EVPN overlay multipath is the `multipath` knob on the BGP group, not `add-path`.
 
-Result: forwarding-plane scale knobs documented and where possible exercised; remaining items deferred to hardware lab.
+Disposition: multi-tenancy preview moved to Phase 10 (Multi-DC), where multi-tenant routing has its real architectural justification (DCI requires VRF-aware separation by definition) and where the multi-vendor angle (Junos vrf-import RT vs Arista auto-import RT semantics) makes the showcase distinct from a single-fabric tenant rehearsal. A small operational hygiene chain emerged from the PoC and ships as ordinary commits, not under a phase label: a hardware-only knob registry, a verification wrapper that reruns commit-check on a weekly cron, and the `multipath` knob added to the OVERLAY BGP group (the EVPN overlay multipath primitive that should have been in scope from Phase 2).
+
+Phase numbering is retained. Phases 8-12 keep their current numbers; renumbering would invalidate external references (CI badges, README links, blog posts). Phase 7 is intentionally a documented gap, not a TBD slot.
+
+The engineering lessons from this PoC cycle are recorded in [README.md](README.md) "Lessons learned" because they catch real-hardware operators too, not only vJunos users.
 
 ---
 
@@ -310,6 +305,19 @@ Scope:
 - Extended Suzieq with cross-DC assertions (EVPN routes from DC1 visible in DC2 and vice versa)
 - Tests: L2 stretched traffic between DCs, L3 inter-DC traffic, border leaf failover
 - DC2 hardening - same controls from Phase 8, different templates (EOS)
+
+### Multi-tenancy preview
+
+Phase 10 is the natural home for multi-tenant routing, because DCI requires VRF-aware separation by definition. A second tenant VRF (TENANT-2) is added with selective inter-VRF route leak across the DC1-DC2 boundary. Concretely:
+
+- A `TENANT-2` `vrf` routing-instance on DC1 leaves and DC2 leaves with its own L3VNI and RT.
+- Selective leak between TENANT-1 and TENANT-2 demonstrated via two mechanisms, contrasted to make the multi-vendor angle the showcase value:
+  - Junos: `routing-options rib-groups` with `import-policy` on the border leaf, distributed via Type-5 if real EX9214 hardware is later available (vJunos cannot validate fabric-wide propagation - see the Phase 7 dissolution stub above for the empirical gap).
+  - Arista: native `route-target import` on the receiving VRF with explicit prefix-list filtering. Direct comparison of the two vendor approaches is the showcase content.
+- NetBox model: `vrf_route_leak` represented as a JSON custom field on VRF objects, holding `[{target_vrf_id, prefixes[]}]`. NetBox 4.x has no native "Custom Object Types" feature; JSON custom field is the lab-pragmatic primitive. Production designs would use a NetBox plugin with a `VRFRouteLeak` Django model.
+- Smoke tests cover three assertions: local leak on the border leaf, cross-DC propagation (via DCI), selective filter (a TENANT-2 prefix that does NOT match the leak policy stays in TENANT-2 only), plus an asymmetry negative test (a TENANT-1 prefix never appears in TENANT-2).
+
+The single-fabric version of this scope was attempted as Phase 7 Part C ("border-leaf pattern") but live PoC showed vJunos cannot validate the fabric-wide leg. Phase 10's introduction of cEOS gives both a real PFE on at least one half of the fabric AND the multi-vendor contrast that makes multi-tenancy a richer showcase than a single-fabric rehearsal would have been.
 
 ### Scale-driven refactors (deferred from Phase 3 to here, where they actually matter)
 

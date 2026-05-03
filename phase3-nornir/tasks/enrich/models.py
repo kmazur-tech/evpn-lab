@@ -12,8 +12,8 @@ Benefits:
   during render or worse - as a malformed config on a device.
 - Tests can construct fixture host data by instantiating these
   classes instead of building loose dicts.
-- Future Phase 7 multi-tenant work has a single place to add tenant
-  fields without grepping through enrich code.
+- Future Phase 10 multi-tenant work has a single place to add
+  tenant fields without grepping through enrich code.
 """
 
 from typing import List, Optional
