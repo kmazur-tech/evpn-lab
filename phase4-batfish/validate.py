@@ -295,45 +295,52 @@ def main():
         )
         sys.exit(2)
 
+    # When --format json, machine-readable JSON goes to stdout and
+    # diagnostic progress goes to stderr. Without this split, a CI
+    # consumer doing `validate.py --format json > report.json` ends up
+    # with a file containing both the diagnostics and the JSON, which
+    # parsers reject. Text mode keeps everything on stdout.
+    diag = sys.stderr if args.format == "json" else sys.stdout
+
     diffs: List[DiffSummary] = []
     with tempfile.TemporaryDirectory(prefix="bf-snap-") as staged:
         staged_root = stage_snapshot(src_dir, Path(staged) / "candidate")
         configs = list((staged_root / "configs").iterdir())
-        print(f"Staged {len(configs)} candidate config(s) -> {staged_root}")
+        print(f"Staged {len(configs)} candidate config(s) -> {staged_root}", file=diag)
         for c in sorted(configs):
-            print(f"  {c.name}")
+            print(f"  {c.name}", file=diag)
 
         if ref_dir is not None:
             ref_root = stage_snapshot(ref_dir, Path(staged) / "reference")
             ref_configs = list((ref_root / "configs").iterdir())
-            print(f"Staged {len(ref_configs)} reference config(s) -> {ref_root}")
+            print(f"Staged {len(ref_configs)} reference config(s) -> {ref_root}", file=diag)
 
         # Reachability probe BEFORE any pybatfish API call. Fails fast
         # with an actionable message if Batfish is down or BATFISH_HOST
         # points at the wrong place.
-        print(f"\nProbing Batfish at {bf_host}:{BATFISH_COORDINATOR_PORT}...")
+        print(f"\nProbing Batfish at {bf_host}:{BATFISH_COORDINATOR_PORT}...", file=diag)
         try:
             check_reachable(bf_host)
         except RuntimeError as e:
             print(f"ERROR: {e}", file=sys.stderr)
             sys.exit(2)
-        print("  reachable")
+        print("  reachable", file=diag)
 
-        print(f"Connecting to Batfish at {bf_host}:{BATFISH_COORDINATOR_PORT}...")
+        print(f"Connecting to Batfish at {bf_host}:{BATFISH_COORDINATOR_PORT}...", file=diag)
         bf = Session(host=bf_host)
 
         bf.set_network(args.network)
         cand_name = args.snapshot_name
-        print(f"Initializing candidate snapshot '{cand_name}' (this can take 30-60s)...")
+        print(f"Initializing candidate snapshot '{cand_name}' (this can take 30-60s)...", file=diag)
         bf.init_snapshot(str(staged_root), name=cand_name, overwrite=True)
 
         results = run_checks(bf)
 
         if ref_dir is not None:
             ref_name = f"{cand_name}-reference"
-            print(f"Initializing reference snapshot '{ref_name}'...")
+            print(f"Initializing reference snapshot '{ref_name}'...", file=diag)
             bf.init_snapshot(str(ref_root), name=ref_name, overwrite=True)
-            print("Running differential analysis...")
+            print("Running differential analysis...", file=diag)
             # Re-set the active snapshot to the candidate so any
             # post-diff checks (none today) see the right state.
             bf.set_snapshot(cand_name)
