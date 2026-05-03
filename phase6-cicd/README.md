@@ -82,6 +82,21 @@ The PR-time loop on the left runs on GitHub-hosted runners, fully offline, on ev
 
 The PR side is biased toward fast feedback and offline checks. The deploy side is biased toward safety: every device-touching step has a fail-safe (inner liveness gate via commit-confirmed, marker-based outer rollback, manual approval gate, post-deploy drift verification).
 
+### Failure matrix
+
+Maps each failure point to which gate catches it, what rollback fires, and what the operator sees.
+
+| Failure point | Caught by | Rollback mechanism | Rollback wall time | Operator-visible signal | Recovery action |
+|---|---|---|---|---|---|
+| Lint / unit / render-pipeline / batfish | `fabric-ci.yml` | -- (no commit landed) | -- | PR check red; merge blocked | Fix the code; push again |
+| Live NetBox unreachable, render fails, Batfish offline error | `fabric-deploy.yml` `render-and-guard` job | -- (no commit landed) | -- | Workflow red on `render-and-guard`; downstream jobs skipped | Fix the source-of-truth issue; re-dispatch |
+| Mgmt-plane breakage on >=1 device (broken SSH, mgmt VRF misconfig, placeholder hash slipped past the deploy guard) | `deploy` job inner gate (commit confirmed 120 + sleep 30 + liveness) | Junos auto-rollback at 120 s deadline; no `napalm_confirm_commit` issued | ~120 s from commit | `deploy` job red; `auto-rollback-notice` job runs and prints narrative; smoke / drift / rollback-on-failure all skipped | Wait for the 120 s timer to fire; verify SSH on the failed host; investigate why liveness failed |
+| Smoke suite fails (76-check) on data-plane / control-plane regression | `smoke-gate` job | `deploy.py --rollback-marker $COMMIT_MARKER` walks `show system commit` per device, reverts to pre-marker state | ~30 s after smoke fails | `smoke-gate` red; `drift-check` skipped; `rollback-on-failure` runs and exits 0 on each device | Investigate smoke failure; verify lab healthy with `smoke-tests.sh` before re-dispatching |
+| Persistent drift (NetBox intent vs runtime) past the 90 s + 4x45 s retry budget | `drift-check` job | same `--rollback-marker` walk | ~30 s after retry exhaustion | `drift-check` red; `rollback-on-failure` runs | Look at the failing assertion (which table / column); decide if it's a NetBox-intent gap or a true runtime regression |
+| `rollback-on-failure` itself fails (marker not found on a device) | -- | Hard-fail, NO silent fallback to `rollback 1` | -- | `rollback-on-failure` red; both deploy and rollback have ambiguous on-device state | Manual investigation. Most likely cause: an operator manually committed on top of CI's commit between `deploy` and the rollback. Check `show system commit` on each device, identify the safe rollback target, run `cli> rollback N; commit` manually |
+
+The matrix is the single canonical view of "which gate handles which failure" -- every Variant 1/2/3 test in the section below is one row of this table being exercised end-to-end.
+
 ## fabric-ci.yml - PR-time workflow
 
 Triggered on every PR and push to `main`. Runs on GitHub-hosted `ubuntu-latest`, not the self-hosted lab runner - the public repo means PR contributors' code runs in CI, and we want that on GitHub's sandbox, not on infrastructure that has SSH keys to the lab. PR-time CI doesn't need lab access (vcrpy cassettes replay NetBox offline, NAPALM is mocked, Batfish unit tests use captured fixtures), so the GitHub-hosted runner is sufficient.
@@ -104,6 +119,7 @@ Jobs:
 - **Allowed actions allowlist** - repo settings restrict to `actions/*, github/*` plus anything under the `kmazur-tech` org. Marketplace-verified-creator shortcut is off.
 - **Fork PR approval gate** - "Require approval for all external contributors" set in repo Actions settings; a maintainer has to click approve before any fork PR can spin up a runner.
 - **Concurrency cancel-in-progress** - new push to a branch cancels the still-running CI for the previous push on that branch.
+- **Deliberately NOT using `pull_request_target`.** The PR-time CI uses `on: pull_request:` only. `pull_request_target` runs in the context of the BASE repo with the BASE secrets, while checking out the PR's head commit; it's the trigger behind most public-repo secret-exfiltration incidents ("pwn-request"). Nothing in this pipeline needs PR-time write access to the base repo, so we forgo `pull_request_target` entirely.
 
 ### Caching and artifacts
 
@@ -297,6 +313,88 @@ The trust boundary: a compromise of the GitHub Actions runner gets at most `bash
 
 Repo-level secrets: none. The PR-time CI does not use any secrets at all (vcrpy cassettes, mocked NAPALM, captured Batfish fixtures).
 
+## Operator runbook (what to do when something fails)
+
+The fail-safe machinery is automatic, but the operator still needs to know what to look at and in what order. Per-failure-mode procedures below. Each one assumes you've just been notified that the workflow run is red.
+
+### 1. Lint or unit test fails on `fabric-ci.yml`
+
+No commit landed on any device. Read the failing job log; fix the code; push again. No lab-side action needed.
+
+### 2. `render-and-guard` fails on `fabric-deploy.yml`
+
+No commit landed on any device. Common causes:
+
+- NetBox unreachable / `NETBOX_TOKEN` invalid -> check NetBox is up, token is current.
+- Render produces a diff vs `expected/` (regression gate fired) -> the PR that introduced the change should also have refreshed `phase3-nornir/expected/<host>.conf`. Re-render locally with `cd phase3-nornir && python deploy.py --full`, inspect the diff, decide whether the template change is intentional and update goldens.
+- Batfish offline analysis flags an init / parse / undefined-reference / IP-ownership / loopback issue -> read the validate.py output; the failing check name maps directly to the broken stanza.
+
+No lab-side cleanup needed; nothing was pushed.
+
+### 3. `deploy` job fails (inner liveness gate tripped)
+
+The Junos `commit confirmed 120` was issued but `napalm_confirm_commit` was NOT, so Junos will auto-revert at the 120 s deadline.
+
+Operator procedure:
+
+1. **Wait.** ~2 minutes from the commit step's timestamp in the job log. Don't intervene; intervening can break the auto-rollback.
+2. **Verify SSH on every device.** `ssh admin@172.16.18.160` etc. for all 4 devices. Should be reachable.
+3. **Confirm running config on each device matches pre-deploy.** From a workstation with the env loaded:
+   ```bash
+   cd phase3-nornir
+   python deploy.py --dry-run
+   ```
+   The only diff should be the device-emitted `version 23.2R1.14;` line (templates intentionally don't render `version`; `NORMALIZE_RULES` strips it during regression diff). Anything else means rollback didn't fully restore the device.
+4. **Read the `deploy` job log.** Find the host(s) that failed liveness. Ask why: broken management VRF? bad SSH config rendered? a render bug similar to the credential-lockout incident? The render is reproducible offline (`deploy.py --full`), so most root causes can be debugged without further lab access.
+5. **DO NOT re-dispatch the workflow until you understand what broke.** A second deploy with the same broken render will hit the same failure.
+
+### 4. `smoke-gate` fails
+
+Inner gate cleared (deploy is committed and confirmed), but the 76-check smoke suite found a regression. `rollback-on-failure` runs automatically and reverts via marker walk.
+
+Operator procedure:
+
+1. **Wait for `rollback-on-failure` to finish.** ~30 seconds. The job exits 0 only after every device has rolled back successfully.
+2. **Read the smoke log.** Find the failing test. Common categories:
+   - `Control Plane`: BGP session down, EVPN routes missing, VTEP tunnel missing, BFD session count wrong.
+   - `Data Plane`: ping/MTU between hosts failing, ECMP installed wrong, ARP / EVPN Type-2 missing.
+   - `Failover`: ESI-LAG hadn't converged, core-isolation didn't fire.
+3. **Verify rollback landed on all 4 devices.** Same dry-run check as step 3 in the deploy-fail runbook above.
+4. **Check whether the failure was the lab or the deploy.** A paused container, an unrelated host crash, or stale state from a previous run can fail smoke without anything being wrong with this PR's render. Re-run `bash phase2-fabric/smoke-tests.sh` from the lab server directly. If smoke is now clean, the deploy was fine and the smoke-gate failure was infrastructure noise -> re-dispatch the workflow.
+5. **If smoke is still failing on the rolled-back lab**, the lab itself has a problem unrelated to this PR. Investigate, fix, then re-dispatch.
+
+### 5. `drift-check` fails (smoke passed, drift didn't)
+
+Inner gate cleared, smoke cleared, but post-deploy NetBox-vs-runtime drift is firing past the 90 s + 4x45 s retry budget. `rollback-on-failure` runs automatically.
+
+Operator procedure:
+
+1. **Wait for `rollback-on-failure` to finish.**
+2. **Read the drift log.** The failing assertion names which table / column / device tripped (e.g. `assert_vtep_remote_count dc1-leaf1: vni10010=1 expected 2`). That's the gap between NetBox intent and runtime state.
+3. **Decide which side is wrong.** If NetBox doesn't model the thing the runtime has, NetBox needs updating. If the runtime is missing something NetBox modeled, the deploy didn't fully realize intent (template gap, vendor caveat, etc.).
+4. **Verify rollback landed.**
+
+### 6. `rollback-on-failure` itself fails
+
+The most serious case: the deploy is committed on the device, smoke or drift caught a regression, but the marker walk failed. Most likely cause: an operator manually committed on top of CI's commit between `deploy` and the rollback (the marker is no longer the most recent entry, AND the operator's commit is between marker and current state).
+
+Operator procedure:
+
+1. **Stop. Don't re-dispatch.**
+2. **SSH to each device** and inspect commit history:
+   ```
+   admin@dc1-spine1> show system commit
+   ```
+3. **Identify the safe rollback target.** Find the entry just before the CI marker (the same `cicd-<run_id>-<attempt>` you'd see in the workflow log). Note its sequence number.
+4. **Manual rollback per device:**
+   ```
+   admin@dc1-spine1> configure
+   admin@dc1-spine1# rollback N
+   admin@dc1-spine1# commit comment "manual rollback after marker walk failed"
+   ```
+5. **Verify** with `python deploy.py --dry-run` from a workstation.
+6. **Investigate why the marker walk failed.** If an operator did a manual commit, that's a process gap (use `--target` for one-host operator changes, never overlap with a CI deploy). If the marker wasn't found because of a bug, file an issue and add a regression test.
+
 ## Production readiness checklist
 
 This lab is a showcase, not a production deployment. The CI is designed to be honest about that gap. Before this pipeline could safely promote real device changes in a production environment:
@@ -331,15 +429,53 @@ Pass smoke but fail drift (e.g. take down EVPN Type-3 advertisement long enough 
 
 ### Variant 3: liveness failure (inner gate via Junos auto-rollback)
 
-Render a config that breaks the management plane on one device (e.g. block SSH on dc1-spine1 via a deliberate firewall stanza pushed for this test only). Expect:
+The other two variants exercise the OUTER gate (marker walk via `--rollback-marker`). This one exercises the INNER gate -- the Junos `commit confirmed 120` auto-rollback that fires when no `napalm_confirm_commit` arrives in time.
 
-1. `deploy` runs `commit confirmed 120` with the marker successfully on all four devices.
-2. After the 30 s settle, `liveness_check` fails on the broken host.
-3. `napalm_confirm_commit` is NOT issued.
-4. `deploy` job exits nonzero.
-5. `smoke-gate`, `drift-check`, `rollback-on-failure` are all skipped.
-6. `auto-rollback-notice` runs and prints the narrative.
-7. Within ~120 s of the original commit, Junos auto-rolls back on every device.
-8. After rollback, SSH access is restored to the broken host and every device's running config matches what it was BEFORE the deploy.
+**Why not run the full workflow for this:** in containerlab + vrnetlab, `172.16.18.160` is NAT'd by the outer container down to fxp0 (`10.0.0.15`) inside the vJunos VM. So `set interfaces fxp0 disable` breaks the very SSH path NAPALM uses, but it's a real and self-recovering test of the inner gate. Pushing this through the full `deploy.py --liveness-gate` pipeline would also work but is unnecessarily heavy for what's a one-line Junos-primitive test.
 
-Without these end-to-end verifications, the rest of the pipeline is theatre. The whole point of the layered design is to prove both rollback paths work on real devices, not just in unit tests.
+**Test procedure (PyEZ direct, single device, single device-side commit):**
+
+```python
+from jnpr.junos import Device
+from jnpr.junos.utils.config import Config
+
+dev = Device(host="172.16.18.160", user=..., passwd=..., port=22)
+dev.open()
+cfg = Config(dev)
+cfg.load("set interfaces fxp0 disable", format="set", merge=True)
+# commit confirmed 2 minutes -- equivalent to NAPALM revert_in=120
+cfg.commit(confirm=2, comment="variant3-fxp0-disable-test")
+# At this point Junos applies the candidate; fxp0 goes down; SSH dies.
+# We do NOT issue a follow-up commit. Junos auto-reverts at the
+# 2-minute deadline. fxp0 comes back, SSH resumes.
+```
+
+**Expected observable behaviour:**
+
+1. The `commit confirmed 2` RPC starts; Junos applies the candidate; SSH session dies mid-RPC (because fxp0 just went down).
+2. PyEZ raises an exception on the dying socket (`RpcTimeoutError` or similar) -- Junos has already accepted the commit and started the timer.
+3. From outside the device: SSH to `172.16.18.160` is unreachable for ~120 s.
+4. At ~120 s after the commit, Junos auto-rollback fires. fxp0 comes back up.
+5. SSH to `172.16.18.160` works again. `show system commit` shows the test commit AND a Junos-emitted rollback entry. `show interfaces fxp0` shows admin-up.
+
+**Recovery if auto-rollback doesn't fire** (it should, but in case): SSH from the lab server's console / containerlab `clab exec`, run `cli> rollback 1; commit`. fxp0 comes back.
+
+**This test exercises the same Junos primitive** that `deploy.py --liveness-gate` relies on: `commit confirmed N` + no follow-up commit -> auto-rollback at the deadline. The deploy.py orchestration around it (sleep 30, liveness probe, conditional confirm) is unit-test pinned in [test_napalm_tasks.py](../phase3-nornir/tests/test_napalm_tasks.py) and [test_deploy_args.py](../phase3-nornir/tests/test_deploy_args.py). Variant 3 closes the loop by proving the underlying primitive works on the real device.
+
+#### Live result (2026-05-03 on dc1-spine1)
+
+| Observation | Value |
+|---|---|
+| Test commit recorded on device | 09:46:06 UTC |
+| Auto-rollback commit recorded on device | 09:48:07 UTC |
+| Elapsed (commit -> rollback) | 2 min 1 s (matches `commit confirmed 2` deadline) |
+| Code path observed in the test runner | mid-flight: PyEZ raised `RpcTimeoutError` after 30 s as the SSH session died with fxp0 going down; Junos had already accepted the commit |
+| fxp0 admin/oper post-rollback | up / up |
+| `disable` in running-config post-rollback | False |
+| Rollback commit `client` field | `other` (Junos's marker for an automated rollback) |
+| Rollback commit `log` field | empty (auto-rollback entries don't carry comments) |
+| SSH banner usable again post-rollback | ~50 s after rollback (port 22 TCP was reachable earlier via the containerlab NAT, but Junos sshd needed time to finish initialising) |
+
+The 2-min-1-s deadline confirms NAPALM's seconds-to-minutes contract holds: `revert_in=120` -> Junos `commit confirmed 2`. The "via other" client + empty log on the rollback entry is the distinctive marker of a Junos auto-rollback (vs an operator's plain `commit` or a netconf rollback). Both are useful for audit / forensics: if a deploy reverts unexpectedly, look for an "other / empty-log" entry to confirm it was the inner-gate timer, not an operator action.
+
+Without these three variants, the rest of the pipeline is theatre. The whole point of the layered design is to prove both rollback paths work on real devices, not just in unit tests.
