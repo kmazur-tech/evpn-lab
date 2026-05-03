@@ -24,9 +24,9 @@ from typing import Iterable
 
 # HTML comment marker. The CI workflow uses this to find a previous
 # Batfish-diff comment and update it in place rather than spamming a
-# new comment on every PR re-run. Renamed marker = orphaned comments
-# on existing open PRs, so treat this string as part of the public
-# contract.
+# new comment on every PR re-run. Renaming this marker would orphan
+# existing comments on open PRs (the find-or-update lookup would
+# stop matching), so treat the string as part of the public contract.
 COMMENT_MARKER = "<!-- batfish-diff-bot -->"
 
 
