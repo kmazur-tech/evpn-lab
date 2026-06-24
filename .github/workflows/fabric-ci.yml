@@ -47,7 +47,7 @@ jobs:
           python-version: '3.11'
 
       - name: Cache pip
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-lint-${{ hashFiles('.github/workflows/fabric-ci.yml') }}
@@ -103,7 +103,7 @@ jobs:
           python-version: '3.11'
 
       - name: Cache pip
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ matrix.phase.dir }}-${{ hashFiles(format('{0}/requirements*.txt', matrix.phase.dir)) }}
@@ -152,7 +152,7 @@ jobs:
           python-version: '3.11'
 
       - name: Cache pip
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-phase3-render-${{ hashFiles('phase3-nornir/requirements*.txt') }}
@@ -253,7 +253,7 @@ jobs:
           python-version: '3.11'
 
       - name: Cache pip
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-phase4-${{ hashFiles('phase4-batfish/requirements*.txt') }}
